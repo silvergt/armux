@@ -611,8 +611,15 @@ function evaluateActivity() {
     for (const t of g.tabs) {
       if (t !== curTab && !scanBackground) continue;
       for (const leaf of leavesOf(t.root)) {
+        // Claude 는 "작업 중"일 때만 스피너를 계속 다시 그린다(=출력이 계속 난다).
+        // 그래서 (1) 화면에 안내 문구가 있고 (2) 최근에 출력이 있었을 때만 작업 중으로 본다.
+        // 문구가 화면에 남아 있어도 출력이 멎으면 곧바로 꺼진다.
+        const recentOutput = Date.now() - (leaf.lastOutputAt || 0) < 1500;
         const thinking =
-          leaf.mode !== 'web' && leaf.status === 'ready' && CLAUDE_WORK_RE.test(readScreenTail(leaf));
+          leaf.mode !== 'web' &&
+          leaf.status === 'ready' &&
+          recentOutput &&
+          CLAUDE_WORK_RE.test(readScreenTail(leaf));
 
         // 생각을 끝냈는데 그 창을 보고 있지 않으면 알림
         if (leaf.wasThinking && !thinking) {
@@ -633,7 +640,7 @@ function evaluateActivity() {
   if (changed) scheduleRender();
 }
 
-setInterval(evaluateActivity, 400);
+setInterval(evaluateActivity, 250);
 
 /** 탭 안에 Claude 가 작업 중인 판이 있는지 */
 const tabSpin = (tab) => (leavesOf(tab.root).some((l) => l.spin === 'busy') ? 'busy' : null);
@@ -1063,20 +1070,26 @@ el.dockDivider.addEventListener('mousedown', (e) => {
   const startX = e.clientX;
   const startW = dockWidth;
   document.body.classList.add('resizing-col');
+  const shield = document.createElement('div'); // webview 가 이벤트를 삼키지 않도록 덮개
+  shield.className = 'drag-shield col';
+  document.body.appendChild(shield);
   const onMove = (ev) => {
     dockWidth = Math.max(200, Math.min(window.innerWidth - 320, startW + (ev.clientX - startX)));
     el.dock.style.width = `${dockWidth}px`;
   };
   const onUp = () => {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
+    shield.removeEventListener('mousemove', onMove);
+    shield.removeEventListener('mouseup', onUp);
+    window.removeEventListener('mouseup', onUp);
+    shield.remove();
     document.body.classList.remove('resizing-col');
     localStorage.setItem(DOCK_KEY, String(dockWidth));
     fitTab(activeTab());
     saveSession();
   };
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
+  shield.addEventListener('mousemove', onMove);
+  shield.addEventListener('mouseup', onUp);
+  window.addEventListener('mouseup', onUp);
 });
 
 function buildNode(tab, node) {
@@ -1106,6 +1119,13 @@ function startDividerDrag(e, tab, node, box, a, b) {
   const total = horizontal ? rect.width : rect.height;
   document.body.classList.add(horizontal ? 'resizing-col' : 'resizing-row');
 
+  // 드래그 동안 전체 화면을 투명 덮개로 덮는다.
+  // 안 그러면 마우스가 웹 판(<webview>) 위로 올라갈 때 webview 가 이벤트를 삼켜서
+  // mousemove 가 끊기고 크기 조절이 멈춘다.
+  const shield = document.createElement('div');
+  shield.className = 'drag-shield ' + (horizontal ? 'col' : 'row');
+  document.body.appendChild(shield);
+
   const onMove = (ev) => {
     const pos = horizontal ? ev.clientX - rect.left : ev.clientY - rect.top;
     let ratio = pos / total;
@@ -1115,13 +1135,18 @@ function startDividerDrag(e, tab, node, box, a, b) {
     b.style.flex = `${node.sizes[1]} 1 0`;
   };
   const onUp = () => {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
+    shield.removeEventListener('mousemove', onMove);
+    shield.removeEventListener('mouseup', onUp);
+    window.removeEventListener('mouseup', onUp);
+    shield.remove();
     document.body.classList.remove('resizing-col', 'resizing-row');
     fitTab(tab);
+    saveSession();
   };
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
+  // 덮개 위에서 이벤트를 받으므로 webview 로 새지 않는다
+  shield.addEventListener('mousemove', onMove);
+  shield.addEventListener('mouseup', onUp);
+  window.addEventListener('mouseup', onUp); // 혹시 덮개 밖에서 떼는 경우 대비
 }
 
 /* ---------------------------------- 탭 활성화 --------------------------------- */

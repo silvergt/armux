@@ -1971,3 +1971,17 @@ body.is-mac #menu-buttons {
 body.is-mac #mac-spacer {
   width: 0;
 }
+
+/* 판 크기 조절 드래그 중 전체 화면 덮개 (webview 가 마우스 이벤트를 삼키는 것 방지) */
+.drag-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: transparent;
+}
+.drag-shield.col {
+  cursor: col-resize;
+}
+.drag-shield.row {
+  cursor: row-resize;
+}
