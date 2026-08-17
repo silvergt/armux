@@ -42,10 +42,8 @@ const el = {
   dockDivider: document.getElementById('dock-divider'),
   emptyState: document.getElementById('empty-state'),
   newGroupBtn: document.getElementById('new-group-btn'),
-  helpBtn: document.getElementById('help-btn'),
   notesTab: document.getElementById('notes-tab'),
   clock: document.getElementById('clock'),
-  helpMenu: document.getElementById('help-menu'),
   statusLeft: document.getElementById('status-left'),
   statusClaude: document.getElementById('status-claude'),
   statusRight: document.getElementById('status-right'),
@@ -997,16 +995,16 @@ function selectTabByIndex(i) {
 
 /* 상단 오른쪽에 한국·홍콩·미국(동부) 시간을 날짜~분까지 보여준다 */
 const CLOCK_ZONES = [
-  { label: '한국', tz: 'Asia/Seoul' },
-  { label: '홍콩', tz: 'Asia/Hong_Kong' },
-  { label: '미국', tz: 'America/New_York' }
+  { label: '🇰🇷', name: '한국', tz: 'Asia/Seoul' },
+  { label: '🇭🇰', name: '홍콩', tz: 'Asia/Hong_Kong' },
+  { label: '🇺🇸', name: '미국 동부', tz: 'America/New_York' }
 ];
 
 // 지역별 포맷터와 DOM 은 한 번만 만들어 두고, 갱신할 때는 글자만 바꾼다(0.5초 주기라도 부담 없음)
 const clockCells = CLOCK_ZONES.map((z) => {
   const item = document.createElement('span');
   item.className = 'clock-item';
-  item.title = `${z.label} (${z.tz})`;
+  item.title = `${z.name} (${z.tz})`;
   const name = document.createElement('span');
   name.className = 'clock-zone';
   name.textContent = z.label;
@@ -1487,6 +1485,9 @@ function renderTabstrip() {
     });
     el.tabstrip.appendChild(node);
   });
+
+  // 새 탭(+) 버튼은 마지막 탭 바로 오른쪽에 붙인다
+  el.tabstrip.appendChild(el.newGroupBtn);
 }
 
 function renderSubstrip() {
@@ -2119,16 +2120,6 @@ const helpTitle = document.getElementById('help-title');
 const helpBody = document.getElementById('help-body');
 const helpOpen = () => !helpBackdrop.classList.contains('hidden');
 
-function toggleHelpMenu(show) {
-  const want = show === undefined ? el.helpMenu.classList.contains('hidden') : show;
-  el.helpMenu.classList.toggle('hidden', !want);
-  if (want) {
-    const r = el.helpBtn.getBoundingClientRect();
-    el.helpMenu.style.top = `${Math.round(r.bottom + 2)}px`;
-    el.helpMenu.style.right = `${Math.round(window.innerWidth - r.right)}px`;
-  }
-}
-
 function openHelp(key) {
   const content = (window.HELP_CONTENT || {})[key];
   if (!content) return;
@@ -2136,7 +2127,6 @@ function openHelp(key) {
   helpBody.innerHTML = content.html;
   helpBody.scrollTop = 0;
   helpBackdrop.classList.remove('hidden');
-  toggleHelpMenu(false);
 }
 
 function closeHelp() {
@@ -2145,14 +2135,6 @@ function closeHelp() {
   if (l) l.term.focus();
 }
 
-el.helpBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleHelpMenu();
-});
-el.helpMenu.querySelectorAll('button').forEach((b) => {
-  b.addEventListener('click', () => openHelp(b.dataset.help));
-});
-document.addEventListener('click', () => toggleHelpMenu(false));
 document.getElementById('help-close').addEventListener('click', closeHelp);
 helpBackdrop.addEventListener('mousedown', (e) => {
   if (e.target === helpBackdrop) closeHelp();
@@ -2160,8 +2142,6 @@ helpBackdrop.addEventListener('mousedown', (e) => {
 
 /* ------------------------------ 정보 / 업데이트 ------------------------------- */
 
-const infoBtn = document.getElementById('info-btn');
-const infoMenu = document.getElementById('info-menu');
 const aboutBackdrop = document.getElementById('about-backdrop');
 const updateBackdrop = document.getElementById('update-backdrop');
 const updateMsg = document.getElementById('update-message');
@@ -2172,18 +2152,7 @@ const updateAction = document.getElementById('update-action');
 
 let appInfo = null;
 
-function toggleInfoMenu(show) {
-  const want = show === undefined ? infoMenu.classList.contains('hidden') : show;
-  infoMenu.classList.toggle('hidden', !want);
-  if (want) {
-    const r = infoBtn.getBoundingClientRect();
-    infoMenu.style.top = `${Math.round(r.bottom + 2)}px`;
-    infoMenu.style.right = `${Math.round(window.innerWidth - r.right)}px`;
-  }
-}
-
 async function openAbout() {
-  toggleInfoMenu(false);
   appInfo = appInfo || (await api.app.info());
   document.getElementById('about-version').textContent = `v${appInfo.version}${
     appInfo.commit ? ` (${appInfo.commit})` : ''
@@ -2225,7 +2194,6 @@ function renderUpdateState(st) {
 }
 
 async function openUpdate() {
-  toggleInfoMenu(false);
   appInfo = appInfo || (await api.app.info());
   updateBackdrop.classList.remove('hidden');
   renderUpdateState({ status: 'checking' });
@@ -2237,16 +2205,6 @@ const closeUpdate = () => updateBackdrop.classList.add('hidden');
 api.update.onState((st) => {
   if (!updateBackdrop.classList.contains('hidden')) renderUpdateState(st);
 });
-
-infoBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleHelpMenu(false);
-  toggleInfoMenu();
-});
-infoMenu.querySelectorAll('button').forEach((b) => {
-  b.addEventListener('click', () => (b.dataset.info === 'version' ? openAbout() : openUpdate()));
-});
-document.addEventListener('click', () => toggleInfoMenu(false));
 
 document.getElementById('about-close').addEventListener('click', closeAbout);
 document.getElementById('about-github').addEventListener('click', () => api.app.openExternal(appInfo.repoUrl));

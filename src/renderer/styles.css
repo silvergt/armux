@@ -193,16 +193,21 @@ body.is-mac #mac-spacer {
 
 .plus-btn {
   flex: none;
-  width: 38px;
-  border: none;
-  border-left: 1px solid var(--border);
+  align-self: center;
+  width: 30px;
+  height: 26px;
+  margin: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
   color: var(--fg-dim);
-  font-size: 17px;
+  font-size: 16px;
+  line-height: 1;
   -webkit-app-region: no-drag;
 }
 .plus-btn:hover {
-  background: #1c1f25;
+  background: #262b33;
+  border-color: var(--border);
   color: #fff;
 }
 
@@ -1382,7 +1387,8 @@ button {
   gap: 4px;
 }
 .clock-zone {
-  color: #6f7784;
+  font-size: 12px;
+  line-height: 1;
 }
 .clock-time {
   color: #aab3c0;
