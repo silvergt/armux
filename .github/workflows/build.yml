@@ -41,8 +41,9 @@ jobs:
 
       - run: npm ci
 
+      # publish 는 아래 gh 단계에서 직접 한다 (여기서 하면 토큰이 없어 실패)
       - name: build
-        run: npm run ${{ matrix.script }}
+        run: npm run build:info && npx electron-builder --${{ matrix.platform }} --publish never
         env:
           # 서명 인증서가 없는 CI 에서 키체인 인증서를 찾다가 실패하는 것을 막는다
           CSC_IDENTITY_AUTO_DISCOVERY: false
