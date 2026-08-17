@@ -64,7 +64,17 @@ jobs:
           rm -f dist/builder-debug.yml
           files=(dist/*.exe dist/*.dmg dist/*.zip dist/*.yml dist/*.blockmap)
           echo "올릴 파일: ${files[@]}"
-          gh release upload "$TAG" "${files[@]}" --clobber
+          # 큰 파일은 업로드가 간헐적으로 실패한다. 하나씩 올리고 실패하면 다시 시도한다.
+          for f in "${files[@]}"; do
+            ok=0
+            for attempt in 1 2 3 4; do
+              if gh release upload "$TAG" "$f" --clobber; then ok=1; break; fi
+              echo "업로드 실패, 재시도 $attempt: $f"
+              sleep 15
+            done
+            if [ "$ok" != "1" ]; then echo "끝내 실패: $f"; exit 1; fi
+          done
+          echo "=== 릴리스 자산 ==="
           gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"'
 
       # 일부 타깃이 실패해도 그때까지 만들어진 산출물은 받을 수 있게 always()
