@@ -195,6 +195,22 @@ function buildMenu() {
     {
       label: '보기',
       submenu: [
+        ...(isMac
+          ? [
+              // macOS 는 메뉴에 등록해 두어야 ⌘` 같은 키가 앱으로 확실히 들어온다
+              {
+                label: '파일 탐색기',
+                accelerator: 'Cmd+`',
+                click: () => mainWindow && mainWindow.webContents.send('menu:toggle-explorer')
+              },
+              {
+                label: '메모장',
+                accelerator: 'Cmd+Control+`',
+                click: () => mainWindow && mainWindow.webContents.send('menu:toggle-notes')
+              },
+              { type: 'separator' }
+            ]
+          : []),
         {
           label: '글자 크게',
           accelerator: 'CmdOrCtrl+Plus',

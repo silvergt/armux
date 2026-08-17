@@ -131,7 +131,9 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:help-tmux',
       'menu:help-shortcuts',
       'menu:about',
-      'menu:update'
+      'menu:update',
+      'menu:toggle-explorer',
+      'menu:toggle-notes'
     ];
     for (const ch of channels) {
       ipcRenderer.on(ch, (e, arg) => cb(ch.replace('menu:', ''), arg));

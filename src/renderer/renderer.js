@@ -95,7 +95,7 @@ const FONT_STACKS = {
 const FONT_STACK = FONT_STACKS[api.platform] || FONT_STACKS.linux;
 
 // 메인탭 전환 단축키 표시 (Ctrl+Alt+숫자)
-const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌘⌥' : 'Alt';
+const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌘⌃' : 'Alt';
 const isMacPlatform = api.platform === 'darwin';
 
 /** 이 이벤트가 "우리 단축키의 주 수정키"를 누른 상태인가 (mac ⌘ / 그 외 Ctrl) */
@@ -199,8 +199,7 @@ function createLeaf(tab, connect, options) {
     alert: false, // Claude Code 등이 사용자 응답을 기다리는 중인지
     tail: '', // 알림 감지를 위한 최근 출력 버퍼(ANSI 제거본)
     lastInputAt: 0, // 마지막으로 사용자가 키를 누른 시각
-    busy: false, // 명령이 돌아가는 중인지
-    spin: null, // 표시할 스피너 종류: null | 'busy' | 'claude'
+    spin: null, // 'busy' = Claude 가 생각하는 중
     wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지
     lastOutputAt: 0,
     mode: 'terminal', // 'terminal' | 'web'
@@ -208,12 +207,21 @@ function createLeaf(tab, connect, options) {
     connect
   };
 
-  // 페인 DOM + xterm 인스턴스
+  // 판 DOM: 얇은 헤더 한 줄 + 본문(터미널 또는 웹)
   const pane = document.createElement('div');
   pane.className = 'pane';
+
+  const header = document.createElement('div');
+  header.className = 'pane-header';
+  pane.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'pane-body';
+  pane.appendChild(body);
+
   const termHost = document.createElement('div');
   termHost.className = 'pane-term';
-  pane.appendChild(termHost);
+  body.appendChild(termHost);
 
   const term = new Terminal({
     fontFamily: FONT_STACK,
@@ -268,11 +276,6 @@ function createLeaf(tab, connect, options) {
   // 키 입력 → SSH 로 전달. 사용자가 직접 입력했다면 알림은 확인한 것으로 본다.
   term.onData((data) => {
     leaf.lastInputAt = Date.now();
-    if (data.includes('\r')) {
-      // 명령을 실행했다고 보고 스피너를 돌린다 (프롬프트가 돌아오면 멈춘다)
-      leaf.busy = true;
-      leaf.lastOutputAt = Date.now();
-    }
     clearAlert(leaf);
     if (leaf.sessionId && leaf.status === 'ready') {
       api.ssh.write(leaf.sessionId, data);
@@ -399,7 +402,7 @@ function setLeafMode(leaf, mode, url) {
         },
         onUrl: () => saveSession()
       });
-      leaf.el.appendChild(leaf.web.el);
+      leaf.el.querySelector('.pane-body').appendChild(leaf.web.el);
     } else if (url) {
       leaf.web.go(url);
     }
@@ -412,7 +415,7 @@ function setLeafMode(leaf, mode, url) {
   if (termHost) termHost.classList.toggle('hidden', leaf.mode === 'web');
   if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
 
-  renderPaneOverlay(leaf, true);
+  renderPaneHeader(leaf);
   render();
   if (leaf.mode === 'web') leaf.web.focus();
   else {
@@ -442,20 +445,13 @@ const ALERT_PATTERNS = [
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g;
 
 /*
- * 무엇이 돌아가는 중인지는 "지금 화면에 무엇이 떠 있는가" 로 판단한다.
- * (출력 스트림만 보고 추측하면, Claude 처럼 프롬프트를 감추는 화면에서 영원히 실행 중으로 남는다)
- *
- *   1) 화면에 "esc to interrupt" 가 있다        → Claude 가 생각하는 중  (✳ 스피너)
- *   2) Claude 화면은 떠 있지만 위 표시가 없다    → 입력 대기. 아무 표시도 하지 않는다
- *   3) 대체 화면 버퍼(vim·htop 등 전체화면 앱)   → 프로그램 실행 중       (원형 스피너)
- *   4) 평범한 셸에서 Enter 후 프롬프트가 아직    → 명령 실행 중           (원형 스피너)
- *      돌아오지 않았다
+ * 탭에 붙는 표시는 세 가지뿐이다.
+ *   1) Claude 가 생각하는 중            → 스피너   (화면에 "esc to interrupt" 가 보임)
+ *   2) Claude 가 생각을 끝낸 직후        → 초록 느낌표 (그 창을 보고 있지 않을 때)
+ *   3) 그 밖의 모든 경우                 → 연결 상태 점
+ * 일반 명령 실행이나 전체화면 앱은 따로 표시하지 않는다.
  */
-const PROMPT_RE = /[$#%>❯]\s*$/;
 const CLAUDE_WORK_RE = /esc to interrupt/i; // Claude 가 작업 중일 때만 화면에 있는 문구
-const CLAUDE_UI_RE = /esc to interrupt|\? for shortcuts|⏵⏵|╭─{3,}|╰─{3,}|bypass permissions/i;
-const PROMPT_IDLE_MS = 250; // 출력이 이만큼 멎고 프롬프트면 명령이 끝난 것으로 본다
-// tmux 상태줄 인식: 윈도우 목록("0:bash*") 이나 기본 status-right('"host" 18:43') 로 판단
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
 /** 마지막 비어 있지 않은 줄 */
@@ -573,56 +569,24 @@ function sendTmuxCommand(leaf, cmdline) {
   setTimeout(() => w('\r'), 240);
 }
 
-/** 모든 페인의 실행 상태를 다시 계산해 스피너 표시를 정한다 */
 let activityTick = 0;
 
+/** 모든 판을 살펴 Claude 작업 여부를 갱신한다 */
 function evaluateActivity() {
-  const now = Date.now();
   let changed = false;
   activityTick += 1;
   const curTab = activeTab();
-  // 화면에 보이는 탭은 매번, 나머지는 다섯 번에 한 번만 살펴본다(느려지지 않게)
+  // 보이는 탭은 매번, 나머지는 다섯 번에 한 번만 (느려지지 않게)
   const scanBackground = activityTick % 5 === 0;
 
   for (const g of state.groups) {
     for (const t of g.tabs) {
       if (t !== curTab && !scanBackground) continue;
       for (const leaf of leavesOf(t.root)) {
-        if (leaf.mode === 'web') {
-          if (leaf.spin || leaf.busy) {
-            leaf.spin = null;
-            leaf.busy = false;
-            changed = true;
-          }
-          continue; // 웹 화면에는 실행 표시가 없다
-        }
-        if (leaf.status !== 'ready') {
-          if (leaf.spin || leaf.busy) {
-            leaf.spin = null;
-            leaf.busy = false;
-            changed = true;
-          }
-          continue;
-        }
+        const thinking =
+          leaf.mode !== 'web' && leaf.status === 'ready' && CLAUDE_WORK_RE.test(readScreenTail(leaf));
 
-        const screen = readScreenTail(leaf);
-        const lastLine = lastNonEmptyLine(screen);
-        const thinking = CLAUDE_WORK_RE.test(screen); // Claude 작업 중
-        const claudeOpen = CLAUDE_UI_RE.test(screen); // Claude 화면이 떠 있음
-        const altScreen = leaf.term.buffer.active.type === 'alternate'; // vim/htop 등
-
-        // 셸 명령 실행 여부: 프롬프트가 돌아오면 끝난 것
-        if (claudeOpen || altScreen) {
-          leaf.busy = false; // 셸 프롬프트 개념이 없는 화면
-        } else if (leaf.busy && PROMPT_RE.test(lastLine) && now - leaf.lastOutputAt > PROMPT_IDLE_MS) {
-          leaf.busy = false;
-        }
-
-        let kind = null;
-        if (thinking) kind = 'claude';
-        else if (altScreen || leaf.busy) kind = 'busy';
-
-        // Claude 가 생각을 끝냈는데 그 창을 보고 있지 않다면 알림
+        // 생각을 끝냈는데 그 창을 보고 있지 않으면 알림
         if (leaf.wasThinking && !thinking) {
           const cur = activeLeaf();
           const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
@@ -630,6 +594,7 @@ function evaluateActivity() {
         }
         leaf.wasThinking = thinking;
 
+        const kind = thinking ? 'busy' : null;
         if (leaf.spin !== kind) {
           leaf.spin = kind;
           changed = true;
@@ -642,20 +607,9 @@ function evaluateActivity() {
 
 setInterval(evaluateActivity, 400);
 
-/** 탭 안에서 돌아가는 것이 있으면 그 종류를 알려준다 ('claude' 가 우선) */
-function tabSpin(tab) {
-  const kinds = leavesOf(tab.root).map((l) => l.spin);
-  if (kinds.includes('claude')) return 'claude';
-  if (kinds.includes('busy')) return 'busy';
-  return null;
-}
-
-const groupSpin = (group) => {
-  const kinds = group.tabs.map(tabSpin);
-  if (kinds.includes('claude')) return 'claude';
-  if (kinds.includes('busy')) return 'busy';
-  return null;
-};
+/** 탭 안에 Claude 가 작업 중인 판이 있는지 */
+const tabSpin = (tab) => (leavesOf(tab.root).some((l) => l.spin === 'busy') ? 'busy' : null);
+const groupSpin = (group) => (group.tabs.some((t) => tabSpin(t)) ? 'busy' : null);
 
 /* --------------------------------- 탭 / 그룹 --------------------------------- */
 
@@ -1240,11 +1194,11 @@ const APP_MENUS = [
   {
     label: '보기',
     items: [
-      ['파일 탐색기', 'Ctrl+`', () => {
+      ['파일 탐색기', isMacPlatform ? '⌘`' : 'Ctrl+`', () => {
         const g = activeGroup();
         if (g) toggleExplorerView(g);
       }],
-      ['메모장', 'Ctrl+Alt+`', () => toggleNotes()],
+      ['메모장', isMacPlatform ? '⌘⌃`' : 'Ctrl+Alt+`', () => toggleNotes()],
       ['-'],
       ['글자 크게', `${MOD}+ +`, () => setFontSize(state.fontSize + 1)],
       ['글자 작게', `${MOD}+ -`, () => setFontSize(state.fontSize - 1)],
@@ -1807,21 +1761,11 @@ function statusDot(status) {
   return dot;
 }
 
-/**
- * 실행 중 표시.
- *  - 'busy'   : 원형 스피너 (일반 명령이 돌아가는 중)
- *  - 'claude' : Claude 로고 모양(✳)이 도는 스피너
- */
-function spinner(kind) {
+/** Claude 가 생각하는 중임을 알리는 원형 스피너 */
+function spinner() {
   const el2 = document.createElement('span');
-  if (kind === 'claude') {
-    el2.className = 'spin-claude';
-    el2.textContent = '✳';
-    el2.title = 'Claude Code 작동 중';
-  } else {
-    el2.className = 'spin-busy';
-    el2.title = '명령 실행 중';
-  }
+  el2.className = 'spin-busy';
+  el2.title = 'Claude 가 생각하는 중';
   return el2;
 }
 
@@ -1831,7 +1775,7 @@ function spinner(kind) {
  */
 function statusMark(status, spin, alerted) {
   if (alerted) return alertBadge();
-  if (spin) return spinner(spin);
+  if (spin) return spinner();
   return statusDot(status);
 }
 
@@ -1859,7 +1803,7 @@ function renderTabstrip() {
     node.className = 'tab' + (active ? ' active' : '');
     node.title =
       `${group.host.name} — ${group.host.username}@${group.host.host}:${group.host.port}\n` +
-      `${gi < 9 ? `${api.platform === 'darwin' ? '⌘⌥' : 'Ctrl+Alt+'}${gi + 1} 로 이동 · ` : ''}끌어서 순서 변경 · 가운데 클릭: 닫기\n` +
+      `${gi < 9 ? `${api.platform === 'darwin' ? '⌘⌃' : 'Ctrl+Alt+'}${gi + 1} 로 이동 · ` : ''}끌어서 순서 변경 · 가운데 클릭: 닫기\n` +
       `탭 아래 + : 서브탭 추가 (Ctrl/⌘+T)`;
 
     const idx = document.createElement('span');
@@ -2053,83 +1997,170 @@ function renderPanes() {
         l.el.classList.toggle('focused', isActive);
         // 분할이 하나뿐이면 포커스 테두리를 굳이 그리지 않는다
         l.el.classList.toggle('solo', leavesOf(t.root).length === 1);
-        renderPaneOverlay(l);
+        renderPaneHeader(l);
       }
     }
   }
 }
 
-/** 페인 우상단의 도구 버튼 (두 줄) */
-function renderPaneOverlay(leaf, rebuild) {
-  let bar = leaf.el.querySelector('.pane-tools');
-  if (bar && rebuild) {
-    bar.remove();
-    bar = null;
+/**
+ * 판 위쪽 얇은 헤더 한 줄.
+ * 왼쪽은 잡아끌 수 있는 손잡이 + 이름, 오른쪽은 도구 버튼들.
+ * 헤더를 다른 판 위로 끌어다 놓으면 두 판의 자리가 바뀐다.
+ */
+function renderPaneHeader(leaf) {
+  const header = leaf.el.querySelector('.pane-header');
+  if (!header) return;
+  header.innerHTML = '';
+
+  /* --- 왼쪽: 손잡이 · 상태 · 이름 --- */
+  const grip = document.createElement('span');
+  grip.className = 'pane-grip';
+  grip.textContent = '⠿';
+  grip.title = '끌어서 다른 판과 자리 바꾸기';
+
+  const mark = statusMark(leaf.status, leaf.spin, leaf.alert);
+  mark.classList.add('pane-mark');
+
+  const title = document.createElement('span');
+  title.className = 'pane-title';
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  title.textContent =
+    leaf.mode === 'web'
+      ? (leaf.web && leaf.web.title) || '웹페이지'
+      : leaf.title || (group ? group.host.name : '');
+  title.title = title.textContent;
+
+  header.append(grip, mark, title);
+
+  /* --- 오른쪽: 도구 --- */
+  const tools = document.createElement('span');
+  tools.className = 'pane-tools';
+
+  const mk = (text, tip, fn, cls) => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.title = tip;
+    if (cls) b.className = cls;
+    b.addEventListener('mousedown', (e) => e.stopPropagation());
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      fn();
+    });
+    return b;
+  };
+
+  tools.append(
+    mk('⇱', '이 판을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
+    mk('⤒', '맨 위로 (tmux 안에서도 동작)', () => {
+      focusLeaf(leaf);
+      scrollPane(leaf, 'top');
+    }),
+    mk('⤓', '맨 아래로 (tmux 안에서도 동작)', () => {
+      focusLeaf(leaf);
+      scrollPane(leaf, 'bottom');
+    }),
+    mk('▯|▯', `좌우로 분할 (${isMacPlatform ? '⌘D' : 'Ctrl+Shift+D'})`, () => {
+      focusLeaf(leaf);
+      splitActive('row');
+    }),
+    mk('▤', `위아래로 분할 (${isMacPlatform ? '⌘⇧D' : 'Ctrl+Shift+E'})`, () => {
+      focusLeaf(leaf);
+      splitActive('col');
+    }),
+    mk(
+      leaf.mode === 'web' ? '⌨' : '🌐',
+      leaf.mode === 'web' ? '터미널로 전환 (SSH 세션은 그대로 유지됩니다)' : '이 판을 웹페이지로 전환',
+      () => setLeafMode(leaf, leaf.mode === 'web' ? 'terminal' : 'web')
+    ),
+    mk('✕', `이 판 닫기 (${isMacPlatform ? '⌘W' : 'Ctrl+W'})`, () => closeLeaf(leaf), 'danger')
+  );
+  header.appendChild(tools);
+
+  bindPaneDrag(leaf, header);
+}
+
+/* ------------------------------ 판 자리 바꾸기 ------------------------------ */
+
+/** 트리에서 노드의 부모와 위치를 찾는다 */
+function locateNode(node, target, parent = null, index = -1) {
+  if (node === target) return { parent, index };
+  if (node && node.kind === 'split') {
+    for (let i = 0; i < node.children.length; i++) {
+      const found = locateNode(node.children[i], target, node, i);
+      if (found) return found;
+    }
   }
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.className = 'pane-tools';
+  return null;
+}
 
-    const mk = (text, title, fn, cls) => {
-      const b = document.createElement('button');
-      b.textContent = text;
-      b.title = title;
-      if (cls) b.className = cls;
-      b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        fn();
-      });
-      return b;
-    };
+/** 같은 탭 안에서 두 판의 자리를 맞바꾼다 */
+function swapLeaves(a, b) {
+  if (!a || !b || a === b || a.tabId !== b.tabId) return;
+  const group = state.groups.find((g) => g.id === a.groupId);
+  const tab = group && group.tabs.find((t) => t.id === a.tabId);
+  if (!tab) return;
 
-    // 첫 줄: 새 탭으로 / 스크롤 / 분할 / 닫기
-    const row1 = document.createElement('div');
-    row1.className = 'pane-tools-row';
-    row1.append(
-      mk('⇱', '이 창을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
-      mk('⤒', '맨 위로 (tmux 안에서도 동작)', () => {
-        focusLeaf(leaf);
-        scrollPane(leaf, 'top');
-      }),
-      mk('⤓', '맨 아래로 (tmux 안에서도 동작)', () => {
-        focusLeaf(leaf);
-        scrollPane(leaf, 'bottom');
-      }),
-      mk('▯|▯', '좌우로 분할 (mac ⌘D / win Ctrl+Shift+D)', () => {
-        focusLeaf(leaf);
-        splitActive('row');
-      }),
-      mk('▤', '위아래로 분할 (mac ⌘⇧D / win Ctrl+Shift+E)', () => {
-        focusLeaf(leaf);
-        splitActive('col');
-      }),
-      mk('✕', '이 분할 창 닫기 (Ctrl/⌘+W)', () => closeLeaf(leaf))
+  const la = locateNode(tab.root, a);
+  const lb = locateNode(tab.root, b);
+  if (!la || !lb) return;
+
+  if (la.parent) la.parent.children[la.index] = b;
+  else tab.root = b;
+  if (lb.parent) lb.parent.children[lb.index] = a;
+  else tab.root = a;
+
+  layoutTab(tab);
+  render();
+  focusLeaf(a);
+  saveSession();
+}
+
+let draggingLeafId = null;
+
+/** 헤더를 끌어 다른 판과 자리를 바꾸는 동작 */
+function bindPaneDrag(leaf, header) {
+  header.draggable = true;
+
+  header.addEventListener('dragstart', (e) => {
+    draggingLeafId = leaf.id;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('armux/pane', leaf.id);
+    e.dataTransfer.setData('text/plain', leaf.id);
+    leaf.el.classList.add('pane-dragging');
+  });
+
+  header.addEventListener('dragend', () => {
+    draggingLeafId = null;
+    leaf.el.classList.remove('pane-dragging');
+    for (const el2 of document.querySelectorAll('.pane.drop-target')) el2.classList.remove('drop-target');
+  });
+
+  // 이 판 전체가 드롭 대상이 된다
+  const pane = leaf.el;
+  if (pane.dataset.dropBound) return;
+  pane.dataset.dropBound = '1';
+
+  pane.addEventListener('dragover', (e) => {
+    if (!draggingLeafId || draggingLeafId === leaf.id) return;
+    if (!e.dataTransfer.types.includes('armux/pane')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    pane.classList.add('drop-target');
+  });
+  pane.addEventListener('dragleave', () => pane.classList.remove('drop-target'));
+  pane.addEventListener('drop', (e) => {
+    if (!e.dataTransfer.types.includes('armux/pane')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pane.classList.remove('drop-target');
+    const srcId = e.dataTransfer.getData('armux/pane');
+    const tab = (state.groups.find((g) => g.id === leaf.groupId) || { tabs: [] }).tabs.find(
+      (t) => t.id === leaf.tabId
     );
-
-    // 둘째 줄: 터미널 ↔ 웹페이지 전환
-    const row2 = document.createElement('div');
-    row2.className = 'pane-tools-row';
-    row2.append(
-      mk(
-        leaf.mode === 'web' ? '⌨ 터미널로 전환' : '🌐 웹페이지로 전환',
-        leaf.mode === 'web' ? '이 판을 다시 터미널로 (SSH 세션은 그대로 살아 있습니다)' : '이 판에 웹 브라우저를 띄웁니다',
-        () => setLeafMode(leaf, leaf.mode === 'web' ? 'terminal' : 'web'),
-        'wide'
-      )
-    );
-
-    bar.append(row1, row2);
-    leaf.el.appendChild(bar);
-  }
-
-  const badge = leaf.el.querySelector('.pane-alert');
-  if (leaf.alert && !badge) {
-    const b = alertBadge();
-    b.classList.add('pane-alert');
-    leaf.el.appendChild(b);
-  } else if (!leaf.alert && badge) {
-    badge.remove();
-  }
+    const src = tab && findLeaf(tab.root, srcId);
+    if (src) swapLeaves(src, leaf);
+  });
 }
 
 function renderStatus() {
@@ -2437,6 +2468,15 @@ api.onMenu(async (cmd, arg) => {
     case 'font':
       setFontSize(arg === 0 ? 13 : state.fontSize + arg);
       break;
+    case 'toggle-explorer': {
+      if (state.notesOpen) closeNotes();
+      const grp = activeGroup();
+      if (grp) toggleExplorerView(grp);
+      break;
+    }
+    case 'toggle-notes':
+      toggleNotes();
+      break;
     case 'help-tmux':
       openHelp('tmux');
       break;
@@ -2472,14 +2512,16 @@ window.addEventListener(
       return;
     }
 
-    // ⌘/Ctrl + 숫자 = 서브탭, +Alt = 메인탭
+    // 서브탭: mac ⌘+숫자 / win Ctrl+숫자
+    // 메인탭: mac ⌘+Control+숫자 / win Ctrl+Alt+숫자
     if (hasMod(e) && !e.shiftKey) {
       const m = /^Digit([1-9])$/.exec(e.code);
-      if (m) {
+      if (m && !(isMacPlatform && e.altKey)) {
+        const toGroup = isMacPlatform ? e.ctrlKey : e.altKey; // mac ⌘⌃숫자 / win Ctrl+Alt+숫자
         e.preventDefault();
         e.stopPropagation();
         const n = Number(m[1]) - 1;
-        if (e.altKey) selectGroupByIndex(n);
+        if (toGroup) selectGroupByIndex(n);
         else selectTabByIndex(n);
         return;
       }
@@ -2510,11 +2552,13 @@ window.addEventListener(
       }
     }
 
-    // ⌘/Ctrl + ` : 파일 탐색기, +Alt : 메모장
+    // 파일 탐색기: mac ⌘+`  / win Ctrl+`
+    // 메모장:     mac ⌘+Control+` / win Ctrl+Alt+`
     if (hasMod(e) && e.code === 'Backquote') {
+      const toNotes = isMacPlatform ? e.ctrlKey : e.altKey;
       e.preventDefault();
       e.stopPropagation();
-      if (e.altKey) {
+      if (toNotes) {
         toggleNotes();
       } else {
         if (state.notesOpen) closeNotes();
@@ -2636,7 +2680,6 @@ async function openAbout() {
   document.getElementById('about-built').textContent = appInfo.builtAt
     ? new Date(appInfo.builtAt).toLocaleString('ko-KR', { dateStyle: 'long', timeStyle: 'short' })
     : '알 수 없음';
-  document.getElementById('about-engine').textContent = `Electron ${appInfo.electron} · Node ${appInfo.node}`;
   aboutBackdrop.classList.remove('hidden');
 }
 
