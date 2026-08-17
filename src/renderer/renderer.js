@@ -543,15 +543,16 @@ function closeGroup(group) {
   fitTab(activeTab());
 }
 
+/** 메인탭 닫기 — 항상 한 번 물어본다 */
 async function confirmCloseGroup(group) {
   const paneCount = group.tabs.reduce((n, t) => n + leavesOf(t.root).length, 0);
-  if (paneCount > 1) {
-    const ok = await api.util.confirm(
-      `"${group.host.name}" 탭을 닫을까요?`,
-      `서브탭 ${group.tabs.length}개 / 분할 창 ${paneCount}개가 함께 종료됩니다.`
-    );
-    if (!ok) return;
-  }
+  const ok = await api.util.confirm(
+    `"${group.host.name}" 탭을 닫을까요?`,
+    paneCount > 1
+      ? `서브탭 ${group.tabs.length}개 / 분할 창 ${paneCount}개가 함께 종료됩니다.`
+      : `${group.host.username}@${group.host.host}:${group.host.port} 연결이 종료됩니다.`
+  );
+  if (!ok) return;
   closeGroup(group);
 }
 
@@ -589,16 +590,23 @@ function splitActive(dir) {
   focusLeaf(newLeaf);
 }
 
-/** 페인 하나 닫기. 마지막 페인이면 탭을 닫는다. */
-function closeLeaf(leaf) {
+/** 페인 하나 닫기. 항상 확인하고, 마지막 페인이면 탭 자체를 닫는다. */
+async function closeLeaf(leaf) {
   const group = state.groups.find((g) => g.id === leaf.groupId);
   const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
   if (!tab) return;
 
   if (leavesOf(tab.root).length === 1) {
-    confirmCloseTab(group, tab); // 마지막 창이면 탭이 닫히므로 한 번 물어본다
+    confirmCloseTab(group, tab); // 마지막 창이면 탭이 닫히므로 탭 기준으로 물어본다
     return;
   }
+
+  const ok = await api.util.confirm(
+    '이 분할 창을 닫을까요?',
+    `${group.host.username}@${group.host.host} · 이 창의 셸 세션이 종료됩니다.`
+  );
+  if (!ok) return;
+
   detachLeaf(tab, leaf);
   disposeLeaf(leaf);
   const next = firstLeaf(tab.root);

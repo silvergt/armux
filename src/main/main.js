@@ -10,6 +10,29 @@ const claudeinfo = require('./claudeinfo');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
+let allowClose = false; // 종료 확인을 이미 받았는지
+let exitAsking = false; // 확인 창이 이미 떠 있는지
+
+/** 종료 전 확인. 열린 세션이 없으면 묻지 않는다. */
+async function confirmExit() {
+  if (exitAsking) return false;
+  const n = ssh.count();
+  if (n === 0) return true;
+  exitAsking = true;
+  try {
+    const res = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['취소', '닫기'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'Armux Terminal 을 닫을까요?',
+      detail: `열려 있는 SSH 세션 ${n}개가 모두 종료됩니다.`
+    });
+    return res.response === 1;
+  } finally {
+    exitAsking = false;
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -35,6 +58,17 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  // 열려 있는 세션이 있으면 창을 닫기 전에 한 번 물어본다
+  mainWindow.on('close', (e) => {
+    if (allowClose || ssh.count() === 0) return;
+    e.preventDefault();
+    confirmExit().then((ok) => {
+      if (!ok || !mainWindow) return;
+      allowClose = true;
+      mainWindow.close();
+    });
   });
 
   // 터미널 안의 링크는 외부 브라우저로
@@ -391,7 +425,18 @@ app.on('window-all-closed', () => {
   if (!isMac) app.quit();
 });
 
-app.on('before-quit', () => {
+// ⌘Q / 메뉴 종료도 같은 확인을 거친다
+app.on('before-quit', (e) => {
+  if (allowClose || ssh.count() === 0) return;
+  e.preventDefault();
+  confirmExit().then((ok) => {
+    if (!ok) return;
+    allowClose = true;
+    app.quit();
+  });
+});
+
+app.on('will-quit', () => {
   ssh.closeAll();
   sftp.closeAll();
   ephemeralCreds.clear();

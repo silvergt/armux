@@ -158,8 +158,13 @@ function close(sessionId) {
   sessions.delete(sessionId);
 }
 
+/** 현재 열려 있는 터미널 세션 수 */
+function count() {
+  return sessions.size;
+}
+
 function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
-module.exports = { open, exec, write, resize, close, closeAll };
+module.exports = { open, exec, write, resize, close, closeAll, count };
