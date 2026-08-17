@@ -61,29 +61,61 @@ npm run dev      # 개발자도구를 띄운 채 실행
 npm run vendor   # xterm 버전을 올린 뒤 src/renderer/vendor 갱신
 ```
 
-## 배포 빌드
+## 설치본 만들기 (클론 받은 뒤)
 
-```bash
-npm run dist:win      # → 설치본 exe + 포터블 exe + zip (윈도우 또는 wine 필요)
-npm run dist:win-zip  # → zip 만. wine 없이 mac/Linux 에서도 바로 됨
-npm run dist:mac      # → dmg (x64 / arm64). macOS 에서만 가능
+**공통 준비물은 [Node.js LTS](https://nodejs.org) 하나뿐이다.** Visual Studio, Xcode 같은 빌드 도구는 필요 없다.
+
+### 윈도우
+
+```
+git clone https://github.com/silvergt/armux.git
+cd armux
+build-windows.bat        ← 탐색기에서 더블클릭해도 됨
 ```
 
-아이콘은 `build/icon.ico`(win) / `build/icon.png`(mac) 이며 `python3 scripts/make-icon.py` 로 다시 만들 수 있다.
+`npm install` → `npm run dist:win` 을 대신 해 주고, 끝나면 `dist` 폴더를 열어 준다. 결과물:
 
-### 윈도우 배포본 만드는 3가지 방법
+| 파일 | 용도 |
+| --- | --- |
+| `dist\Armux Terminal Setup 0.1.0.exe` | **설치본.** 더블클릭 → 설치 경로 선택 → 시작 메뉴/바탕화면 아이콘 생성 (관리자 권한 불필요) |
+| `dist\Armux Terminal 0.1.0.exe` | 포터블. 설치 없이 실행 |
+| `dist\Armux Terminal-0.1.0-win.zip` | 압축본. 풀고 `Armux Terminal.exe` 실행 |
 
-**① 윈도우 PC에서 직접 (가장 단순)**
+직접 명령으로 하려면 `npm install` 다음 `npm run dist:win`.
 
-1. [nodejs.org](https://nodejs.org) 에서 Node.js LTS 설치
-2. 프로젝트 폴더를 윈도우로 복사 (`node_modules`, `dist` 는 빼고)
-3. ```
-   npm install
-   npm run dist:win
-   ```
-4. `dist\` 에 설치본 exe 와 포터블 exe 가 생긴다.
+### macOS
 
-**② mac / Linux 에서 크로스 빌드**
+```bash
+git clone https://github.com/silvergt/armux.git
+cd armux
+./build-mac.command      # Finder 에서 더블클릭해도 됨
+```
+
+`dist/Armux Terminal-0.1.0.dmg`(인텔) / `dist/Armux Terminal-0.1.0-arm64.dmg`(애플 실리콘) 이 생긴다.
+dmg 를 열어 앱을 **Applications** 로 드래그하면 설치 끝.
+
+서명하지 않은 앱이라 처음 열 때 "확인되지 않은 개발자" 경고가 뜬다. 둘 중 하나로 해제한다:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Armux Terminal.app"
+```
+
+또는 앱을 우클릭 → 열기, 혹은 시스템 설정 > 개인정보 보호 및 보안 > "확인 없이 열기".
+
+> 윈도우 설치본은 윈도우에서, mac dmg 는 mac 에서 만들어야 한다(서로 크로스 빌드하려면 아래 참고).
+
+### 그 밖의 빌드 명령
+
+```bash
+npm start             # 빌드 없이 바로 실행 (개발용)
+npm run dist:win      # 설치본 exe + 포터블 exe + zip
+npm run dist:win-zip  # zip 만. wine 없이 mac/Linux 에서도 됨
+npm run dist:mac      # dmg (x64 / arm64). macOS 에서만
+```
+
+아이콘은 `build/icon.ico`(win) / `icon.icns`(mac) / `icon.png` 이며 `python3 scripts/make-icon.py` 로 다시 만든다.
+
+### 다른 OS 에서 윈도우 설치본을 만들어야 한다면
 
 - **zip 배포본은 wine 없이 바로 된다.**
 
@@ -110,28 +142,39 @@ npm run dist:mac      # → dmg (x64 / arm64). macOS 에서만 가능
 
   > electron-builder 의 `build.toolsets.wine` 번들 wine 은 32비트 PE 모듈이 없어 NSIS 단계에서 실패한다. 시스템 wine(32비트 포함)을 쓰는 편이 확실하다.
 
-**③ GitHub Actions 로 자동 빌드**
+### GitHub Actions 로 윈도우/맥 설치본 자동 빌드
 
-`.github/workflows/build.yml`:
+로컬에 윈도우도 맥도 없다면 이 방법이 제일 편하다. `.github/workflows/build.yml` 을 만들고 태그를 푸시하면
+Actions 탭에서 두 OS 의 설치본을 내려받을 수 있다.
 
 ```yaml
 name: build
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:        # 탭에서 수동 실행도 가능
 jobs:
-  windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+          - os: macos-latest
+            script: dist:mac
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm ci
-      - run: npm run dist:win
+      - run: npm run ${{ matrix.script }}
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
-          path: dist/*.exe
+          name: ${{ matrix.os }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
 ```
 
 ### 아키텍처 / 설치 형태
@@ -167,11 +210,14 @@ src/
     styles.css  # 다크 테마 UI
     vendor/     # xterm.js 배포 파일 (npm run vendor 로 갱신)
 scripts/
-  sync-vendor.js  # xterm 배포 파일 복사
-  make-icon.py    # build/icon.png, build/icon.ico 생성
+  sync-vendor.js      # xterm 배포 파일 복사
+  make-icon.py        # build/ 아이콘 3종 생성
 build/
-  icon.png        # mac/linux 아이콘 원본 (1024px)
-  icon.ico        # windows 아이콘 (멀티 사이즈)
+  icon.png            # 원본 (1024px)
+  icon.ico            # windows
+  icon.icns           # macOS
+build-windows.bat     # 윈도우: 더블클릭하면 설치본 빌드
+build-mac.command     # macOS: 더블클릭하면 dmg 빌드
 ```
 
 보안 설정: `contextIsolation: true`, `nodeIntegration: false`, 렌더러에는 CSP 적용. SSH 자격증명은 메인 프로세스 밖으로 나가지 않는다.

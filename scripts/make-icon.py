@@ -38,5 +38,37 @@ img.save(png_path)
 ico_path = os.path.join(out_dir, 'icon.ico')
 img.save(ico_path, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 
+
+def write_icns(image, path):
+    """macOS용 icns 생성. PNG 를 담는 최신 icns 타입만 사용한다.
+
+    (mac 이 아닌 곳에서도 만들 수 있도록 iconutil 없이 직접 컨테이너를 쓴다)
+    """
+    import struct
+    from io import BytesIO
+
+    # (OSType, 픽셀 크기)
+    entries = [
+        (b'icp4', 16), (b'icp5', 32), (b'icp6', 64),
+        (b'ic07', 128), (b'ic08', 256), (b'ic09', 512),
+        (b'ic10', 1024),                    # 512@2x
+        (b'ic11', 32), (b'ic12', 64),       # 16@2x, 32@2x
+        (b'ic13', 256), (b'ic14', 512),     # 128@2x, 256@2x
+    ]
+    chunks = []
+    for ostype, size in entries:
+        buf = BytesIO()
+        image.resize((size, size), Image.LANCZOS).save(buf, format='PNG')
+        data = buf.getvalue()
+        chunks.append(ostype + struct.pack('>I', len(data) + 8) + data)
+    body = b''.join(chunks)
+    with open(path, 'wb') as f:
+        f.write(b'icns' + struct.pack('>I', len(body) + 8) + body)
+
+
+icns_path = os.path.join(out_dir, 'icon.icns')
+write_icns(img, icns_path)
+
 print('wrote', png_path)
 print('wrote', ico_path)
+print('wrote', icns_path)

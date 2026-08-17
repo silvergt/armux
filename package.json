@@ -28,16 +28,19 @@
   "build": {
     "appId": "com.armux.terminal",
     "productName": "Armux Terminal",
+    "npmRebuild": false,
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "!**/node_modules/cpu-features/**",
+      "!**/node_modules/buildcheck/**"
     ],
     "asarUnpack": [
-      "**/node_modules/cpu-features/**",
       "**/*.node"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "identity": null,
       "target": [
         {
           "target": "dmg",
