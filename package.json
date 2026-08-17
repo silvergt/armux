@@ -46,7 +46,7 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "identity": null,
+      "identity": "-",
       "target": [
         {
           "target": "zip",
@@ -63,7 +63,8 @@
           ]
         }
       ],
-      "artifactName": "Armux-Terminal-${version}-mac-${arch}.${ext}"
+      "artifactName": "Armux-Terminal-${version}-mac-${arch}.${ext}",
+      "hardenedRuntime": false
     },
     "dmg": {
       "sign": false
