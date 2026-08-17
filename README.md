@@ -218,16 +218,29 @@ cd armux
 ./build-mac.command      # Finder 에서 더블클릭해도 됨
 ```
 
-`dist/Armux Terminal-0.1.0.dmg`(인텔) / `dist/Armux Terminal-0.1.0-arm64.dmg`(애플 실리콘) 이 생긴다.
-dmg 를 열어 앱을 **Applications** 로 드래그하면 설치 끝.
+또는 릴리스에서 dmg 를 받는다 — Apple Silicon 은 `-mac-arm64.dmg`, 인텔은 `-mac-x64.dmg`.
+dmg 를 열어 앱을 **Applications** 로 드래그하면 설치 끝이다.
 
-서명하지 않은 앱이라 처음 열 때 "확인되지 않은 개발자" 경고가 뜬다. 둘 중 하나로 해제한다:
+#### 처음 실행할 때 뜨는 경고 (중요)
+
+이 앱은 **ad-hoc 서명만 되어 있고 Apple 공증(notarization)은 받지 않았다.** 그래서 처음 열 때 막힌다.
+증상별로 이렇게 푼다.
+
+| 메시지 | 해결 |
+| --- | --- |
+| `Apple cannot check it for malicious software` | 아래 명령 한 줄, 또는 시스템 설정 > 개인정보 보호 및 보안 > 맨 아래 **"확인 없이 열기"** |
+| `is damaged and can't be opened` | 서명이 없는 예전 빌드다. 0.9.3 이상을 받을 것 |
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Armux Terminal.app"
 ```
 
-또는 앱을 우클릭 → 열기, 혹은 시스템 설정 > 개인정보 보호 및 보안 > "확인 없이 열기".
+이 명령은 "인터넷에서 받은 파일" 표시(quarantine)를 지우는 것이라, 실행하면 그다음부터 경고 없이 열린다.
+macOS 15(Sequoia)부터는 우클릭 → 열기 우회가 없어졌으므로, 위 명령이나 시스템 설정 쪽을 써야 한다.
+
+> 경고를 아예 없애고 **맥에서도 앱 내 자동 업데이트**를 쓰려면 Apple Developer Program(연 $99)의
+> Developer ID 인증서로 서명 + 공증이 필요하다. 인증서가 준비되면 CI 에 `CSC_LINK`/`CSC_KEY_PASSWORD`,
+> `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID` 를 넣고 `mac.notarize` 를 켜면 된다.
 
 > 윈도우 설치본은 윈도우에서, mac dmg 는 mac 에서 만들어야 한다(서로 크로스 빌드하려면 아래 참고).
 
