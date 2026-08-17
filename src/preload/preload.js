@@ -41,6 +41,11 @@ contextBridge.exposeInMainWorld('armux', {
     onProgress: (cb) => ipcRenderer.on('sftp:progress', (e, p) => cb(p))
   },
 
+  /** 원격 서버의 Claude Code 로그인/사용량 정보 */
+  claude: {
+    info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId })
+  },
+
   util: {
     pickKeyFile: () => ipcRenderer.invoke('util:pickKeyFile'),
     clipboardRead: () => ipcRenderer.invoke('util:clipboardRead'),

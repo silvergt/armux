@@ -36,11 +36,15 @@ const el = {
   tabstrip: document.getElementById('tabstrip'),
   substrip: document.getElementById('substrip'),
   terms: document.getElementById('terms'),
+  stage: document.getElementById('stage'),
+  dock: document.getElementById('dock'),
+  dockDivider: document.getElementById('dock-divider'),
   emptyState: document.getElementById('empty-state'),
   newGroupBtn: document.getElementById('new-group-btn'),
   helpBtn: document.getElementById('help-btn'),
   helpMenu: document.getElementById('help-menu'),
   statusLeft: document.getElementById('status-left'),
+  statusClaude: document.getElementById('status-claude'),
   statusRight: document.getElementById('status-right'),
   findbar: document.getElementById('findbar'),
   findInput: document.getElementById('find-input')
@@ -177,6 +181,7 @@ function createLeaf(tab, connect) {
     title: '',
     alert: false, // Claude Code 등이 사용자 응답을 기다리는 중인지
     tail: '', // 알림 감지를 위한 최근 출력 버퍼(ANSI 제거본)
+    lastInputAt: 0, // 마지막으로 사용자가 키를 누른 시각
     connect
   };
 
@@ -223,6 +228,7 @@ function createLeaf(tab, connect) {
 
   // 키 입력 → SSH 로 전달. 사용자가 직접 입력했다면 알림은 확인한 것으로 본다.
   term.onData((data) => {
+    leaf.lastInputAt = Date.now();
     clearAlert(leaf);
     if (leaf.sessionId && leaf.status === 'ready') {
       api.ssh.write(leaf.sessionId, data);
@@ -238,8 +244,11 @@ function createLeaf(tab, connect) {
     scheduleRender();
   });
 
-  // 터미널 벨(^G) → 사용자 주의가 필요하다는 표준 신호
-  term.onBell(() => raiseAlert(leaf));
+  // 터미널 벨(^G) → 사용자 주의가 필요하다는 표준 신호.
+  // 단, 방금 키를 누른 직후의 벨은 셸(readline)의 경고음이므로 알림으로 치지 않는다.
+  term.onBell(() => {
+    if (Date.now() - leaf.lastInputAt > 3000) raiseAlert(leaf);
+  });
 
   // 드래그 선택 시 자동 복사
   term.onSelectionChange(() => {
@@ -334,7 +343,7 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
 /** 출력 스트림을 훑어 "사용자 응답 대기" 상태를 감지한다 */
 function feedAlertDetector(leaf, text) {
   if (text.includes('\x07')) {
-    raiseAlert(leaf); // 터미널 벨은 그 자체로 주의 신호
+    if (Date.now() - leaf.lastInputAt > 3000) raiseAlert(leaf);
     return;
   }
   const plain = text.replace(ANSI_RE, '');
@@ -380,8 +389,8 @@ const groupHasAlert = (group) => group.tabs.some(tabHasAlert);
 
 /* --------------------------------- 탭 / 그룹 --------------------------------- */
 
-/** 서브탭(가로 줄) 하나를 만든다. 안에 페인 1개로 시작. */
-function createTab(group, connect) {
+/** 빈 서브탭 껍데기(컨테이너)를 만든다. 내용(페인)은 호출한 쪽에서 채운다. */
+function makeTabShell(group, insertAfterIndex) {
   const tab = {
     id: nextId('t'),
     groupId: group.id,
@@ -389,8 +398,7 @@ function createTab(group, connect) {
     activeLeafId: null,
     container: null,
     panesWrap: null,
-    explorer: null,
-    showExplorer: false
+    customTitle: null // 사용자가 지정한 서브탭 이름
   };
 
   const container = document.createElement('div');
@@ -398,16 +406,21 @@ function createTab(group, connect) {
   const panesWrap = document.createElement('div');
   panesWrap.className = 'panes-wrap';
   container.appendChild(panesWrap);
-  el.terms.appendChild(container);
+  el.stage.appendChild(container);
   tab.container = container;
   tab.panesWrap = panesWrap;
-  tab.explorer = null; // 파일 탐색기(SFTP) 인스턴스. 폴더 버튼을 처음 누를 때 만든다
-  tab.showExplorer = false;
 
-  group.tabs.push(tab);
+  if (insertAfterIndex === undefined || insertAfterIndex < 0) group.tabs.push(tab);
+  else group.tabs.splice(insertAfterIndex + 1, 0, tab);
   group.activeTabId = tab.id;
+  group.explorerSelected = false;
   state.activeGroupId = group.id;
+  return tab;
+}
 
+/** 서브탭(가로 줄) 하나를 만든다. 안에 새 세션 페인 1개로 시작. */
+function createTab(group, connect) {
+  const tab = makeTabShell(group);
   const leaf = createLeaf(tab, connect);
   tab.root = leaf;
   tab.activeLeafId = leaf.id;
@@ -416,6 +429,35 @@ function createTab(group, connect) {
   render();
   focusLeaf(leaf);
   return tab;
+}
+
+/**
+ * 분할 창(페인) 하나를 떼어내 새 서브탭으로 옮긴다.
+ * 세션은 그대로 살아 있고 화면 위치만 바뀐다.
+ */
+function popOutLeaf(leaf) {
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  if (!group || !tab) return;
+  if (leavesOf(tab.root).length === 1) {
+    el.statusLeft.textContent = '이미 이 서브탭에 하나뿐인 창입니다.';
+    return;
+  }
+
+  detachLeaf(tab, leaf);
+  const rest = firstLeaf(tab.root);
+  tab.activeLeafId = rest ? rest.id : null;
+  layoutTab(tab);
+
+  const newTab = makeTabShell(group, group.tabs.indexOf(tab));
+  leaf.tabId = newTab.id;
+  newTab.root = leaf;
+  newTab.activeLeafId = leaf.id;
+  newTab.panesWrap.appendChild(leaf.el); // 터미널을 새 탭 컨테이너로 옮긴다
+  layoutTab(newTab);
+
+  render();
+  focusLeaf(leaf);
 }
 
 /** 새 메인탭(그룹)을 만들고 첫 세션을 연다 */
@@ -432,7 +474,10 @@ function createGroup(hostInfo, connect) {
     credId: null,
     connect: null,
     tabs: [],
-    activeTabId: null
+    activeTabId: null,
+    explorer: null, // SFTP 탐색기 인스턴스 (그룹=호스트 당 하나)
+    explorerPinned: loadPinPref(), // true 면 왼쪽에 고정 패널로 항상 표시
+    explorerSelected: false // 고정하지 않았을 때, 탐색기 탭이 선택된 상태인지
   };
   state.groups.push(group);
   state.activeGroupId = group.id;
@@ -463,7 +508,6 @@ async function confirmCloseTab(group, tab) {
 
 function closeTab(group, tab) {
   for (const l of leavesOf(tab.root)) disposeLeaf(l);
-  if (tab.explorer) tab.explorer.dispose();
   tab.container.remove();
 
   const idx = group.tabs.indexOf(tab);
@@ -484,6 +528,10 @@ function closeGroup(group) {
   for (const t of [...group.tabs]) {
     for (const l of leavesOf(t.root)) disposeLeaf(l);
     t.container.remove();
+  }
+  if (group.explorer) {
+    group.explorer.dispose();
+    group.explorer = null;
   }
   const idx = state.groups.indexOf(group);
   state.groups.splice(idx, 1);
@@ -619,50 +667,107 @@ function layoutTab(tab) {
   requestAnimationFrame(() => fitTab(tab));
 }
 
-/* ------------------------------ 파일 탐색기 전환 ------------------------------ */
+/* ------------------------------- 파일 탐색기 탭 ------------------------------- */
 
-/** 서브탭 왼쪽 폴더 버튼: 터미널 ↔ 파일 탐색기 전환 */
-function toggleExplorer(tab) {
-  if (!tab) return;
-  const group = state.groups.find((g) => g.id === tab.groupId);
-  if (!group) return;
-
-  if (!tab.explorer) {
-    const connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
-    if (!connect.hostId && !connect.credId) {
-      el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
-      return;
-    }
-    tab.explorer = window.Explorer.create({ connect, hostLabel: group.host.name });
-    tab.container.appendChild(tab.explorer.el);
-  }
-  tab.showExplorer = !tab.showExplorer;
-  applyTabView(tab);
-  render();
-}
-
-/**
- * 터미널/탐색기 중 무엇을 보여줄지 반영.
- * 상태가 실제로 바뀐 경우에만 크기 재계산/포커스를 건드린다(렌더가 자주 돌기 때문).
+/*
+ * 탐색기는 "그룹(호스트)마다 하나 있는 특별한 서브탭" 이다.
+ *   - 고정 안 함: 서브탭바의 📁 탭을 고르면 터미널 대신 탐색기가 보인다.
+ *   - 왼쪽 고정: 창 왼쪽에 패널로 붙어 터미널과 나란히 항상 보인다.
  */
-function applyTabView(tab, force) {
-  if (!tab) return;
-  const key = `${tab.showExplorer ? 'ex' : 'term'}`;
-  if (!force && tab._viewKey === key) return;
-  tab._viewKey = key;
 
-  tab.panesWrap.classList.toggle('hidden', tab.showExplorer);
-  if (tab.explorer) tab.explorer.el.classList.toggle('hidden', !tab.showExplorer);
+const PIN_KEY = 'explorerPinned';
+const DOCK_KEY = 'explorerDockWidth';
+const loadPinPref = () => localStorage.getItem(PIN_KEY) === '1';
+let dockWidth = Number(localStorage.getItem(DOCK_KEY)) || 320;
 
-  const isActive = activeTab() === tab;
-  if (tab.showExplorer) {
-    if (isActive && tab.explorer) tab.explorer.focus();
-  } else if (isActive) {
-    fitTab(tab);
-    const l = activeLeaf();
-    if (l && l.tabId === tab.id) l.term.focus();
+/** 그룹의 탐색기 인스턴스를 준비한다 (접속 정보가 있어야 만들 수 있다) */
+function ensureExplorer(group) {
+  if (group.explorer) return group.explorer;
+  const connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
+  if (!connect.hostId && !connect.credId) {
+    el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
+    return null;
   }
+  group.explorer = window.Explorer.create({ connect, hostLabel: group.host.name });
+  return group.explorer;
 }
+
+/** 📁 탭 선택 (고정 상태면 왼쪽 패널에 포커스만 준다) */
+function selectExplorer(group) {
+  if (!ensureExplorer(group)) return;
+  state.activeGroupId = group.id;
+  if (!group.explorerPinned) group.explorerSelected = true;
+  render();
+  group.explorer.focus();
+}
+
+/** 왼쪽 고정 ↔ 해제 */
+function toggleExplorerPin(group) {
+  if (!ensureExplorer(group)) return;
+  group.explorerPinned = !group.explorerPinned;
+  localStorage.setItem(PIN_KEY, group.explorerPinned ? '1' : '0');
+  // 고정하면 전체화면 탐색기 상태는 해제한다(왼쪽에 항상 보이므로)
+  if (group.explorerPinned) group.explorerSelected = false;
+  render();
+  fitTab(activeTab());
+}
+
+/** Ctrl+` : 탐색기 켜고 끄기 (왼쪽에 고정한 경우엔 탐색기 ↔ 터미널 포커스 전환) */
+function toggleExplorerView(group) {
+  if (group.explorerPinned) {
+    if (!group.explorer) return;
+    const l = activeLeaf();
+    const focusedInDock = document.activeElement && el.dock.contains(document.activeElement);
+    if (focusedInDock && l) l.term.focus();
+    else group.explorer.focus();
+    return;
+  }
+  if (group.explorerSelected) leaveExplorer(group);
+  else selectExplorer(group);
+}
+
+/** 터미널 탭으로 돌아가기 */
+function leaveExplorer(group) {
+  group.explorerSelected = false;
+  render();
+  const l = activeLeaf();
+  if (l) l.term.focus();
+}
+
+/** 왼쪽 고정 패널(dock) 표시 갱신 */
+function renderDock() {
+  const group = activeGroup();
+  const pinned = Boolean(group && group.explorerPinned && group.explorer);
+
+  el.dock.classList.toggle('hidden', !pinned);
+  el.dockDivider.classList.toggle('hidden', !pinned);
+  if (!pinned) return;
+
+  el.dock.style.width = `${dockWidth}px`;
+  if (group.explorer.el.parentElement !== el.dock) el.dock.appendChild(group.explorer.el);
+  group.explorer.el.classList.remove('hidden');
+}
+
+// 고정 패널 폭 조절
+el.dockDivider.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = dockWidth;
+  document.body.classList.add('resizing-col');
+  const onMove = (ev) => {
+    dockWidth = Math.max(200, Math.min(window.innerWidth - 320, startW + (ev.clientX - startX)));
+    el.dock.style.width = `${dockWidth}px`;
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.classList.remove('resizing-col');
+    localStorage.setItem(DOCK_KEY, String(dockWidth));
+    fitTab(activeTab());
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
 
 function buildNode(tab, node) {
   if (node.kind === 'leaf') return node.el;
@@ -724,6 +829,7 @@ function selectGroup(groupId) {
 
 function selectTab(group, tabId) {
   group.activeTabId = tabId;
+  group.explorerSelected = false; // 터미널 탭을 골랐으므로 전체화면 탐색기는 해제
   state.activeGroupId = group.id;
   const t = activeTab();
   if (t) clearAlertsInTab(t);
@@ -736,7 +842,9 @@ function selectTab(group, tabId) {
 /** Ctrl+Shift+숫자 : n번째 메인탭 */
 function selectGroupByIndex(i) {
   const g = state.groups[i];
-  if (g) selectGroup(g.id);
+  if (!g) return;
+  g.explorerSelected = false; // 탭 이동 단축키를 쓰면 폴더뷰는 닫고 터미널로
+  selectGroup(g.id);
 }
 
 /** Ctrl+숫자 : 현재 그룹의 n번째 서브탭 */
@@ -744,7 +852,175 @@ function selectTabByIndex(i) {
   const g = activeGroup();
   if (!g) return;
   const t = g.tabs[i];
-  if (t) selectTab(g, t.id);
+  if (!t) return;
+  g.explorerSelected = false;
+  selectTab(g, t.id);
+}
+
+/* --------------------------- Claude 계정 / 사용량 표시 --------------------------- */
+
+/*
+ * 접속한 서버에 Claude Code 가 로그인되어 있으면 하단바에 계정과 사용량을 보여준다.
+ * 조회는 그 서버에서 실행되고(토큰은 서버 밖으로 나가지 않는다) 결과만 받아온다.
+ */
+
+const CLAUDE_POLL_MS = 90000; // 1분 30초마다 갱신
+let claudePollTimer = null;
+
+/** 그룹의 살아 있는 세션 하나를 고른다 (조회용 exec 채널을 열 연결) */
+function anyReadySession(group) {
+  for (const t of group.tabs) {
+    for (const l of leavesOf(t.root)) {
+      if (l.sessionId && l.status === 'ready') return l.sessionId;
+    }
+  }
+  return null;
+}
+
+async function refreshClaudeInfo(group, force) {
+  if (!group) return;
+  const sessionId = anyReadySession(group);
+  if (!sessionId) return;
+  if (!force && group.claudeFetchedAt && Date.now() - group.claudeFetchedAt < CLAUDE_POLL_MS) return;
+  if (group.claudeFetching) return;
+
+  group.claudeFetching = true;
+  try {
+    const info = await api.claude.info(sessionId);
+    group.claudeInfo = info;
+    group.claudeFetchedAt = Date.now();
+    if (activeGroup() === group) renderClaudeStatus();
+  } catch (e) {
+    group.claudeInfo = { loggedIn: false };
+  } finally {
+    group.claudeFetching = false;
+  }
+}
+
+/** 0~100% 짜리 작은 막대 */
+function usageBar(label, bucket) {
+  const wrap = document.createElement('span');
+  wrap.className = 'usage';
+
+  const name = document.createElement('span');
+  name.className = 'usage-label';
+  name.textContent = label;
+
+  const track = document.createElement('span');
+  track.className = 'usage-track';
+  const fill = document.createElement('span');
+  fill.className = 'usage-fill';
+  const pct = bucket ? bucket.pct : 0;
+  fill.style.width = `${pct}%`;
+  if (pct >= 90) fill.classList.add('danger');
+  else if (pct >= 70) fill.classList.add('warn');
+  track.appendChild(fill);
+
+  const num = document.createElement('span');
+  num.className = 'usage-pct';
+  num.textContent = bucket ? `${pct}%` : '—';
+
+  if (bucket && bucket.resetsAt) {
+    const d = new Date(bucket.resetsAt);
+    const p = (x) => String(x).padStart(2, '0');
+    wrap.title = `${label} 사용량 ${pct}% · ${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())} 에 초기화`;
+  }
+
+  wrap.append(name, track, num);
+  return wrap;
+}
+
+function renderClaudeStatus() {
+  const group = activeGroup();
+  const info = group && group.claudeInfo;
+  const box = el.statusClaude;
+
+  if (!info || !info.loggedIn) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+
+  box.classList.remove('hidden');
+  box.innerHTML = '';
+
+  const who = document.createElement('span');
+  who.className = 'claude-who';
+  who.textContent = `✳ ${info.email || info.name || 'Claude'}${info.plan ? ` (${info.plan})` : ''}`;
+  who.title = '이 서버에 로그인된 Claude Code 계정';
+  box.appendChild(who);
+
+  if (info.session || info.week) {
+    box.appendChild(usageBar('세션', info.session));
+    box.appendChild(usageBar('주간', info.week));
+  } else {
+    const note = document.createElement('span');
+    note.className = 'usage-label';
+    note.textContent = '사용량 조회 불가';
+    box.appendChild(note);
+  }
+}
+
+/* ------------------------------ 탭 드래그 정렬 ------------------------------- */
+
+/**
+ * 탭을 끌어서 순서를 바꾼다. 메인탭 스트립과 서브탭 스트립이 같은 로직을 쓴다.
+ * @param {HTMLElement} node  탭 DOM
+ * @param {Array}  arr        순서를 바꿀 배열 (state.groups 또는 group.tabs)
+ * @param {number} index      이 탭의 현재 위치
+ * @param {string} kind       'group' | 'tab' — 다른 스트립으로는 못 끌게 구분용
+ * @param {Function} after    정렬이 끝난 뒤 호출
+ */
+function makeReorderable(node, arr, index, kind, after) {
+  node.draggable = true;
+
+  node.addEventListener('dragstart', (e) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData(`armux/${kind}`, String(index));
+    e.dataTransfer.setData('text/plain', String(index)); // 일부 환경에서 이게 없으면 드래그가 시작되지 않는다
+    node.classList.add('dragging');
+    hoverAdd.classList.add('hidden');
+  });
+
+  node.addEventListener('dragend', () => {
+    node.classList.remove('dragging');
+    clearDropMarks(node.parentElement);
+  });
+
+  node.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes(`armux/${kind}`)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = node.getBoundingClientRect();
+    const after0 = e.clientX > r.left + r.width / 2; // 절반을 넘겼으면 오른쪽에 삽입
+    node.classList.toggle('drop-before', !after0);
+    node.classList.toggle('drop-after', after0);
+  });
+
+  node.addEventListener('dragleave', () => {
+    node.classList.remove('drop-before', 'drop-after');
+  });
+
+  node.addEventListener('drop', (e) => {
+    const raw = e.dataTransfer.getData(`armux/${kind}`);
+    if (raw === '') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const from = Number(raw);
+    const r = node.getBoundingClientRect();
+    let to = index + (e.clientX > r.left + r.width / 2 ? 1 : 0);
+    clearDropMarks(node.parentElement);
+    if (Number.isNaN(from) || from === to || from + 1 === to) return;
+    if (from < to) to -= 1; // 앞에서 빼면 뒤 인덱스가 하나 당겨진다
+    const [moved] = arr.splice(from, 1);
+    arr.splice(to, 0, moved);
+    after();
+  });
+}
+
+function clearDropMarks(container) {
+  if (!container) return;
+  for (const n of container.children) n.classList.remove('drop-before', 'drop-after');
 }
 
 /* ---------------------------------- 렌더링 ---------------------------------- */
@@ -764,6 +1040,7 @@ function render() {
   renderSubstrip();
   renderPanes();
   renderStatus();
+  renderClaudeStatus();
   el.emptyState.classList.toggle('hidden', state.groups.length > 0);
 }
 
@@ -828,6 +1105,12 @@ function renderTabstrip() {
     if (groupHasAlert(group)) node.appendChild(alertBadge());
     node.appendChild(close);
 
+    // 끌어서 메인탭 순서 바꾸기
+    makeReorderable(node, state.groups, gi, 'group', () => {
+      render();
+      fitTab(activeTab());
+    });
+
     node.addEventListener('click', () => selectGroup(group.id));
     node.addEventListener('mouseenter', () => showHoverAdd(node, group));
     node.addEventListener('mouseleave', () => hideHoverAdd());
@@ -847,14 +1130,43 @@ function renderSubstrip() {
   }
   el.substrip.classList.remove('hidden');
 
-  // 맨 왼쪽 폴더 버튼: 현재 서브탭을 파일 탐색기로 전환
-  const cur = group.tabs.find((t) => t.id === group.activeTabId) || group.tabs[0];
-  const folderBtn = document.createElement('button');
-  folderBtn.className = 'subtab-folder' + (cur && cur.showExplorer ? ' on' : '');
-  folderBtn.textContent = '📁';
-  folderBtn.title = '파일 탐색기 열기/닫기 (SFTP)';
-  folderBtn.addEventListener('click', () => toggleExplorer(activeTab()));
-  el.substrip.appendChild(folderBtn);
+  // 맨 왼쪽: 항상 존재하는 "파일 탐색기" 서브탭 (📌 로 왼쪽 고정 전환)
+  const exTab = document.createElement('div');
+  exTab.className =
+    'subtab subtab-explorer' +
+    (group.explorerSelected && !group.explorerPinned ? ' active' : '') +
+    (group.explorerPinned ? ' pinned' : '');
+  exTab.title = group.explorerPinned
+    ? '왼쪽에 고정된 파일 탐색기 (📌 를 눌러 고정 해제)'
+    : '파일 탐색기 (SFTP) · 📌 를 누르면 왼쪽에 고정';
+
+  const exIcon = document.createElement('span');
+  exIcon.className = 'label';
+  exIcon.textContent = '📁 파일';
+
+  const pin = document.createElement('span');
+  pin.className = 'pin' + (group.explorerPinned ? ' on' : '');
+  pin.textContent = '📌';
+  pin.title = group.explorerPinned ? '왼쪽 고정 해제' : '왼쪽에 고정';
+  pin.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleExplorerPin(group);
+  });
+
+  exTab.append(exIcon, pin);
+  exTab.addEventListener('click', () => {
+    if (group.explorerPinned) selectExplorer(group);
+    else if (group.explorerSelected) leaveExplorer(group); // 다시 누르면 터미널로
+    else selectExplorer(group);
+  });
+  exTab.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY, [
+      [group.explorerPinned ? '왼쪽 고정 해제' : '왼쪽에 고정', () => toggleExplorerPin(group)],
+      ['새로고침', () => group.explorer && group.explorer.refresh()]
+    ]);
+  });
+  el.substrip.appendChild(exTab);
 
   group.tabs.forEach((tab, ti) => {
     const node = document.createElement('div');
@@ -881,6 +1193,12 @@ function renderSubstrip() {
     node.append(statusDot(tabStatus(tab)), idx, label);
     if (tabHasAlert(tab)) node.appendChild(alertBadge());
     node.appendChild(close);
+
+    // 끌어서 서브탭 순서 바꾸기
+    makeReorderable(node, group.tabs, ti, 'tab', () => {
+      render();
+      fitTab(activeTab());
+    });
 
     node.addEventListener('click', () => selectTab(group, tab.id));
     node.addEventListener('auxclick', (e) => {
@@ -916,11 +1234,26 @@ function renderSubstrip() {
 function renderPanes() {
   const curTab = activeTab();
   const curLeaf = activeLeaf();
+  const curGroup = activeGroup();
+
+  // 고정하지 않은 탐색기를 전체 화면으로 볼 때는 터미널 탭을 감춘다
+  const exFull = Boolean(curGroup && curGroup.explorerSelected && !curGroup.explorerPinned && curGroup.explorer);
+  for (const g of state.groups) {
+    if (!g.explorer) continue;
+    const showFull = g === curGroup && exFull;
+    if (showFull) {
+      if (g.explorer.el.parentElement !== el.stage) el.stage.appendChild(g.explorer.el);
+      g.explorer.el.classList.remove('hidden');
+    } else if (!(g === curGroup && g.explorerPinned)) {
+      g.explorer.el.classList.add('hidden');
+    }
+  }
+  renderDock();
+
   for (const g of state.groups) {
     for (const t of g.tabs) {
-      const on = curTab && t.id === curTab.id;
+      const on = curTab && t.id === curTab.id && !exFull;
       t.container.classList.toggle('active', Boolean(on));
-      applyTabView(t);
       for (const l of leavesOf(t.root)) {
         const isActive = Boolean(curLeaf && l.id === curLeaf.id);
         l.el.classList.toggle('focused', isActive);
@@ -950,11 +1283,12 @@ function renderPaneOverlay(leaf) {
       return b;
     };
     bar.append(
-      mk('▯|▯', '좌우로 분할 (Ctrl/⌘+D)', () => {
+      mk('⇱', '이 창을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
+      mk('▯|▯', '좌우로 분할 (mac ⌘D / win Ctrl+Shift+D)', () => {
         focusLeaf(leaf);
         splitActive('row');
       }),
-      mk('▤', '위아래로 분할 (Ctrl/⌘+Shift+D)', () => {
+      mk('▤', '위아래로 분할 (mac ⌘⇧D / win Ctrl+Shift+E)', () => {
         focusLeaf(leaf);
         splitActive('col');
       }),
@@ -1121,19 +1455,43 @@ hoverAdd.addEventListener('click', (e) => {
 
 /* ------------------------------- 크기 조정 처리 ------------------------------- */
 
+/**
+ * 페인 하나의 크기를 맞춘다.
+ *
+ * xterm 의 DOM 렌더러는 줄 높이를 정수 픽셀로 반올림해 그리는데, fit 애드온은 소수점
+ * 셀 높이로 줄 수를 계산한다. 그래서 줄 수가 많아지면 반올림 오차가 쌓여 마지막 줄이
+ * 컨테이너 아래로 삐져나가 상태바에 잘린다. 실제 그려진 줄 높이로 다시 확인해 한 줄 줄인다.
+ */
+function fitLeaf(leaf) {
+  try {
+    leaf.fit.fit();
+  } catch (e) {
+    return;
+  }
+
+  const host = leaf.el.querySelector('.pane-term');
+  const rowsEl = leaf.el.querySelector('.xterm-rows');
+  if (host && rowsEl && rowsEl.children.length > 1) {
+    const a = rowsEl.children[0].getBoundingClientRect();
+    const b = rowsEl.children[1].getBoundingClientRect();
+    const rowH = b.top - a.top; // 실제로 그려지는 한 줄 높이(정수 반올림된 값)
+    const cs = getComputedStyle(host);
+    const avail = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    if (rowH > 0 && leaf.term.rows * rowH > avail) {
+      const rows = Math.max(1, Math.floor(avail / rowH));
+      if (rows !== leaf.term.rows) leaf.term.resize(leaf.term.cols, rows);
+    }
+  }
+
+  if (leaf.sessionId && leaf.status === 'ready') {
+    api.ssh.resize(leaf.sessionId, leaf.term.cols, leaf.term.rows);
+  }
+}
+
 /** 탭 안의 모든 페인 크기를 다시 맞춘다 */
 function fitTab(tab) {
   if (!tab) return;
-  for (const leaf of leavesOf(tab.root)) {
-    try {
-      leaf.fit.fit();
-    } catch (e) {
-      continue;
-    }
-    if (leaf.sessionId && leaf.status === 'ready') {
-      api.ssh.resize(leaf.sessionId, leaf.term.cols, leaf.term.rows);
-    }
-  }
+  for (const leaf of leavesOf(tab.root)) fitLeaf(leaf);
   renderStatus();
 }
 
@@ -1158,6 +1516,8 @@ api.ssh.onReady(({ id }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
   leaf.status = 'ready';
+  const grp = state.groups.find((g) => g.id === leaf.groupId);
+  if (grp) setTimeout(() => refreshClaudeInfo(grp, true), 800);
   api.ssh.resize(id, leaf.term.cols, leaf.term.rows);
   render();
   const cur = activeLeaf();
@@ -1269,6 +1629,45 @@ window.addEventListener(
         const n = Number(m[1]) - 1;
         if (e.altKey) selectGroupByIndex(n);
         else selectTabByIndex(n);
+        return;
+      }
+    }
+
+    // Ctrl+` : 파일 탐색기 켜고 끄기
+    if (e.ctrlKey && !e.metaKey && e.code === 'Backquote') {
+      e.preventDefault();
+      e.stopPropagation();
+      const g = activeGroup();
+      if (g) toggleExplorerView(g);
+      return;
+    }
+
+    // 분할 / 창 닫기 — 메뉴 가속기와 별개로 여기서도 확실히 처리한다
+    const mod = api.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+    if (mod && !e.altKey) {
+      const key = e.key.toLowerCase();
+      // 좌우 분할: mac ⌘D / 그 외 Ctrl+Shift+D
+      if (key === 'd' && (api.platform === 'darwin' ? !e.shiftKey : e.shiftKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        splitActive('row');
+        return;
+      }
+      // 상하 분할: mac ⌘⇧D / 그 외 Ctrl+Shift+E
+      if ((api.platform === 'darwin' && key === 'd' && e.shiftKey) || (api.platform !== 'darwin' && key === 'e' && e.shiftKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        splitActive('col');
+        return;
+      }
+      // 현재 분할 창 닫기
+      if (key === 'w' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const l = activeLeaf();
+        const g = activeGroup();
+        if (g && g.explorerSelected && !g.explorerPinned) leaveExplorer(g);
+        else if (l) closeLeaf(l);
         return;
       }
     }
@@ -1623,6 +2022,12 @@ function doConnect() {
 }
 
 /* --------------------------------- 시작 동작 -------------------------------- */
+
+// 접속한 서버들의 Claude 사용량을 주기적으로 갱신 (활성 그룹 위주)
+claudePollTimer = setInterval(() => {
+  const g = activeGroup();
+  if (g) refreshClaudeInfo(g);
+}, 30000);
 
 // 시작 시에는 빈 검은 터미널 화면만 보여준다.
 render();

@@ -132,8 +132,8 @@ bind C-a send-prefix</pre>
         <tr><th>키</th><th>동작</th></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>N</kbd></td><td>새 메인탭 (새 SSH 접속)</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>T</kbd></td><td>현재 그룹에 서브탭 추가</td></tr>
-        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>D</kbd></td><td>좌우로 분할 (split vertically)</td></tr>
-        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>위아래로 분할 (split horizontally)</td></tr>
+        <tr><td><kbd>⌘D</kbd> (mac) / <kbd>Ctrl+Shift+D</kbd> (win)</td><td>좌우로 분할</td></tr>
+        <tr><td><kbd>⌘⇧D</kbd> (mac) / <kbd>Ctrl+Shift+E</kbd> (win)</td><td>위아래로 분할</td></tr>
         <tr><td><kbd>Alt</kbd>+<kbd>방향키</kbd></td><td>분할된 창 사이 이동</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>W</kbd></td><td>현재 분할 창 닫기 (마지막이면 탭이 닫힘)</td></tr>
       </table>
@@ -151,8 +151,11 @@ bind C-a send-prefix</pre>
       <h3>파일 탐색기 (SFTP)</h3>
       <table>
         <tr><th>동작</th><th>설명</th></tr>
-        <tr><td>서브탭 왼쪽 <b>📁</b></td><td>터미널 ↔ 파일 탐색기 전환</td></tr>
-        <tr><td>더블클릭</td><td>폴더 열기 / 파일 내려받기</td></tr>
+        <tr><td>서브탭 왼쪽 <b>📁 파일</b> 탭</td><td>파일 탐색기 열기 (📌 를 누르면 왼쪽에 고정)</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>&#96;</kbd></td><td>파일 탐색기 켜고 끄기</td></tr>
+        <tr><td>폴더 앞 <b>▸</b> / 더블클릭</td><td>들어가지 않고 그 자리에서 하위 항목 펼치기</td></tr>
+        <tr><td><b>←</b> / <b>→</b> · 마우스 뒤로·앞으로 버튼</td><td>뒤로(없으면 상위 폴더) / 앞으로</td></tr>
+        <tr><td>파일 더블클릭</td><td>내려받기</td></tr>
         <tr><td>우클릭</td><td>이름 변경, 새 폴더, 새 파일, 업로드, 다운로드, 삭제</td></tr>
         <tr><td>내 PC 에서 끌어다 놓기</td><td>그 폴더로 업로드</td></tr>
         <tr><td>항목을 폴더 위로 끌기</td><td>서버 안에서 이동</td></tr>

@@ -29,8 +29,11 @@
       <!-- 그 아래: 활성 그룹의 서브탭(로우) 스트립 -->
       <div id="substrip"></div>
 
-      <!-- 터미널 영역: 탭마다 분할 트리를 담는 컨테이너가 하나씩 들어간다 -->
+      <!-- 터미널 영역: 왼쪽 고정 탐색기(dock) + 탭 무대(stage) -->
       <div id="terms">
+        <div id="dock" class="hidden"></div>
+        <div id="dock-divider" class="hidden"></div>
+        <div id="stage">
         <div id="empty-state">
           <div class="empty-title">ARMUX TERMINAL</div>
           <div class="empty-sub">오른쪽 위 <b>+</b> 버튼 또는 <b>Ctrl/⌘ + N</b> 으로 SSH 세션을 시작하세요.</div>
@@ -38,15 +41,18 @@
             <div><span>Ctrl + 숫자</span> 서브탭(가로 줄) 이동</div>
             <div><span>Ctrl + Alt + 숫자</span> 메인탭(세로 열) 이동</div>
             <div><span>탭에 마우스 올리기</span> 아래 <b>+</b> 로 서브탭 추가</div>
-            <div><span>서브탭 왼쪽 📁</span> 서버 파일 탐색기 (SFTP)</div>
-            <div><span>Ctrl/⌘ + D</span> 좌우 분할 &nbsp;·&nbsp; <span>Ctrl/⌘ + Shift + D</span> 상하 분할</div>
+            <div><span>서브탭 왼쪽 📁 파일</span> 파일 탐색기 (📌 로 왼쪽 고정)</div>
+            <div><span>⌘D / Ctrl+Shift+D</span> 좌우 분할 &nbsp;·&nbsp; <span>⌘⇧D / Ctrl+Shift+E</span> 상하 분할</div>
+            <div><span>Ctrl + `</span> 파일 탐색기 켜고 끄기</div>
           </div>
+        </div>
         </div>
       </div>
 
       <!-- 하단 상태바 -->
       <div id="statusbar">
         <span id="status-left">준비됨</span>
+        <span id="status-claude" class="hidden"></span>
         <span id="status-right"></span>
       </div>
 

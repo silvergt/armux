@@ -91,6 +91,44 @@ function open(profile, size, handlers) {
   return sessionId;
 }
 
+/**
+ * 이미 열려 있는 SSH 연결에서 명령을 하나 실행한다.
+ * 셸(터미널)과는 별도의 채널이라 화면에 아무 영향이 없다.
+ */
+function exec(sessionId, command, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const s = sessions.get(sessionId);
+    if (!s) return reject(new Error('세션이 없습니다.'));
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error('명령 실행 시간 초과'));
+    }, timeoutMs);
+
+    s.client.exec(command, (err, stream) => {
+      if (err) {
+        clearTimeout(timer);
+        return reject(err);
+      }
+      let out = '';
+      let errOut = '';
+      stream.on('data', (d) => {
+        out += d.toString('utf8');
+      });
+      stream.stderr.on('data', (d) => {
+        errOut += d.toString('utf8');
+      });
+      stream.on('close', (code) => {
+        clearTimeout(timer);
+        if (done) return;
+        done = true;
+        resolve({ stdout: out, stderr: errOut, code });
+      });
+    });
+  });
+}
+
 function write(sessionId, data) {
   const s = sessions.get(sessionId);
   if (s && s.stream) s.stream.write(data);
@@ -124,4 +162,4 @@ function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
-module.exports = { open, write, resize, close, closeAll };
+module.exports = { open, exec, write, resize, close, closeAll };

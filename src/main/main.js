@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage
 const store = require('./store');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
+const claudeinfo = require('./claudeinfo');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -78,12 +79,12 @@ function buildMenu() {
         { type: 'separator' },
         {
           label: '좌우로 분할',
-          accelerator: 'CmdOrCtrl+D',
+          accelerator: isMac ? 'Cmd+D' : 'Ctrl+Shift+D',
           click: () => mainWindow && mainWindow.webContents.send('menu:split-vertical')
         },
         {
           label: '위아래로 분할',
-          accelerator: 'CmdOrCtrl+Shift+D',
+          accelerator: isMac ? 'Cmd+Shift+D' : 'Ctrl+Shift+E',
           click: () => mainWindow && mainWindow.webContents.send('menu:split-horizontal')
         },
         { type: 'separator' },
@@ -337,6 +338,16 @@ function dragIcon() {
   }
   return cachedDragIcon;
 }
+
+/* ----------------------------- IPC: Claude 계정 정보 ---------------------------- */
+
+ipcMain.handle('claude:info', async (e, { sessionId }) => {
+  try {
+    return await claudeinfo.fetchInfo(sessionId);
+  } catch (err) {
+    return { loggedIn: false, error: String((err && err.message) || err) };
+  }
+});
 
 /* ------------------------------- IPC: 기타 유틸 -------------------------------- */
 

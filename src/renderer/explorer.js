@@ -48,13 +48,19 @@ window.Explorer = (function () {
     const ex = {
       sftpId: null,
       cwd: '.',
+      history: [], // 방문한 경로들 (뒤로/앞으로 이동용)
+      histIndex: -1,
       entries: [],
+      expanded: new Set(), // 펼쳐 놓은 폴더 경로들
+      children: new Map(), // 경로 -> 그 폴더의 항목들 (펼칠 때 한 번 읽어 캐시)
       selected: new Set(), // 선택된 경로들
       showHidden: false,
       busy: false,
       el: null,
       dispose,
       refresh,
+      back,
+      forward,
       focus: () => ex.el && ex.el.focus()
     };
 
@@ -76,7 +82,10 @@ window.Explorer = (function () {
       return b;
     };
 
-    const upBtn = mkBtn('↑', '상위 폴더', () => navigate(parentOf(ex.cwd)));
+    // ← 는 뒤로가기(히스토리가 없으면 상위 폴더), → 는 앞으로가기.
+    // 마우스의 뒤로/앞으로 버튼과 Backspace 로도 같은 동작을 한다.
+    const backBtn = mkBtn('←', '뒤로 (없으면 상위 폴더) · 마우스 뒤로 버튼', () => back());
+    const fwdBtn = mkBtn('→', '앞으로 · 마우스 앞으로 버튼', () => forward());
     const homeBtn = mkBtn('⌂', '홈 디렉터리', () => navigate('.'));
     const reloadBtn = mkBtn('⟳', '새로고침 (F5)', () => refresh());
 
@@ -98,7 +107,7 @@ window.Explorer = (function () {
       renderList();
     });
 
-    bar.append(upBtn, homeBtn, reloadBtn, pathInput, hiddenBtn, newDirBtn, uploadBtn);
+    bar.append(backBtn, fwdBtn, homeBtn, reloadBtn, pathInput, hiddenBtn, newDirBtn, uploadBtn);
 
     const head = document.createElement('div');
     head.className = 'ex-head';
@@ -114,6 +123,14 @@ window.Explorer = (function () {
 
     root.append(bar, head, listEl, status);
     ex.el = root;
+
+    // 왼쪽 고정 패널처럼 폭이 좁아지면 수정날짜/권한 열을 접어 이름 칸을 확보한다
+    const widthObserver = new ResizeObserver(() => {
+      const w = root.clientWidth;
+      root.classList.toggle('narrow', w < 520);
+      root.classList.toggle('very-narrow', w < 380);
+    });
+    widthObserver.observe(root);
 
     /* ------------------------------- 상태 표시 ------------------------------- */
 
@@ -142,15 +159,47 @@ window.Explorer = (function () {
       return ex.sftpId;
     }
 
-    async function navigate(target) {
+    async function navigate(target, push = true) {
       try {
         await ensureSession();
         const abs = await api.sftp.realpath(ex.sftpId, target || '.');
+        if (abs === ex.cwd && ex.histIndex >= 0) return;
         ex.cwd = abs;
+        if (push) {
+          // 뒤로 간 상태에서 새 경로로 이동하면 앞쪽 기록은 버린다 (브라우저와 동일)
+          ex.history = ex.history.slice(0, ex.histIndex + 1);
+          ex.history.push(abs);
+          ex.histIndex = ex.history.length - 1;
+        }
+        updateNavButtons();
         await refresh();
       } catch (err) {
         setStatus(`이동 실패: ${cleanErr(err)}`, true);
       }
+    }
+
+    /** 뒤로: 방문 기록이 있으면 이전 경로, 없으면 상위 폴더 */
+    async function back() {
+      if (ex.histIndex > 0) {
+        ex.histIndex -= 1;
+        await navigate(ex.history[ex.histIndex], false);
+        return;
+      }
+      const up = parentOf(ex.cwd);
+      if (up !== ex.cwd) await navigate(up);
+    }
+
+    async function forward() {
+      if (ex.histIndex < ex.history.length - 1) {
+        ex.histIndex += 1;
+        await navigate(ex.history[ex.histIndex], false);
+      }
+    }
+
+    function updateNavButtons() {
+      backBtn.disabled = false; // 뒤로는 상위 폴더 역할도 하므로 항상 활성
+      fwdBtn.disabled = ex.histIndex >= ex.history.length - 1;
+      fwdBtn.classList.toggle('disabled', fwdBtn.disabled);
     }
 
     async function refresh() {
@@ -158,6 +207,21 @@ window.Explorer = (function () {
         await ensureSession();
         setStatus('불러오는 중…', true);
         ex.entries = await api.sftp.list(ex.sftpId, ex.cwd);
+
+        // 펼쳐 둔 하위 폴더들도 같이 새로 읽는다 (없어진 폴더는 접는다)
+        ex.children.clear();
+        for (const dir of Array.from(ex.expanded)) {
+          if (!dir.startsWith(ex.cwd)) {
+            ex.expanded.delete(dir);
+            continue;
+          }
+          try {
+            ex.children.set(dir, await api.sftp.list(ex.sftpId, dir));
+          } catch (e) {
+            ex.expanded.delete(dir);
+          }
+        }
+
         ex.selected.clear();
         pathInput.value = ex.cwd;
         renderList();
@@ -168,79 +232,57 @@ window.Explorer = (function () {
       }
     }
 
+    const isDirEntry = (e) => e.type === 'dir' || e.linkToDir;
+
+    /** 폴더를 그 자리에서 펼치거나 접는다 (들어가지 않고 하위 항목을 아래에 보여준다) */
+    async function toggleExpand(entry) {
+      if (!isDirEntry(entry)) return;
+      if (ex.expanded.has(entry.path)) {
+        ex.expanded.delete(entry.path);
+        renderList();
+        return;
+      }
+      try {
+        if (!ex.children.has(entry.path)) {
+          setStatus(`${entry.name} 불러오는 중…`, true);
+          ex.children.set(entry.path, await api.sftp.list(ex.sftpId, entry.path));
+        }
+        ex.expanded.add(entry.path);
+        renderList();
+        summarize();
+      } catch (err) {
+        setStatus(`${entry.name} 을(를) 열 수 없습니다: ${cleanErr(err)}`, true);
+      }
+    }
+
     const cleanErr = (err) => String((err && err.message) || err).replace(/^Error:\s*/, '');
 
     /* -------------------------------- 목록 그리기 ------------------------------- */
 
+    const visibleOf = (entries) =>
+      ex.showHidden ? entries : entries.filter((e) => !e.name.startsWith('.'));
+
     function visibleEntries() {
-      return ex.showHidden ? ex.entries : ex.entries.filter((e) => !e.name.startsWith('.'));
+      return visibleOf(ex.entries);
     }
 
+    /** 현재 폴더를 뿌리로 삼아 트리를 그린다 (펼친 폴더는 하위 항목이 들여쓰기되어 이어진다) */
     function renderList() {
       listEl.innerHTML = '';
 
-      // 상위 폴더로 가는 줄 (여기로 파일을 끌어다 놓으면 상위로 이동)
+      // 상위 폴더 줄 (여기로 파일을 끌어다 놓으면 상위 폴더로 이동한다)
       if (ex.cwd !== '/') {
         const up = document.createElement('div');
         up.className = 'ex-row up';
-        up.innerHTML = '<span class="c-name">📁 <b>..</b></span><span class="c-size"></span><span class="c-time"></span><span class="c-perm"></span>';
+        up.innerHTML =
+          '<span class="c-name"><span class="caret"></span>📁 <b>..</b></span>' +
+          '<span class="c-size"></span><span class="c-time"></span><span class="c-perm"></span>';
         up.addEventListener('dblclick', () => navigate(parentOf(ex.cwd)));
         makeDropTarget(up, parentOf(ex.cwd));
         listEl.appendChild(up);
       }
 
-      for (const entry of visibleEntries()) {
-        const isDir = entry.type === 'dir' || entry.linkToDir;
-        const row = document.createElement('div');
-        row.className = 'ex-row' + (isDir ? ' is-dir' : '');
-        row.draggable = true;
-        row.dataset.path = entry.path;
-
-        const icon = entry.type === 'dir' ? '📁' : entry.type === 'link' ? '🔗' : fileIcon(entry.name);
-        const name = document.createElement('span');
-        name.className = 'c-name';
-        name.textContent = `${icon} ${entry.name}`;
-        name.title = entry.path;
-
-        const size = document.createElement('span');
-        size.className = 'c-size';
-        size.textContent = isDir ? '' : fmtSize(entry.size);
-
-        const time = document.createElement('span');
-        time.className = 'c-time';
-        time.textContent = fmtTime(entry.mtime);
-
-        const perm = document.createElement('span');
-        perm.className = 'c-perm';
-        perm.textContent = entry.rights || '';
-
-        row.append(name, size, time, perm);
-
-        row.addEventListener('click', (e) => selectRow(entry, row, e));
-        row.addEventListener('dblclick', () => {
-          if (isDir) navigate(entry.path);
-          else downloadEntries([entry]);
-        });
-        row.addEventListener('contextmenu', (e) => {
-          if (!ex.selected.has(entry.path)) selectRow(entry, row, e);
-          openMenu(e, entry);
-        });
-
-        // 드래그 시작: Alt 를 누르고 있으면 내 PC 로 꺼내기, 아니면 내부 이동
-        row.addEventListener('dragstart', (e) => {
-          if (e.altKey) {
-            e.preventDefault();
-            dragOutToOS(entry);
-            return;
-          }
-          e.dataTransfer.effectAllowed = 'move';
-          e.dataTransfer.setData('text/armux-path', entry.path);
-          e.dataTransfer.setData('text/plain', entry.path);
-        });
-
-        if (isDir) makeDropTarget(row, entry.path);
-        listEl.appendChild(row);
-      }
+      appendRows(ex.entries, 0);
 
       if (visibleEntries().length === 0) {
         const empty = document.createElement('div');
@@ -248,6 +290,95 @@ window.Explorer = (function () {
         empty.textContent = '빈 폴더입니다. 파일을 끌어다 놓거나 우클릭해 새로 만들 수 있습니다.';
         listEl.appendChild(empty);
       }
+    }
+
+    /** entries 를 depth 만큼 들여써서 붙이고, 펼쳐진 폴더는 재귀로 이어 붙인다 */
+    function appendRows(entries, depth) {
+      for (const entry of visibleOf(entries)) {
+        listEl.appendChild(buildRow(entry, depth));
+        if (isDirEntry(entry) && ex.expanded.has(entry.path)) {
+          const kids = ex.children.get(entry.path) || [];
+          if (visibleOf(kids).length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'ex-row child-empty';
+            empty.style.paddingLeft = `${10 + (depth + 1) * 16}px`;
+            empty.textContent = '(비어 있음)';
+            listEl.appendChild(empty);
+          } else {
+            appendRows(kids, depth + 1);
+          }
+        }
+      }
+    }
+
+    function buildRow(entry, depth) {
+      const isDir = isDirEntry(entry);
+      const row = document.createElement('div');
+      row.className = 'ex-row' + (isDir ? ' is-dir' : '');
+      row.draggable = true;
+      row.dataset.path = entry.path;
+
+      const name = document.createElement('span');
+      name.className = 'c-name';
+      name.style.paddingLeft = `${depth * 16}px`;
+      name.title = entry.path;
+
+      // 폴더 앞의 ▸/▾ — 누르면 그 자리에서 펼쳐진다
+      const caret = document.createElement('span');
+      caret.className = 'caret' + (isDir ? ' has' : '');
+      caret.textContent = isDir ? (ex.expanded.has(entry.path) ? '▾' : '▸') : '';
+      if (isDir) {
+        caret.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleExpand(entry);
+        });
+      }
+
+      const icon = entry.type === 'dir' ? '📁' : entry.type === 'link' ? '🔗' : fileIcon(entry.name);
+      const text = document.createElement('span');
+      text.className = 'nm';
+      text.textContent = `${icon} ${entry.name}`;
+
+      name.append(caret, text);
+
+      const size = document.createElement('span');
+      size.className = 'c-size';
+      size.textContent = isDir ? '' : fmtSize(entry.size);
+
+      const time = document.createElement('span');
+      time.className = 'c-time';
+      time.textContent = fmtTime(entry.mtime);
+
+      const perm = document.createElement('span');
+      perm.className = 'c-perm';
+      perm.textContent = entry.rights || '';
+
+      row.append(name, size, time, perm);
+      if (ex.selected.has(entry.path)) row.classList.add('selected');
+
+      row.addEventListener('click', (e) => selectRow(entry, row, e));
+      row.addEventListener('dblclick', () => {
+        if (isDir) toggleExpand(entry); // 들어가지 않고 그 자리에서 펼친다
+        else downloadEntries([entry]);
+      });
+      row.addEventListener('contextmenu', (e) => {
+        if (!ex.selected.has(entry.path)) selectRow(entry, row, e);
+        openMenu(e, entry);
+      });
+
+      row.addEventListener('dragstart', (e) => {
+        if (e.altKey) {
+          e.preventDefault();
+          dragOutToOS(entry);
+          return;
+        }
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/armux-path', entry.path);
+        e.dataTransfer.setData('text/plain', entry.path);
+      });
+
+      if (isDir) makeDropTarget(row, entry.path);
+      return row;
     }
 
     function fileIcon(name) {
@@ -433,8 +564,13 @@ window.Explorer = (function () {
 
       const items = [];
       if (entry) {
-        items.push([isDir ? '열기' : '내려받기', () => (isDir ? navigate(entry.path) : downloadEntries(targets))]);
-        if (isDir) items.push(['폴더째 내려받기', () => downloadEntries(targets)]);
+        if (isDir) {
+          items.push([ex.expanded.has(entry.path) ? '접기' : '펼치기', () => toggleExpand(entry)]);
+          items.push(['이 폴더를 최상위로', () => navigate(entry.path)]);
+          items.push(['폴더째 내려받기', () => downloadEntries(targets)]);
+        } else {
+          items.push(['내려받기', () => downloadEntries(targets)]);
+        }
         items.push(['이름 변경', () => renameEntry(entry)]);
         items.push(['경로 복사', () => api.util.clipboardWrite(entry.path)]);
         items.push(['삭제', () => removeEntries(targets), 'danger']);
@@ -530,6 +666,20 @@ window.Explorer = (function () {
 
     /* --------------------------------- 키 입력 -------------------------------- */
 
+    // 마우스 4번(뒤로) / 5번(앞으로) 버튼
+    root.addEventListener('mousedown', (e) => {
+      if (e.button === 3) {
+        e.preventDefault();
+        back();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        forward();
+      }
+    });
+    root.addEventListener('auxclick', (e) => {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    });
+
     root.addEventListener('keydown', (e) => {
       if (e.key === 'F5') {
         e.preventDefault();
@@ -541,7 +691,15 @@ window.Explorer = (function () {
       }
       if (e.key === 'Backspace') {
         e.preventDefault();
-        navigate(parentOf(ex.cwd));
+        back();
+      }
+      if (e.altKey && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        back();
+      }
+      if (e.altKey && e.key === 'ArrowRight') {
+        e.preventDefault();
+        forward();
       }
     });
 
@@ -557,6 +715,7 @@ window.Explorer = (function () {
     /* ---------------------------------- 정리 --------------------------------- */
 
     function dispose() {
+      widthObserver.disconnect();
       if (ex.sftpId) api.sftp.close(ex.sftpId);
       ex.sftpId = null;
       menu.remove();
