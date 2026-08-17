@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';"
+    />
+    <title>Armux Terminal</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 상단: 메인 탭(컬럼) 스트립 -->
+      <div id="topbar">
+        <div id="mac-spacer"></div>
+        <div id="tabstrip"></div>
+        <button id="new-group-btn" class="plus-btn" title="새 SSH 탭 (Ctrl/⌘+N)">+</button>
+      </div>
+
+      <!-- 그 아래: 활성 그룹의 서브탭(로우) 스트립 -->
+      <div id="substrip"></div>
+
+      <!-- 터미널 영역 -->
+      <div id="terms">
+        <div id="empty-state">
+          <div class="empty-title">ARMUX TERMINAL</div>
+          <div class="empty-sub">오른쪽 위 <b>+</b> 버튼 또는 <b>Ctrl/⌘ + N</b> 으로 SSH 세션을 시작하세요.</div>
+          <div class="empty-keys">
+            <div><span>Ctrl + 숫자</span> 서브탭(가로 줄) 이동</div>
+            <div><span>Ctrl + Shift + 숫자</span> 메인탭(세로 열) 이동</div>
+            <div><span>탭에 마우스 올리기</span> 아래 <b>+</b> 로 서브탭 추가</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 하단 상태바 -->
+      <div id="statusbar">
+        <span id="status-left">준비됨</span>
+        <span id="status-right"></span>
+      </div>
+
+      <!-- 검색바 -->
+      <div id="findbar" class="hidden">
+        <input id="find-input" type="text" placeholder="검색…" spellcheck="false" />
+        <button id="find-prev" title="이전">▲</button>
+        <button id="find-next" title="다음">▼</button>
+        <button id="find-close" title="닫기">✕</button>
+      </div>
+    </div>
+
+    <!-- 접속 다이얼로그 -->
+    <div id="modal-backdrop" class="hidden">
+      <div id="modal">
+        <div class="modal-head">
+          <span id="modal-title">새 SSH 접속</span>
+          <button id="modal-close" class="icon-btn">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- 좌측: 저장된 호스트 -->
+          <div class="panel panel-left">
+            <div class="panel-title">저장된 접속</div>
+            <input id="host-filter" class="field" type="text" placeholder="검색…" spellcheck="false" />
+            <ul id="host-list"></ul>
+            <div class="hint">더블클릭하면 바로 접속합니다.</div>
+          </div>
+
+          <!-- 우측: 새 접속 / 선택된 접속 정보 -->
+          <div class="panel panel-right">
+            <div class="panel-title">접속 정보</div>
+            <div class="form-grid">
+              <label for="f-name">이름</label>
+              <input id="f-name" class="field" type="text" placeholder="my-server" spellcheck="false" />
+
+              <label for="f-host">호스트</label>
+              <input id="f-host" class="field" type="text" placeholder="192.168.0.10 또는 example.com" spellcheck="false" />
+
+              <label for="f-port">포트</label>
+              <input id="f-port" class="field" type="number" value="22" min="1" max="65535" />
+
+              <label for="f-user">사용자</label>
+              <input id="f-user" class="field" type="text" placeholder="root" spellcheck="false" />
+
+              <label for="f-auth">인증</label>
+              <select id="f-auth" class="field">
+                <option value="password">비밀번호</option>
+                <option value="key">개인키 파일</option>
+                <option value="agent">SSH Agent</option>
+              </select>
+
+              <label for="f-password" class="row-password">비밀번호</label>
+              <input id="f-password" class="field row-password" type="password" placeholder="" />
+
+              <label for="f-key" class="row-key">키 경로</label>
+              <div class="field-row row-key">
+                <input id="f-key" class="field" type="text" placeholder="~/.ssh/id_rsa" spellcheck="false" />
+                <button id="f-key-browse" class="btn-sm">찾기…</button>
+              </div>
+
+              <label for="f-passphrase" class="row-key">패스프레이즈</label>
+              <input id="f-passphrase" class="field row-key" type="password" placeholder="키에 암호가 걸린 경우" />
+
+              <span></span>
+              <div class="checks">
+                <label><input id="f-save" type="checkbox" checked /> 접속 정보 저장</label>
+                <label><input id="f-save-pw" type="checkbox" /> 비밀번호도 저장(암호화)</label>
+              </div>
+            </div>
+            <div id="modal-error" class="error hidden"></div>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button id="host-delete" class="btn btn-danger hidden">삭제</button>
+          <span class="spacer"></span>
+          <button id="modal-cancel" class="btn">취소</button>
+          <button id="modal-connect" class="btn btn-primary">접속</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="vendor/xterm.js"></script>
+    <script src="vendor/addon-fit.js"></script>
+    <script src="vendor/addon-web-links.js"></script>
+    <script src="vendor/addon-search.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

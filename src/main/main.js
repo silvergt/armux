@@ -1,0 +1,261 @@
+'use strict';
+
+const path = require('path');
+const crypto = require('crypto');
+const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell } = require('electron');
+const store = require('./store');
+const ssh = require('./ssh');
+
+const isMac = process.platform === 'darwin';
+let mainWindow = null;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1180,
+    height: 760,
+    minWidth: 640,
+    minHeight: 400,
+    backgroundColor: '#000000',
+    // macOS 에서는 신호등 버튼만 남기고 타이틀바를 숨겨 탭바가 상단에 붙게 한다
+    titleBarStyle: isMac ? 'hiddenInset' : 'default',
+    trafficLightPosition: isMac ? { x: 14, y: 13 } : undefined,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      spellcheck: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  // 터미널 안의 링크는 외부 브라우저로
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
+}
+
+function buildMenu() {
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { type: 'separator' },
+              { role: 'quit' }
+            ]
+          }
+        ]
+      : []),
+    {
+      label: '탭',
+      submenu: [
+        {
+          label: '새 SSH 탭',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => mainWindow && mainWindow.webContents.send('menu:new-group')
+        },
+        {
+          label: '현재 그룹에 서브탭 추가',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => mainWindow && mainWindow.webContents.send('menu:new-subtab')
+        },
+        { type: 'separator' },
+        {
+          label: '탭 닫기',
+          accelerator: 'CmdOrCtrl+W',
+          click: () => mainWindow && mainWindow.webContents.send('menu:close-tab')
+        }
+      ]
+    },
+    {
+      label: '편집',
+      submenu: [
+        {
+          label: '복사',
+          accelerator: isMac ? 'Cmd+C' : 'Ctrl+Shift+C',
+          click: () => mainWindow && mainWindow.webContents.send('menu:copy')
+        },
+        {
+          label: '붙여넣기',
+          accelerator: isMac ? 'Cmd+V' : 'Ctrl+Shift+V',
+          click: () => mainWindow && mainWindow.webContents.send('menu:paste')
+        },
+        { type: 'separator' },
+        {
+          label: '찾기',
+          accelerator: 'CmdOrCtrl+F',
+          click: () => mainWindow && mainWindow.webContents.send('menu:find')
+        }
+      ]
+    },
+    {
+      label: '보기',
+      submenu: [
+        {
+          label: '글자 크게',
+          accelerator: 'CmdOrCtrl+Plus',
+          click: () => mainWindow && mainWindow.webContents.send('menu:font', 1)
+        },
+        {
+          label: '글자 작게',
+          accelerator: 'CmdOrCtrl+-',
+          click: () => mainWindow && mainWindow.webContents.send('menu:font', -1)
+        },
+        {
+          label: '글자 크기 초기화',
+          accelerator: 'CmdOrCtrl+0',
+          click: () => mainWindow && mainWindow.webContents.send('menu:font', 0)
+        },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+        { role: 'toggleDevTools' }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/* ------------------------------ IPC: 호스트 저장소 ------------------------------ */
+
+ipcMain.handle('hosts:list', () => store.list());
+ipcMain.handle('hosts:save', (e, profile) => store.save(profile));
+ipcMain.handle('hosts:remove', (e, id) => {
+  store.remove(id);
+  return true;
+});
+ipcMain.handle('hosts:canSavePassword', () => store.canEncrypt());
+
+/* -------------------------------- IPC: SSH 세션 -------------------------------- */
+
+function send(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+/**
+ * 저장하지 않은 접속의 자격증명을 메모리에만 보관한다.
+ * 같은 그룹에 서브탭을 추가할 때 비밀번호를 다시 묻지 않기 위한 용도이며,
+ * 앱을 종료하면 사라진다.
+ */
+const ephemeralCreds = new Map(); // credId -> profile(비밀번호 포함)
+
+ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, save, size }) => {
+  // 우선순위: 메모리 자격증명 → 저장된 호스트 → 폼 입력값.
+  // 폼에서 새로 들어온 값이 있으면 그 값으로 덮어쓴다.
+  let effective = null;
+  if (credId && ephemeralCreds.has(credId)) {
+    effective = { ...ephemeralCreds.get(credId), ...pruneEmpty(profile || {}) };
+  } else if (hostId) {
+    const secret = store.getSecret(hostId);
+    if (!secret) throw new Error('저장된 호스트를 찾을 수 없습니다.');
+    effective = { ...secret, ...pruneEmpty(profile || {}) };
+    store.touch(hostId);
+  } else {
+    effective = profile || {};
+  }
+
+  let savedHost = null;
+  if (save && !hostId) {
+    savedHost = store.save({ ...effective, savePassword: Boolean(profile && profile.savePassword) });
+    store.touch(savedHost.id);
+  } else if (hostId && profile && profile.savePassword) {
+    savedHost = store.save({ ...effective, id: hostId, savePassword: true });
+  }
+
+  // 서브탭/재접속에서 재사용할 자격증명 토큰
+  const token = credId && ephemeralCreds.has(credId) ? credId : crypto.randomUUID();
+  ephemeralCreds.set(token, effective);
+
+  const sessionId = ssh.open(effective, size, {
+    onReady: (id) => send('ssh:ready', { id }),
+    onData: (id, data) => send('ssh:data', { id, data: new Uint8Array(data) }),
+    onExit: (id) => send('ssh:exit', { id }),
+    onError: (id, message) => send('ssh:error', { id, message })
+  });
+
+  return {
+    sessionId,
+    credId: token,
+    host: {
+      id: hostId || (savedHost && savedHost.id) || null,
+      name: effective.name || `${effective.username}@${effective.host}`,
+      host: effective.host,
+      port: Number(effective.port) || 22,
+      username: effective.username,
+      authType: effective.authType || 'password'
+    }
+  };
+});
+
+/** 빈 문자열/undefined 필드는 저장된 값이 덮어씌워지지 않도록 제거 */
+function pruneEmpty(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== '' && v !== undefined && v !== null) out[k] = v;
+  }
+  return out;
+}
+
+ipcMain.on('ssh:write', (e, { id, data }) => ssh.write(id, data));
+ipcMain.on('ssh:resize', (e, { id, cols, rows }) => ssh.resize(id, cols, rows));
+ipcMain.on('ssh:close', (e, { id }) => ssh.close(id));
+
+/* ------------------------------- IPC: 기타 유틸 -------------------------------- */
+
+ipcMain.handle('util:pickKeyFile', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: '개인키 파일 선택',
+    properties: ['openFile', 'showHiddenFiles'],
+    defaultPath: path.join(app.getPath('home'), '.ssh')
+  });
+  if (res.canceled || !res.filePaths.length) return '';
+  return res.filePaths[0];
+});
+
+ipcMain.handle('util:clipboardRead', () => clipboard.readText());
+ipcMain.on('util:clipboardWrite', (e, text) => clipboard.writeText(text));
+ipcMain.handle('util:confirm', async (e, { message, detail }) => {
+  const res = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['취소', '확인'],
+    defaultId: 1,
+    cancelId: 0,
+    message,
+    detail
+  });
+  return res.response === 1;
+});
+
+/* ---------------------------------- 앱 수명주기 ---------------------------------- */
+
+app.whenReady().then(() => {
+  buildMenu();
+  createWindow();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  ssh.closeAll();
+  if (!isMac) app.quit();
+});
+
+app.on('before-quit', () => {
+  ssh.closeAll();
+  ephemeralCreds.clear();
+});

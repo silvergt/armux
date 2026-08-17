@@ -1,0 +1,72 @@
+{
+  "name": "armux-terminal",
+  "version": "0.1.0",
+  "description": "iTerm 스타일의 크로스플랫폼 SSH 터미널 클라이언트 (Windows / macOS)",
+  "main": "src/main/main.js",
+  "author": "armux",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:win-zip": "electron-builder --win zip --x64",
+    "dist:linux": "electron-builder --linux",
+    "dist": "electron-builder --mac --win"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.armux.terminal",
+    "productName": "Armux Terminal",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/cpu-features/**",
+      "**/*.node"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
