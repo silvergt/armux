@@ -63,7 +63,7 @@
           ]
         }
       ],
-      "artifactName": "Armux-Terminal-${version}-${arch}.${ext}"
+      "artifactName": "Armux-Terminal-${version}-mac-${arch}.${ext}"
     },
     "dmg": {
       "sign": false
@@ -89,7 +89,7 @@
           ]
         }
       ],
-      "artifactName": "Armux-Terminal-${version}-${arch}.${ext}"
+      "artifactName": "Armux-Terminal-${version}-win-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -109,6 +109,6 @@
         "releaseType": "release"
       }
     ],
-    "artifactName": "Armux-Terminal-${version}-${arch}.${ext}"
+    "artifactName": "Armux-Terminal-${version}-${os}-${arch}.${ext}"
   }
 }
