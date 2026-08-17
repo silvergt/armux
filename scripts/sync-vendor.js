@@ -19,7 +19,8 @@ const files = [
   ['node_modules/@xterm/addon-fit/lib/addon-fit.js', 'addon-fit.js'],
   ['node_modules/@xterm/addon-web-links/lib/addon-web-links.js', 'addon-web-links.js'],
   ['node_modules/@xterm/addon-search/lib/addon-search.js', 'addon-search.js'],
-  ['node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.js', 'addon-unicode-graphemes.js']
+  ['node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.js', 'addon-unicode-graphemes.js'],
+  ['node_modules/@xterm/addon-webgl/lib/addon-webgl.js', 'addon-webgl.js']
 ];
 
 fs.mkdirSync(out, { recursive: true });

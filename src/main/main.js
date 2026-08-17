@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils, webContents } = require('electron');
 const store = require('./store');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
@@ -91,6 +91,20 @@ function createWindow() {
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
+/**
+ * 편집 명령을 알맞은 대상에 보낸다.
+ * 웹 화면(webview)이 포커스면 그쪽에서 바로 처리하고,
+ * 앱 화면이면 렌더러가 입력칸인지 터미널인지 가려서 처리한다.
+ */
+function editCommand(kind) {
+  const focused = webContents.getFocusedWebContents();
+  if (focused && mainWindow && focused.id !== mainWindow.webContents.id) {
+    if (typeof focused[kind] === 'function') focused[kind]();
+    return;
+  }
+  if (mainWindow) mainWindow.webContents.send(`menu:${kind}`);
+}
+
 function buildMenu() {
   const template = [
     ...(isMac
@@ -142,24 +156,42 @@ function buildMenu() {
     },
     {
       label: '편집',
-      submenu: [
-        {
-          label: '복사',
-          accelerator: isMac ? 'Cmd+C' : 'Ctrl+Shift+C',
-          click: () => mainWindow && mainWindow.webContents.send('menu:copy')
-        },
-        {
-          label: '붙여넣기',
-          accelerator: isMac ? 'Cmd+V' : 'Ctrl+Shift+V',
-          click: () => mainWindow && mainWindow.webContents.send('menu:paste')
-        },
-        { type: 'separator' },
-        {
-          label: '찾기',
-          accelerator: 'CmdOrCtrl+F',
-          click: () => mainWindow && mainWindow.webContents.send('menu:find')
-        }
-      ]
+      submenu: isMac
+        ? [
+            // macOS 는 메뉴 가속기가 키를 먼저 가져가므로, 여기서 대상(웹 화면 / 입력칸 / 터미널)을
+            // 가려서 처리해야 어디서든 ⌘A·⌘C·⌘V 가 동작한다.
+            { role: 'undo', label: '실행 취소' },
+            { role: 'redo', label: '다시 실행' },
+            { type: 'separator' },
+            { label: '잘라내기', accelerator: 'Cmd+X', click: () => editCommand('cut') },
+            { label: '복사', accelerator: 'Cmd+C', click: () => editCommand('copy') },
+            { label: '붙여넣기', accelerator: 'Cmd+V', click: () => editCommand('paste') },
+            { label: '전체 선택', accelerator: 'Cmd+A', click: () => editCommand('selectAll') },
+            { type: 'separator' },
+            {
+              label: '찾기',
+              accelerator: 'Cmd+F',
+              click: () => mainWindow && mainWindow.webContents.send('menu:find')
+            }
+          ]
+        : [
+            {
+              label: '복사',
+              accelerator: 'Ctrl+Shift+C',
+              click: () => mainWindow && mainWindow.webContents.send('menu:copy')
+            },
+            {
+              label: '붙여넣기',
+              accelerator: 'Ctrl+Shift+V',
+              click: () => mainWindow && mainWindow.webContents.send('menu:paste')
+            },
+            { type: 'separator' },
+            {
+              label: '찾기',
+              accelerator: 'Ctrl+F',
+              click: () => mainWindow && mainWindow.webContents.send('menu:find')
+            }
+          ]
     },
     {
       label: '보기',

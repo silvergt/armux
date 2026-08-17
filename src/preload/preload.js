@@ -127,6 +127,8 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:close-tab',
       'menu:copy',
       'menu:paste',
+      'menu:cut',
+      'menu:selectAll',
       'menu:find',
       'menu:font',
       'menu:help-tmux',

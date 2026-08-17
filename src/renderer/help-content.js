@@ -123,8 +123,8 @@ bind C-a send-prefix</pre>
       <h3>탭 이동</h3>
       <table>
         <tr><th>키</th><th>동작</th></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>~<kbd>9</kbd></td><td>서브탭(가로 줄) 이동</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>~<kbd>9</kbd></td><td>메인탭(세로 열) 이동</td></tr>
+        <tr><td><kbd>⌘</kbd>(mac) / <kbd>Ctrl</kbd>(win) + <kbd>1</kbd>~<kbd>9</kbd></td><td>서브탭(가로 줄) 이동</td></tr>
+        <tr><td><kbd>⌘⌥</kbd>(mac) / <kbd>Ctrl+Alt</kbd>(win) + <kbd>1</kbd>~<kbd>9</kbd></td><td>메인탭(세로 열) 이동</td></tr>
       </table>
 
       <h3>탭 / 분할</h3>
@@ -165,7 +165,7 @@ bind C-a send-prefix</pre>
       <table>
         <tr><th>동작</th><th>설명</th></tr>
         <tr><td>서브탭 왼쪽 <b>📁 파일</b> 탭</td><td>파일 탐색기 열기 (📌 를 누르면 왼쪽에 고정)</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>&#96;</kbd></td><td>파일 탐색기 켜고 끄기</td></tr>
+        <tr><td><kbd>⌘/Ctrl</kbd>+<kbd>&#96;</kbd></td><td>파일 탐색기 켜고 끄기</td></tr>
         <tr><td>폴더 앞 <b>▸</b> / 더블클릭</td><td>들어가지 않고 그 자리에서 하위 항목 펼치기</td></tr>
         <tr><td><b>←</b> / <b>→</b> · 마우스 뒤로·앞으로 버튼</td><td>뒤로(없으면 상위 폴더) / 앞으로</td></tr>
         <tr><td>파일 더블클릭</td><td>내려받기</td></tr>
@@ -179,7 +179,7 @@ bind C-a send-prefix</pre>
       <h3>메모장</h3>
       <table>
         <tr><th>키/동작</th><th>설명</th></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>&#96;</kbd> · 왼쪽 위 <b>📝 메모</b></td><td>메모장 열기/닫기</td></tr>
+        <tr><td><kbd>⌘/Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>&#96;</kbd> · 왼쪽 위 <b>📝 메모</b></td><td>메모장 열기/닫기</td></tr>
         <tr><td>목록 열 제목 클릭</td><td>이름·크기·만든 날짜·마지막 작성 기준 정렬 (기본: 마지막 작성 최신순)</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>N</kbd></td><td>새 메모</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>S</kbd></td><td>저장 (입력을 멈추면 자동 저장도 됨)</td></tr>

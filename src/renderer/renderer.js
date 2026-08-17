@@ -1,6 +1,6 @@
 'use strict';
 
-/* global Terminal, FitAddon, WebLinksAddon, SearchAddon, UnicodeGraphemesAddon */
+/* global Terminal, FitAddon, WebLinksAddon, SearchAddon, UnicodeGraphemesAddon, WebglAddon */
 
 /**
  * Armux Terminal 렌더러.
@@ -95,8 +95,11 @@ const FONT_STACKS = {
 const FONT_STACK = FONT_STACKS[api.platform] || FONT_STACKS.linux;
 
 // 메인탭 전환 단축키 표시 (Ctrl+Alt+숫자)
-const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌥' : 'Alt';
+const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌘⌥' : 'Alt';
 const isMacPlatform = api.platform === 'darwin';
+
+/** 이 이벤트가 "우리 단축키의 주 수정키"를 누른 상태인가 (mac ⌘ / 그 외 Ctrl) */
+const hasMod = (e) => (isMacPlatform ? e.metaKey : e.ctrlKey);
 
 /**
  * 이벤트 대상이 "글자를 입력받는 칸" 인지.
@@ -240,6 +243,22 @@ function createLeaf(tab, connect, options) {
     /* noop */
   }
   term.open(termHost);
+
+  // GPU 렌더러. 기본 DOM 렌더러보다 훨씬 가볍다(특히 macOS).
+  // 컨텍스트를 잃으면 자동으로 기본 렌더러로 돌아간다.
+  try {
+    const webgl = new WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => {
+      try {
+        webgl.dispose();
+      } catch (e2) {
+        /* noop */
+      }
+    });
+    term.loadAddon(webgl);
+  } catch (e) {
+    /* WebGL 을 못 쓰면 기본 렌더러로 그대로 간다 */
+  }
 
   leaf.el = pane;
   leaf.term = term;
@@ -555,12 +574,19 @@ function sendTmuxCommand(leaf, cmdline) {
 }
 
 /** 모든 페인의 실행 상태를 다시 계산해 스피너 표시를 정한다 */
+let activityTick = 0;
+
 function evaluateActivity() {
   const now = Date.now();
   let changed = false;
+  activityTick += 1;
+  const curTab = activeTab();
+  // 화면에 보이는 탭은 매번, 나머지는 다섯 번에 한 번만 살펴본다(느려지지 않게)
+  const scanBackground = activityTick % 5 === 0;
 
   for (const g of state.groups) {
     for (const t of g.tabs) {
+      if (t !== curTab && !scanBackground) continue;
       for (const leaf of leavesOf(t.root)) {
         if (leaf.mode === 'web') {
           if (leaf.spin || leaf.busy) {
@@ -1248,6 +1274,7 @@ let openMenuIndex = -1;
 
 function renderMenuBar() {
   menuButtons.innerHTML = '';
+  if (isMacPlatform) return; // mac 은 시스템 메뉴 막대를 쓴다
   APP_MENUS.forEach((menu, i) => {
     const b = document.createElement('button');
     b.className = 'menu-btn';
@@ -1441,10 +1468,17 @@ function sessionSnapshot() {
 }
 
 let saveTimer = null;
-/** 변경이 잦으므로 잠시 모아서 저장한다 */
+let lastSnapshotJson = '';
+/** 변경이 잦으므로 모아서 저장하고, 내용이 그대로면 건너뛴다 */
 function saveSession() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => api.session.save(sessionSnapshot()), 700);
+  saveTimer = setTimeout(() => {
+    const snap = sessionSnapshot();
+    const json = JSON.stringify(snap);
+    if (json === lastSnapshotJson) return;
+    lastSnapshotJson = json;
+    api.session.save(snap);
+  }, 1500);
 }
 
 // 창을 닫는 순간에도 마지막 상태를 한 번 더 남긴다
@@ -1821,7 +1855,7 @@ function renderTabstrip() {
     node.className = 'tab' + (active ? ' active' : '');
     node.title =
       `${group.host.name} — ${group.host.username}@${group.host.host}:${group.host.port}\n` +
-      `${gi < 9 ? `Ctrl+Alt+${gi + 1} 로 이동 · ` : ''}끌어서 순서 변경 · 가운데 클릭: 닫기\n` +
+      `${gi < 9 ? `${api.platform === 'darwin' ? '⌘⌥' : 'Ctrl+Alt+'}${gi + 1} 로 이동 · ` : ''}끌어서 순서 변경 · 가운데 클릭: 닫기\n` +
       `탭 아래 + : 서브탭 추가 (Ctrl/⌘+T)`;
 
     const idx = document.createElement('span');
@@ -1882,7 +1916,8 @@ function renderSubstrip() {
   exTab.title =
     (group.explorerPinned
       ? '왼쪽에 고정된 파일 탐색기 (📌 를 눌러 고정 해제)'
-      : '파일 탐색기 (SFTP) · 📌 를 누르면 왼쪽에 고정') + '\nCtrl+` 로 켜고 끄기';
+      : '파일 탐색기 (SFTP) · 📌 를 누르면 왼쪽에 고정') +
+    `\n${api.platform === 'darwin' ? '⌘' : 'Ctrl'}+\` 로 켜고 끄기`;
 
   const exIcon = document.createElement('span');
   exIcon.className = 'label';
@@ -1917,7 +1952,7 @@ function renderSubstrip() {
     node.className = 'subtab' + (tab.id === group.activeTabId ? ' active' : '');
     node.title =
       `${tabTitle(group, tab)}\n` +
-      `${ti < 9 ? `Ctrl+${ti + 1} 로 이동 · ` : ''}우클릭: 이름 변경 · 끌어서 순서 변경\n` +
+      `${ti < 9 ? `${api.platform === 'darwin' ? '⌘' : 'Ctrl+'}${ti + 1} 로 이동 · ` : ''}우클릭: 이름 변경 · 끌어서 순서 변경\n` +
       `분할: ${api.platform === 'darwin' ? '⌘D / ⌘⇧D' : 'Ctrl+Shift+D / Ctrl+Shift+E'} · 닫기: Ctrl/⌘+W`;
 
     const idx = document.createElement('span');
@@ -2252,17 +2287,21 @@ function fitLeaf(leaf) {
     return;
   }
 
+  /*
+   * xterm 은 줄 높이를 정수 픽셀로 반올림해 그리는데 fit 은 소수점으로 계산한다.
+   * 줄이 많아지면 오차가 쌓여 마지막 줄이 아래로 삐져나가 상태바에 잘린다.
+   * 실제로 그려진 화면 높이(.xterm-screen)를 재서 넘치면 한 줄 줄인다.
+   * (.xterm-rows 는 WebGL 렌더러에서 없으므로 쓰지 않는다)
+   */
   const host = leaf.el.querySelector('.pane-term');
-  const rowsEl = leaf.el.querySelector('.xterm-rows');
-  if (host && rowsEl && rowsEl.children.length > 1) {
-    const a = rowsEl.children[0].getBoundingClientRect();
-    const b = rowsEl.children[1].getBoundingClientRect();
-    const rowH = b.top - a.top; // 실제로 그려지는 한 줄 높이(정수 반올림된 값)
+  const screen = leaf.el.querySelector('.xterm-screen');
+  if (host && screen && leaf.term.rows > 1) {
     const cs = getComputedStyle(host);
     const avail = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    if (rowH > 0 && leaf.term.rows * rowH > avail) {
-      const rows = Math.max(1, Math.floor(avail / rowH));
-      if (rows !== leaf.term.rows) leaf.term.resize(leaf.term.cols, rows);
+    for (let i = 0; i < 2; i++) {
+      const drawn = screen.getBoundingClientRect().height;
+      if (drawn <= avail + 0.5 || leaf.term.rows <= 1) break;
+      leaf.term.resize(leaf.term.cols, leaf.term.rows - 1);
     }
   }
 
@@ -2365,11 +2404,25 @@ api.onMenu(async (cmd, arg) => {
       if (l) closeLeaf(l);
       else if (g && t) closeTab(g, t);
       break;
+    // 입력칸(메모장·주소창·다이얼로그)에서는 브라우저 기본 편집 동작을,
+    // 터미널에서는 xterm 선택/SSH 쓰기를 쓴다.
     case 'copy':
-      if (l && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
+      if (isTextInput(document.activeElement)) document.execCommand('copy');
+      else if (l && l.mode !== 'web' && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
+      break;
+    case 'cut':
+      if (isTextInput(document.activeElement)) document.execCommand('cut');
+      break;
+    case 'selectAll':
+      if (isTextInput(document.activeElement)) document.activeElement.select();
+      else if (l && l.mode !== 'web') l.term.selectAll();
       break;
     case 'paste': {
-      if (!l || l.status !== 'ready') break;
+      if (isTextInput(document.activeElement)) {
+        document.execCommand('paste');
+        break;
+      }
+      if (!l || l.status !== 'ready' || l.mode === 'web') break;
       const text = await api.util.clipboardRead();
       if (text) api.ssh.write(l.sessionId, text);
       break;
@@ -2401,6 +2454,8 @@ api.onMenu(async (cmd, arg) => {
 window.addEventListener(
   'keydown',
   (e) => {
+    // 한글 등 IME 조합 중에는 절대 끼어들지 않는다 (조합이 깨진다)
+    if (e.isComposing || e.keyCode === 229) return;
     const aboutOpen = !aboutBackdrop.classList.contains('hidden');
     const updOpen = !updateBackdrop.classList.contains('hidden');
     if (modalOpen() || helpOpen() || aboutOpen || updOpen) {
@@ -2413,8 +2468,8 @@ window.addEventListener(
       return;
     }
 
-    // Ctrl+숫자 = 서브탭, Ctrl+Alt+숫자 = 메인탭
-    if (e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    // ⌘/Ctrl + 숫자 = 서브탭, +Alt = 메인탭
+    if (hasMod(e) && !e.shiftKey) {
       const m = /^Digit([1-9])$/.exec(e.code);
       if (m) {
         e.preventDefault();
@@ -2433,7 +2488,7 @@ window.addEventListener(
      * 입력창(메모장·탐색기 경로 등) 안에서는 브라우저 기본 동작을 그대로 둔다.
      */
     const inTerminal = !isTextInput(e.target);
-    if (inTerminal && !isMacPlatform && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+    if (inTerminal && hasMod(e) && !e.altKey && !e.shiftKey) {
       const key = e.key.toLowerCase();
       const leaf = activeLeaf();
       if (key === 'c' && leaf && leaf.term.hasSelection()) {
@@ -2451,8 +2506,8 @@ window.addEventListener(
       }
     }
 
-    // Ctrl+Alt+` : 메모장, Ctrl+` : 파일 탐색기
-    if (e.ctrlKey && !e.metaKey && e.code === 'Backquote') {
+    // ⌘/Ctrl + ` : 파일 탐색기, +Alt : 메모장
+    if (hasMod(e) && e.code === 'Backquote') {
       e.preventDefault();
       e.stopPropagation();
       if (e.altKey) {
@@ -2465,8 +2520,8 @@ window.addEventListener(
       return;
     }
 
-    // 분할 / 창 닫기 — 메뉴 가속기와 별개로 여기서도 확실히 처리한다
-    const mod = api.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+    // 분할 / 창 닫기 / 새 탭 — 메뉴 가속기와 별개로 여기서도 확실히 처리한다
+    const mod = hasMod(e);
     if (mod && !e.altKey) {
       const key = e.key.toLowerCase();
       // 좌우 분할: mac ⌘D / 그 외 Ctrl+Shift+D

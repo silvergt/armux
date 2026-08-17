@@ -1944,3 +1944,23 @@ body.is-mac #menubar {
 .clock-item:hover {
   background: #262b33;
 }
+
+/* ------------------------- macOS: 상단 줄 정리 ------------------------- */
+
+/*
+ * mac 은 화면 맨 위 시스템 메뉴 막대에 이미 같은 메뉴가 있으므로
+ * 앱 안에는 아이콘·이름·메뉴를 두지 않는다.
+ * 신호등 버튼이 놓일 얇은 드래그 줄만 남기고, 탭 줄은 화면 왼쪽 끝부터 시작한다.
+ */
+body.is-mac #menubar {
+  height: 28px;
+  padding-left: 0;
+}
+body.is-mac #app-icon,
+body.is-mac #app-name,
+body.is-mac #menu-buttons {
+  display: none;
+}
+body.is-mac #mac-spacer {
+  width: 0;
+}
