@@ -1,0 +1,44 @@
+name: build
+
+# 태그를 푸시하거나(Actions 탭에서) 수동 실행하면
+# 윈도우 설치본(.exe)과 맥 설치본(.dmg)을 만들어 아티팩트로 올린다.
+# 내 PC 에 윈도우/맥이 없어도 GitHub 의 빌드 머신이 대신 만들어 준다.
+
+on:
+  workflow_dispatch: # Actions 탭 → build → Run workflow 로 수동 실행
+  push:
+    tags: ['v*'] # 예: git tag v0.1.0 && git push origin v0.1.0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            artifact: windows-installer
+          - os: macos-latest
+            script: dist:mac
+            artifact: macos-dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run ${{ matrix.script }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
