@@ -1319,7 +1319,7 @@ button {
   gap: 10px;
   flex: 1;
   min-width: 0;
-  justify-content: center;
+  justify-content: flex-end; /* 오른쪽 정렬 (상세 정보 표시는 없앴다) */
 }
 #status-claude.hidden {
   display: none;
@@ -1694,4 +1694,12 @@ button {
 }
 .ex-progress.upload .ex-progress-pct {
   color: #8ce0c4;
+}
+
+/* 사용량 초기화까지 남은 시간 */
+.usage-reset {
+  color: #7f8792;
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  padding-left: 2px;
 }

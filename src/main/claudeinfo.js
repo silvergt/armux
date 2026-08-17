@@ -36,6 +36,8 @@ function normalize(raw) {
   const account = profile.account || {};
   const org = profile.organization || {};
   const usage = raw.usage || {};
+  // 사용량 엔드포인트는 호출이 잦으면 429 를 준다. 그때는 값을 지우지 말고 알려만 준다.
+  const rateLimited = Boolean(usage && usage.error) || !raw.usage;
 
   const pick = (bucket) =>
     bucket && typeof bucket.utilization === 'number'
@@ -49,6 +51,7 @@ function normalize(raw) {
 
   return {
     loggedIn: true,
+    rateLimited,
     email: account.email || raw.email || '',
     name: account.display_name || account.full_name || '',
     plan,
@@ -70,10 +73,14 @@ function normalize(raw) {
  */
 async function fetchInfo(sessionId) {
   const { stdout } = await ssh.exec(sessionId, PROBE, 20000);
-  const line = String(stdout).trim().split('\n').pop();
+  // API 응답이 여러 줄로 정렬되어 올 수 있으므로 첫 '{' 부터 마지막 '}' 까지를 통째로 파싱한다
+  const text = String(stdout);
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return { loggedIn: false, error: '응답이 비어 있습니다.' };
   let parsed = null;
   try {
-    parsed = JSON.parse(line);
+    parsed = JSON.parse(text.slice(start, end + 1));
   } catch (e) {
     return { loggedIn: false, error: '응답을 해석하지 못했습니다.' };
   }

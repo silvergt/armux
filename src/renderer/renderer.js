@@ -46,7 +46,6 @@ const el = {
   clock: document.getElementById('clock'),
   statusLeft: document.getElementById('status-left'),
   statusClaude: document.getElementById('status-claude'),
-  statusRight: document.getElementById('status-right'),
   findbar: document.getElementById('findbar'),
   findInput: document.getElementById('find-input')
 };
@@ -97,6 +96,17 @@ const FONT_STACK = FONT_STACKS[api.platform] || FONT_STACKS.linux;
 
 // 메인탭 전환 단축키 표시 (Ctrl+Alt+숫자)
 const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌥' : 'Alt';
+const isMacPlatform = api.platform === 'darwin';
+
+/**
+ * 이벤트 대상이 "글자를 입력받는 칸" 인지.
+ * xterm 이 쓰는 숨은 textarea 는 터미널로 취급해야 하므로 제외한다.
+ */
+function isTextInput(target) {
+  if (!target || !target.tagName) return false;
+  if (target.classList && target.classList.contains('xterm-helper-textarea')) return false;
+  return target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable === true;
+}
 
 /* ------------------------------- 상태 조회 헬퍼 ------------------------------- */
 
@@ -882,7 +892,11 @@ function ensureExplorer(group) {
     el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
     return null;
   }
-  group.explorer = window.Explorer.create({ connect, hostLabel: group.host.name });
+  group.explorer = window.Explorer.create({
+    // 재연결 때마다 최신 자격증명을 쓰도록 함수로 넘긴다
+    getConnect: () => group.connect || { hostId: group.host.id || null, credId: group.credId },
+    hostLabel: group.host.name
+  });
   return group.explorer;
 }
 
@@ -1268,7 +1282,8 @@ function rebuildLayout(tab, group, node, schedule) {
  * 조회는 그 서버에서 실행되고(토큰은 서버 밖으로 나가지 않는다) 결과만 받아온다.
  */
 
-const CLAUDE_POLL_MS = 90000; // 1분 30초마다 갱신
+const CLAUDE_POLL_MS = 300000; // 5분마다 갱신 (사용량 API 는 호출이 잦으면 제한된다)
+const CLAUDE_BACKOFF_MS = 900000; // 제한에 걸리면 15분 쉬었다 다시
 let claudePollTimer = null;
 
 /** 그룹의 살아 있는 세션 하나를 고른다 (조회용 exec 채널을 열 연결) */
@@ -1285,12 +1300,22 @@ async function refreshClaudeInfo(group, force) {
   if (!group) return;
   const sessionId = anyReadySession(group);
   if (!sessionId) return;
+  if (group.claudeBackoffUntil && Date.now() < group.claudeBackoffUntil && !force) return;
   if (!force && group.claudeFetchedAt && Date.now() - group.claudeFetchedAt < CLAUDE_POLL_MS) return;
   if (group.claudeFetching) return;
 
   group.claudeFetching = true;
   try {
     const info = await api.claude.info(sessionId);
+    // 사용량 조회가 한 번 실패해도 화면이 깜빡이지 않도록 직전 값을 유지한다
+    const prev = group.claudeInfo;
+    if (info && info.loggedIn && !info.session && prev && prev.session) {
+      info.session = prev.session;
+      info.week = prev.week;
+      info.stale = true;
+    }
+    if (info && info.rateLimited) group.claudeBackoffUntil = Date.now() + CLAUDE_BACKOFF_MS;
+    else group.claudeBackoffUntil = 0;
     group.claudeInfo = info;
     group.claudeFetchedAt = Date.now();
     if (activeGroup() === group) renderClaudeStatus();
@@ -1301,8 +1326,17 @@ async function refreshClaudeInfo(group, force) {
   }
 }
 
+/** 초기화까지 남은 시간을 HH:MM 으로 */
+function untilReset(iso) {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return '0:00';
+  const totalMin = Math.floor(ms / 60000);
+  return `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
+}
+
 /** 0~100% 짜리 작은 막대 */
-function usageBar(label, bucket) {
+function usageBar(label, bucket, showReset) {
   const wrap = document.createElement('span');
   wrap.className = 'usage';
 
@@ -1331,6 +1365,16 @@ function usageBar(label, bucket) {
   }
 
   wrap.append(name, track, num);
+
+  // 초기화까지 남은 시간
+  const left = showReset ? untilReset(bucket && bucket.resetsAt) : null;
+  if (left) {
+    const reset = document.createElement('span');
+    reset.className = 'usage-reset';
+    reset.textContent = `↻ ${left}`;
+    reset.title = `${label} 사용량이 ${left} 뒤에 초기화됩니다`;
+    wrap.appendChild(reset);
+  }
   return wrap;
 }
 
@@ -1351,16 +1395,19 @@ function renderClaudeStatus() {
   const who = document.createElement('span');
   who.className = 'claude-who';
   who.textContent = `✳ ${info.email || info.name || 'Claude'}${info.plan ? ` (${info.plan})` : ''}`;
-  who.title = '이 서버에 로그인된 Claude Code 계정';
+  who.title = `이 서버에 로그인된 Claude Code 계정${info.stale ? ' (사용량은 마지막으로 받아온 값)' : ''}`;
   box.appendChild(who);
 
   if (info.session || info.week) {
-    box.appendChild(usageBar('세션', info.session));
-    box.appendChild(usageBar('주간', info.week));
+    box.appendChild(usageBar('세션', info.session, true));
+    box.appendChild(usageBar('주간', info.week, false));
   } else {
     const note = document.createElement('span');
     note.className = 'usage-label';
-    note.textContent = '사용량 조회 불가';
+    note.textContent = info.rateLimited ? '사용량 조회 잠시 제한됨' : '사용량 조회 불가';
+    note.title = info.rateLimited
+      ? 'Anthropic 사용량 API 호출 제한에 걸렸습니다. 잠시 뒤 자동으로 다시 시도합니다.'
+      : '';
     box.appendChild(note);
   }
 }
@@ -1770,7 +1817,6 @@ function renderStatus() {
   const l = activeLeaf();
   if (!g || !t || !l) {
     el.statusLeft.textContent = '준비됨';
-    el.statusRight.textContent = '';
     return;
   }
   const statusText = {
@@ -1780,13 +1826,8 @@ function renderStatus() {
     error: '접속 실패'
   }[l.status];
   el.statusLeft.textContent = `${g.host.username}@${g.host.host}:${g.host.port} · ${statusText}`;
-  const panes = leavesOf(t.root);
-  el.statusRight.textContent =
-    `${l.term.cols}×${l.term.rows} · ${state.fontSize}px · ` +
-    `메인 ${state.groups.indexOf(g) + 1}/${state.groups.length} · ` +
-    `서브 ${g.tabs.indexOf(t) + 1}/${g.tabs.length}` +
-    (panes.length > 1 ? ` · 분할 ${panes.indexOf(l) + 1}/${panes.length}` : '');
 }
+
 
 /* ------------------------------ 공용 컨텍스트 메뉴 ----------------------------- */
 
@@ -2098,6 +2139,31 @@ window.addEventListener(
         const n = Number(m[1]) - 1;
         if (e.altKey) selectGroupByIndex(n);
         else selectTabByIndex(n);
+        return;
+      }
+    }
+
+    /*
+     * 터미널 복사/붙여넣기.
+     *  - Ctrl+C : 선택한 글자가 있으면 복사(그리고 선택 해제), 없으면 그대로 셸로 보내 SIGINT
+     *  - Ctrl+V : 붙여넣기
+     * 입력창(메모장·탐색기 경로 등) 안에서는 브라우저 기본 동작을 그대로 둔다.
+     */
+    const inTerminal = !isTextInput(e.target);
+    if (inTerminal && !isMacPlatform && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      const key = e.key.toLowerCase();
+      const leaf = activeLeaf();
+      if (key === 'c' && leaf && leaf.term.hasSelection()) {
+        api.util.clipboardWrite(leaf.term.getSelection());
+        leaf.term.clearSelection();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (key === 'v' && leaf && leaf.status === 'ready') {
+        e.preventDefault();
+        e.stopPropagation();
+        api.util.clipboardRead().then((text) => text && api.ssh.write(leaf.sessionId, text));
         return;
       }
     }
@@ -2603,6 +2669,7 @@ async function doConnect() {
 claudePollTimer = setInterval(() => {
   const g = activeGroup();
   if (g) refreshClaudeInfo(g);
+  renderClaudeStatus(); // 초기화까지 남은 시간을 갱신
 }, 30000);
 
 // 시작: 지난번 탭 구성이 있으면 되살리고, 없으면 빈 검은 화면.

@@ -142,7 +142,8 @@ bind C-a send-prefix</pre>
       <h3>편집 / 보기</h3>
       <table>
         <tr><th>키</th><th>동작</th></tr>
-        <tr><td><kbd>⌘C</kbd> / <kbd>⌘V</kbd> (mac)<br /><kbd>Ctrl+Shift+C</kbd> / <kbd>Ctrl+Shift+V</kbd> (win)</td><td>복사 / 붙여넣기</td></tr>
+        <tr><td><kbd>Ctrl+C</kbd> / <kbd>Ctrl+V</kbd></td><td>복사 / 붙여넣기 (선택한 글자가 없으면 Ctrl+C 는 셸로 <code>^C</code> 전달)</td></tr>
+        <tr><td><kbd>⌘C</kbd> / <kbd>⌘V</kbd> (mac)<br /><kbd>Ctrl+Shift+C</kbd> / <kbd>Ctrl+Shift+V</kbd></td><td>복사 / 붙여넣기</td></tr>
         <tr><td>드래그</td><td>선택하면 자동 복사</td></tr>
         <tr><td>우클릭</td><td>붙여넣기</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>F</kbd></td><td>화면 내 검색</td></tr>

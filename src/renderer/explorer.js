@@ -42,7 +42,7 @@ window.Explorer = (function () {
   const joinRemote = (base, name) => (base === '/' ? `/${name}` : `${base.replace(/\/+$/, '')}/${name}`);
 
   /**
-   * @param {object} opts { connect: {hostId, credId}, hostLabel: string }
+   * @param {object} opts { getConnect(): {hostId, credId}, hostLabel: string }
    */
   function create(opts) {
     const ex = {
@@ -99,6 +99,9 @@ window.Explorer = (function () {
       if (e.key === 'Escape') pathInput.value = ex.cwd;
     });
 
+    const reconnectBtn = mkBtn('⟲ 다시 연결', 'SFTP 연결을 다시 맺습니다', () => reconnect());
+    reconnectBtn.classList.add('hidden', 'danger');
+
     const uploadBtn = mkBtn('⬆ 업로드', '이 폴더로 파일 업로드', () => pickAndUpload(false));
     const newDirBtn = mkBtn('+ 폴더', '새 폴더 만들기', () => createEntry('dir'));
     const hiddenBtn = mkBtn('숨김', '숨김 파일 표시 토글', () => {
@@ -107,7 +110,7 @@ window.Explorer = (function () {
       renderList();
     });
 
-    bar.append(backBtn, fwdBtn, homeBtn, reloadBtn, pathInput, hiddenBtn, newDirBtn, uploadBtn);
+    bar.append(backBtn, fwdBtn, homeBtn, reloadBtn, pathInput, reconnectBtn, hiddenBtn, newDirBtn, uploadBtn);
 
     const head = document.createElement('div');
     head.className = 'ex-head';
@@ -165,19 +168,63 @@ window.Explorer = (function () {
 
     /* ------------------------------ 접속 / 이동 ------------------------------ */
 
-    async function ensureSession() {
-      if (ex.sftpId) return ex.sftpId;
+    async function ensureSession(force) {
+      if (ex.sftpId && !force) return ex.sftpId;
       setStatus('SFTP 연결 중…', true);
-      const res = await api.sftp.open(opts.connect);
+      const connect = typeof opts.getConnect === 'function' ? opts.getConnect() : opts.connect;
+      const res = await api.sftp.open(connect);
       ex.sftpId = res.sftpId;
-      ex.cwd = res.home || '/';
+      if (!ex.cwd || ex.cwd === '.') ex.cwd = res.home || '/';
+      reconnectBtn.classList.add('hidden');
       return ex.sftpId;
+    }
+
+    /** 연결이 끊겼을 때 나는 오류인지 */
+    const isDisconnected = (err) =>
+      /세션이 없습니다|not connected|No response|closed|ECONNRESET|EPIPE|Channel/i.test(String((err && err.message) || err));
+
+    /**
+     * SFTP 작업 실행기.
+     * 연결이 끊겨 있으면 자동으로 한 번 다시 연결하고 그 작업을 재시도한다.
+     */
+    async function withSession(fn) {
+      try {
+        await ensureSession();
+        return await fn();
+      } catch (err) {
+        if (!isDisconnected(err)) throw err;
+        setStatus('SFTP 연결이 끊겨 다시 연결하는 중…', true);
+        try {
+          ex.sftpId = null;
+          await ensureSession(true);
+          const out = await fn();
+          setStatus('다시 연결했습니다.');
+          return out;
+        } catch (err2) {
+          ex.sftpId = null;
+          reconnectBtn.classList.remove('hidden');
+          setStatus(`SFTP 연결 실패: ${cleanErr(err2)} — "⟲ 다시 연결" 을 눌러 주세요.`, true);
+          throw err2;
+        }
+      }
+    }
+
+    /** 사용자가 직접 다시 연결 */
+    async function reconnect() {
+      ex.sftpId = null;
+      try {
+        await ensureSession(true);
+        await refresh();
+        setStatus('다시 연결했습니다.');
+      } catch (err) {
+        reconnectBtn.classList.remove('hidden');
+        setStatus(`다시 연결 실패: ${cleanErr(err)}`, true);
+      }
     }
 
     async function navigate(target, push = true) {
       try {
-        await ensureSession();
-        const abs = await api.sftp.realpath(ex.sftpId, target || '.');
+        const abs = await withSession(() => api.sftp.realpath(ex.sftpId, target || '.'));
         if (abs === ex.cwd && ex.histIndex >= 0) return;
         ex.cwd = abs;
         if (push) {
@@ -219,9 +266,8 @@ window.Explorer = (function () {
 
     async function refresh() {
       try {
-        await ensureSession();
         setStatus('불러오는 중…', true);
-        ex.entries = await api.sftp.list(ex.sftpId, ex.cwd);
+        ex.entries = await withSession(() => api.sftp.list(ex.sftpId, ex.cwd));
 
         // 펼쳐 둔 하위 폴더들도 같이 새로 읽는다 (없어진 폴더는 접는다)
         ex.children.clear();
@@ -231,7 +277,7 @@ window.Explorer = (function () {
             continue;
           }
           try {
-            ex.children.set(dir, await api.sftp.list(ex.sftpId, dir));
+            ex.children.set(dir, await withSession(() => api.sftp.list(ex.sftpId, dir)));
           } catch (e) {
             ex.expanded.delete(dir);
           }
@@ -260,7 +306,7 @@ window.Explorer = (function () {
       try {
         if (!ex.children.has(entry.path)) {
           setStatus(`${entry.name} 불러오는 중…`, true);
-          ex.children.set(entry.path, await api.sftp.list(ex.sftpId, entry.path));
+          ex.children.set(entry.path, await withSession(() => api.sftp.list(ex.sftpId, entry.path)));
         }
         ex.expanded.add(entry.path);
         renderList();
@@ -468,7 +514,7 @@ window.Explorer = (function () {
         ex.transferKind = 'upload';
         showProgress('upload', paths.length === 1 ? paths[0].split(/[\\/]/).pop() : `${paths.length}개 항목`, 0, 1);
         setStatus(`업로드 중… (${paths.length}개)`, true);
-        await api.sftp.upload({ id: ex.sftpId, localPaths: paths, remoteDir: destDir });
+        await withSession(() => api.sftp.upload({ id: ex.sftpId, localPaths: paths, remoteDir: destDir }));
         setStatus(`업로드 완료 (${paths.length}개)`);
         await refresh();
       } catch (err) {
@@ -490,7 +536,7 @@ window.Explorer = (function () {
       const dest = joinRemote(destDir, name);
       if (src === dest || destDir === src) return;
       try {
-        await api.sftp.rename(ex.sftpId, src, dest);
+        await withSession(() => api.sftp.rename(ex.sftpId, src, dest));
         setStatus(`${name} → ${destDir} 이동됨`);
         await refresh();
       } catch (err) {
@@ -503,7 +549,7 @@ window.Explorer = (function () {
         ex.transferKind = 'download';
         showProgress('download', entry.name, 0, 1);
         setStatus(`${entry.name} 내려받는 중… (내 PC 로 꺼내기)`, true);
-        const res = await api.sftp.dragOut({ id: ex.sftpId, remote: entry.path, name: entry.name });
+        const res = await withSession(() => api.sftp.dragOut({ id: ex.sftpId, remote: entry.path, name: entry.name }));
         if (res && res.dragStarted) setStatus(`${entry.name} 을(를) 끌어다 놓으세요`);
         else setStatus(`임시 폴더에 저장됨: ${res && res.path}`, true);
       } catch (err) {
@@ -519,12 +565,12 @@ window.Explorer = (function () {
           ex.transferKind = 'download';
           showProgress('download', entry.name, 0, 1);
           setStatus(`${entry.name} 내려받는 중…`, true);
-          const saved = await api.sftp.download({
+          const saved = await withSession(() => api.sftp.download({
             id: ex.sftpId,
             remote: entry.path,
             name: entry.name,
             isDir: entry.type === 'dir' || entry.linkToDir
-          });
+          }));
           if (!saved) hideProgress(); // 저장 위치 선택을 취소한 경우
           setStatus(saved ? `저장됨: ${saved}` : '취소됨');
         } catch (err) {
@@ -541,8 +587,8 @@ window.Explorer = (function () {
       if (!name) return;
       const target = joinRemote(ex.cwd, name);
       try {
-        if (kind === 'dir') await api.sftp.mkdir(ex.sftpId, target);
-        else await api.sftp.createFile(ex.sftpId, target);
+        if (kind === 'dir') await withSession(() => api.sftp.mkdir(ex.sftpId, target));
+        else await withSession(() => api.sftp.createFile(ex.sftpId, target));
         setStatus(`${name} 생성됨`);
         await refresh();
       } catch (err) {
@@ -554,7 +600,7 @@ window.Explorer = (function () {
       const name = await prompt('새 이름', entry.name);
       if (!name || name === entry.name) return;
       try {
-        await api.sftp.rename(ex.sftpId, entry.path, joinRemote(parentOf(entry.path), name));
+        await withSession(() => api.sftp.rename(ex.sftpId, entry.path, joinRemote(parentOf(entry.path), name)));
         setStatus(`이름 변경: ${entry.name} → ${name}`);
         await refresh();
       } catch (err) {
@@ -569,7 +615,7 @@ window.Explorer = (function () {
       for (const entry of entries) {
         try {
           setStatus(`${entry.name} 삭제 중…`, true);
-          await api.sftp.remove(ex.sftpId, entry.path);
+          await withSession(() => api.sftp.remove(ex.sftpId, entry.path));
         } catch (err) {
           setStatus(`삭제 실패: ${cleanErr(err)}`, true);
         }
