@@ -1,6 +1,6 @@
 {
   "name": "armux-terminal",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "iTerm 스타일의 크로스플랫폼 SSH 터미널 클라이언트 (Windows / macOS)",
   "main": "src/main/main.js",
   "author": "armux",
