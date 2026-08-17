@@ -3,10 +3,9 @@
 /**
  * 판(페인) 안에 뜨는 웹 브라우저.
  *
- * 크롬처럼 쓰라고 주소창 · 뒤로/앞으로 · 새로고침 · 북마크 바를 갖췄고,
- * 북마크 바에는 이 PC 에 설치된 **크롬의 북마크 바**를 읽어와 함께 보여 준다.
+ * 주소창 · 뒤로/앞으로 · 새로고침을 갖춘 단순한 브라우저다.
  *
- * 다만 크롬의 로그인 세션(쿠키)까지 가져올 수는 없다. 크롬이 프로필을 암호화해
+ * 크롬의 로그인 세션(쿠키)까지 가져올 수는 없다. 크롬이 프로필을 암호화해
  * 잠가 두기 때문이다. 그래서 로그인은 이 창에서 따로 하거나,
  * 주소창 오른쪽의 "크롬에서 열기" 로 진짜 크롬에 넘겨서 열면 된다.
  */
@@ -63,47 +62,12 @@ window.WebPane = (function () {
     });
     urlInput.addEventListener('focus', () => urlInput.select());
 
-    const starBtn = mk('☆', '이 페이지를 북마크에 추가', async () => {
-      await api.web.addBookmark({ name: state.title || state.url, url: state.url });
-      await loadBookmarks();
-    });
     const chromeBtn = mk('크롬에서 열기', '이 PC 의 기본 브라우저(크롬)로 열기 — 크롬 로그인/설정 그대로', () =>
       api.web.openExternal(state.url)
     );
     chromeBtn.classList.add('web-btn-wide');
 
-    bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, urlInput, starBtn, chromeBtn);
-
-    /* ------------------------------- 북마크 바 ------------------------------- */
-
-    const marks = document.createElement('div');
-    marks.className = 'web-marks';
-
-    async function loadBookmarks() {
-      const res = await api.web.bookmarks();
-      marks.innerHTML = '';
-      if (!res.items.length) {
-        const hint = document.createElement('span');
-        hint.className = 'web-marks-hint';
-        hint.textContent = '북마크가 없습니다. ☆ 로 추가하거나, 이 PC 의 크롬 북마크가 있으면 자동으로 보입니다.';
-        marks.appendChild(hint);
-        return;
-      }
-      for (const b of res.items) {
-        const chip = document.createElement('button');
-        chip.className = 'web-mark' + (b.mine ? ' mine' : '');
-        chip.textContent = b.name.length > 22 ? `${b.name.slice(0, 21)}…` : b.name;
-        chip.title = `${b.name}\n${b.url}${b.mine ? '\n(우클릭: 삭제)' : '\n(크롬 북마크)'}`;
-        chip.addEventListener('click', () => go(b.url));
-        chip.addEventListener('contextmenu', async (e) => {
-          e.preventDefault();
-          if (!b.mine) return;
-          await api.web.removeBookmark(b.url);
-          await loadBookmarks();
-        });
-        marks.appendChild(chip);
-      }
-    }
+    bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, urlInput, chromeBtn);
 
     /* -------------------------------- 웹 화면 -------------------------------- */
 
@@ -118,7 +82,7 @@ window.WebPane = (function () {
     const status = document.createElement('div');
     status.className = 'web-status';
 
-    root.append(bar, marks, view, status);
+    root.append(bar, view, status);
 
     /* --------------------------------- 동작 --------------------------------- */
 
@@ -173,7 +137,6 @@ window.WebPane = (function () {
     });
 
     urlInput.value = state.url;
-    loadBookmarks();
 
     return {
       el: root,
@@ -185,7 +148,6 @@ window.WebPane = (function () {
       },
       go,
       focus: () => urlInput.focus(),
-      reloadBookmarks: loadBookmarks,
       dispose: () => root.remove()
     };
   }

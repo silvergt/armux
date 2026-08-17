@@ -2795,9 +2795,7 @@ async function setDialogMode(mode) {
     dlg.webUrl.focus();
     try {
       const info = await api.web.chromeInfo();
-      dlg.webChromeInfo.textContent = info.chromeSource
-        ? `이 PC 의 크롬 북마크 ${info.count}개를 불러와 북마크 바에 보여 줍니다. (Chromium ${info.chromiumVersion})`
-        : `이 PC 에서 크롬 북마크를 찾지 못했습니다. 앱에서 ☆ 로 북마크를 직접 추가할 수 있습니다. (Chromium ${info.chromiumVersion})`;
+      dlg.webChromeInfo.textContent = `Chromium ${info.chromiumVersion} 엔진으로 표시됩니다.`;
     } catch (e) {
       dlg.webChromeInfo.textContent = '';
     }

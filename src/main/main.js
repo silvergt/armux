@@ -10,7 +10,6 @@ const sftp = require('./sftp');
 const claudeinfo = require('./claudeinfo');
 const notes = require('./notes');
 const updater = require('./updater');
-const webinfo = require('./webinfo');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -488,13 +487,7 @@ ipcMain.on('win:toggleDevTools', () => {
 
 /* ------------------------------- IPC: 웹 페인 -------------------------------- */
 
-ipcMain.handle('web:bookmarks', () => webinfo.bookmarks());
-ipcMain.handle('web:addBookmark', (e, item) => webinfo.addBookmark(item));
-ipcMain.handle('web:removeBookmark', (e, { url }) => webinfo.removeBookmark(url));
-ipcMain.handle('web:chromeInfo', () => {
-  const c = webinfo.chromeBookmarks();
-  return { chromeSource: c.source, count: c.items.length, chromiumVersion: process.versions.chrome };
-});
+ipcMain.handle('web:chromeInfo', () => ({ chromiumVersion: process.versions.chrome }));
 /** 시스템 기본 브라우저(보통 크롬)로 열기 */
 ipcMain.on('web:openExternal', (e, url) => {
   if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);

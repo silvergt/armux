@@ -63,9 +63,6 @@ contextBridge.exposeInMainWorld('armux', {
 
   /** 웹 페인 (판 안의 브라우저) */
   web: {
-    bookmarks: () => ipcRenderer.invoke('web:bookmarks'),
-    addBookmark: (item) => ipcRenderer.invoke('web:addBookmark', item),
-    removeBookmark: (url) => ipcRenderer.invoke('web:removeBookmark', { url }),
     chromeInfo: () => ipcRenderer.invoke('web:chromeInfo'),
     openExternal: (url) => ipcRenderer.send('web:openExternal', url),
     /** 크롬처럼 보이게 할 User-Agent (Electron 표시를 뺀다) */
