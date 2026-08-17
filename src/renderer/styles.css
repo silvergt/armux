@@ -1586,3 +1586,106 @@ button {
 .update-body .hint {
   margin-top: 10px;
 }
+
+/* ------------------------------- 실행 중 스피너 ------------------------------- */
+
+/* 일반 명령: 원형 스피너 */
+.spin-busy {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid rgba(122, 162, 247, 0.25);
+  border-top-color: #7aa2f7;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Claude 작동 중: 로고 모양(✳)이 도는 스피너 */
+.spin-claude {
+  flex: none;
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  line-height: 13px;
+  text-align: center;
+  color: #d97757; /* Claude 주황 */
+  font-size: 13px;
+  text-shadow: 0 0 6px rgba(217, 119, 87, 0.55);
+  animation: spin 1.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------- 파일 전송 진행 표시 (크게) ------------------------- */
+
+.ex-progress {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'title pct'
+    'bar   pct'
+    'meta  pct';
+  align-items: center;
+  gap: 4px 14px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, #161b23, #12161d);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.35);
+}
+.ex-progress.hidden {
+  display: none;
+}
+.ex-progress-title {
+  grid-area: title;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cfe3fa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ex-progress.upload .ex-progress-title {
+  color: #cdf3e4;
+}
+.ex-progress-bar {
+  grid-area: bar;
+  height: 12px;
+  border-radius: 7px;
+  background: #232a34;
+  border: 1px solid #333b47;
+  overflow: hidden;
+}
+.ex-progress-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #4da3ff, #7ad0ff);
+  transition: width 0.15s linear;
+}
+.ex-progress.upload .ex-progress-bar span {
+  background: linear-gradient(90deg, #4ec9a8, #8ce0c4);
+}
+.ex-progress-meta {
+  grid-area: meta;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.ex-progress-pct {
+  grid-area: pct;
+  font-size: 26px;
+  font-weight: 700;
+  color: #7ad0ff;
+  font-variant-numeric: tabular-nums;
+  min-width: 84px;
+  text-align: right;
+}
+.ex-progress.upload .ex-progress-pct {
+  color: #8ce0c4;
+}

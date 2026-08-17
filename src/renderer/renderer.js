@@ -188,6 +188,11 @@ function createLeaf(tab, connect, options) {
     alert: false, // Claude Code 등이 사용자 응답을 기다리는 중인지
     tail: '', // 알림 감지를 위한 최근 출력 버퍼(ANSI 제거본)
     lastInputAt: 0, // 마지막으로 사용자가 키를 누른 시각
+    busy: false, // 명령이 돌아가는 중인지
+    spin: null, // 표시할 스피너 종류: null | 'busy' | 'claude'
+    claudeAt: 0, // 마지막으로 Claude 작업 표시를 본 시각
+    lastOutputAt: 0,
+    lastLine: '', // 마지막 출력 줄 (프롬프트로 돌아왔는지 판단용)
     connect
   };
 
@@ -235,6 +240,11 @@ function createLeaf(tab, connect, options) {
   // 키 입력 → SSH 로 전달. 사용자가 직접 입력했다면 알림은 확인한 것으로 본다.
   term.onData((data) => {
     leaf.lastInputAt = Date.now();
+    if (data.includes('\r')) {
+      // 명령을 실행했다고 보고 스피너를 돌린다 (프롬프트가 돌아오면 멈춘다)
+      leaf.busy = true;
+      leaf.lastOutputAt = Date.now();
+    }
     clearAlert(leaf);
     if (leaf.sessionId && leaf.status === 'ready') {
       api.ssh.write(leaf.sessionId, data);
@@ -361,20 +371,60 @@ const ALERT_PATTERNS = [
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g;
 
-/** 출력 스트림을 훑어 "사용자 응답 대기" 상태를 감지한다 */
-function feedAlertDetector(leaf, text) {
-  if (text.includes('\x07')) {
-    if (Date.now() - leaf.lastInputAt > 3000) raiseAlert(leaf);
-    return;
-  }
-  const plain = text.replace(ANSI_RE, '');
-  if (!plain.trim()) return;
+/*
+ * 무엇이 돌아가는 중인지 판단하는 규칙.
+ *  - 사용자가 Enter 를 치면 실행 중으로 보고, 출력이 멎고 마지막 줄이 프롬프트면 끝난 것으로 본다.
+ *  - Claude Code 는 작업 중일 때 "esc to interrupt" 같은 표시를 계속 다시 그리므로,
+ *    최근 몇 초 안에 그 표시가 보였으면 "Claude 작동 중" 으로 본다.
+ */
+const PROMPT_RE = /[$#%>❯]\s*$/;
+const CLAUDE_BUSY_RE = /esc to interrupt|to interrupt\)|✻|Thinking…|Pondering|Puzzling|Deciphering/i;
+const BUSY_IDLE_MS = 400; // 출력이 이만큼 멎고 프롬프트면 종료로 판단
+const CLAUDE_WINDOW_MS = 2500; // 이 시간 안에 Claude 작업 표시가 있으면 작동 중
 
-  leaf.tail = (leaf.tail + plain).slice(-4000);
+/** 마지막 비어 있지 않은 줄 */
+function lastNonEmptyLine(text) {
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].replace(/\r/g, '').trimEnd();
+    if (l.trim()) return l;
+  }
+  return '';
+}
+
+/**
+ * 출력 스트림을 훑어 (1) 실행 중인지 (2) 사용자 응답을 기다리는지 판단한다.
+ *
+ * 주의: 셸 프롬프트에는 창 제목을 바꾸는 OSC 시퀀스(\x1b]0;…\x07)가 붙어 오는데,
+ * 그 끝의 \x07 을 터미널 벨로 오해하면 안 된다. 그래서 ANSI/OSC 를 먼저 걷어낸 뒤
+ * 남아 있는 \x07 만 진짜 벨로 본다.
+ */
+function feedAlertDetector(leaf, text) {
+  const plain = text.replace(ANSI_RE, '');
+
+  /* --- 실행 상태 --- */
+  leaf.lastOutputAt = Date.now();
+  if (CLAUDE_BUSY_RE.test(plain)) {
+    leaf.claudeAt = Date.now();
+    leaf.busy = true;
+  }
+  const line = lastNonEmptyLine(plain);
+  if (line) leaf.lastLine = line;
+
+  /* --- 진짜 벨 --- */
+  if (plain.includes('\x07')) {
+    if (Date.now() - leaf.lastInputAt > 3000) raiseAlert(leaf);
+  }
+
+  /* --- 응답 대기 문구 --- */
+  const body = plain.replace(/\x07/g, '');
+  if (!body.trim()) return;
+
+  leaf.tail = (leaf.tail + body).slice(-4000);
   const recent = leaf.tail.slice(-1200);
   if (ALERT_PATTERNS.some((re) => re.test(recent))) {
     raiseAlert(leaf);
-    leaf.tail = ''; // 같은 문구로 계속 다시 울리지 않도록 버퍼를 비운다
+    leaf.tail = ''; // 같은 문구로 계속 다시 울리지 않도록
   }
 }
 
@@ -407,6 +457,54 @@ function clearAlertsInTab(tab) {
 
 const tabHasAlert = (tab) => leavesOf(tab.root).some((l) => l.alert);
 const groupHasAlert = (group) => group.tabs.some(tabHasAlert);
+
+/** 모든 페인의 실행 상태를 다시 계산해 스피너 표시를 정한다 */
+function evaluateActivity() {
+  const now = Date.now();
+  let changed = false;
+
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const leaf of leavesOf(t.root)) {
+        const claude = now - (leaf.claudeAt || 0) < CLAUDE_WINDOW_MS;
+
+        let busy = leaf.busy;
+        if (busy && !claude && now - leaf.lastOutputAt > BUSY_IDLE_MS && PROMPT_RE.test(leaf.lastLine || '')) {
+          busy = false; // 프롬프트가 돌아왔다 = 명령이 끝났다
+        }
+        if (leaf.status !== 'ready') busy = false;
+        if (leaf.busy !== busy) {
+          leaf.busy = busy;
+          changed = true;
+        }
+
+        const kind = leaf.status !== 'ready' ? null : claude ? 'claude' : busy ? 'busy' : null;
+        if (leaf.spin !== kind) {
+          leaf.spin = kind;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) scheduleRender();
+}
+
+setInterval(evaluateActivity, 300);
+
+/** 탭 안에서 돌아가는 것이 있으면 그 종류를 알려준다 ('claude' 가 우선) */
+function tabSpin(tab) {
+  const kinds = leavesOf(tab.root).map((l) => l.spin);
+  if (kinds.includes('claude')) return 'claude';
+  if (kinds.includes('busy')) return 'busy';
+  return null;
+}
+
+const groupSpin = (group) => {
+  const kinds = group.tabs.map(tabSpin);
+  if (kinds.includes('claude')) return 'claude';
+  if (kinds.includes('busy')) return 'busy';
+  return null;
+};
 
 /* --------------------------------- 탭 / 그룹 --------------------------------- */
 
@@ -1303,6 +1401,29 @@ function statusDot(status) {
   return dot;
 }
 
+/**
+ * 실행 중 표시.
+ *  - 'busy'   : 원형 스피너 (일반 명령이 돌아가는 중)
+ *  - 'claude' : Claude 로고 모양(✳)이 도는 스피너
+ */
+function spinner(kind) {
+  const el2 = document.createElement('span');
+  if (kind === 'claude') {
+    el2.className = 'spin-claude';
+    el2.textContent = '✳';
+    el2.title = 'Claude Code 작동 중';
+  } else {
+    el2.className = 'spin-busy';
+    el2.title = '명령 실행 중';
+  }
+  return el2;
+}
+
+/** 돌아가는 것이 있으면 스피너를, 없으면 상태 점을 보여준다 */
+function statusMark(status, spin) {
+  return spin ? spinner(spin) : statusDot(status);
+}
+
 /** 탭(서브탭) 전체 상태: 하나라도 connecting 이면 connecting, 전부 closed 면 closed … */
 function tabStatus(tab) {
   const sts = leavesOf(tab.root).map((l) => l.status);
@@ -1347,7 +1468,7 @@ function renderTabstrip() {
       confirmCloseGroup(group);
     });
 
-    node.append(statusDot(cur ? tabStatus(cur) : 'closed'), idx, label);
+    node.append(statusMark(cur ? tabStatus(cur) : 'closed', groupSpin(group)), idx, label);
     // 서브탭 중 하나라도 응답 대기면 메인탭에도 표시
     if (groupHasAlert(group)) node.appendChild(alertBadge());
     node.appendChild(close);
@@ -1442,7 +1563,7 @@ function renderSubstrip() {
       confirmCloseTab(group, tab);
     });
 
-    node.append(statusDot(tabStatus(tab)), idx, label);
+    node.append(statusMark(tabStatus(tab), tabSpin(tab)), idx, label);
     if (tabHasAlert(tab)) node.appendChild(alertBadge());
     node.appendChild(close);
 

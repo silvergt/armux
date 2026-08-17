@@ -121,7 +121,22 @@ window.Explorer = (function () {
     const status = document.createElement('div');
     status.className = 'ex-status';
 
-    root.append(bar, head, listEl, status);
+    // 업로드/다운로드 진행 표시 (하단에 크게 뜬다)
+    const progress = document.createElement('div');
+    progress.className = 'ex-progress hidden';
+    const progTitle = document.createElement('div');
+    progTitle.className = 'ex-progress-title';
+    const progBarWrap = document.createElement('div');
+    progBarWrap.className = 'ex-progress-bar';
+    const progFill = document.createElement('span');
+    progBarWrap.appendChild(progFill);
+    const progMeta = document.createElement('div');
+    progMeta.className = 'ex-progress-meta';
+    const progPct = document.createElement('span');
+    progPct.className = 'ex-progress-pct';
+    progress.append(progTitle, progBarWrap, progMeta, progPct);
+
+    root.append(bar, head, listEl, progress, status);
     ex.el = root;
 
     // 왼쪽 고정 패널처럼 폭이 좁아지면 수정날짜/권한 열을 접어 이름 칸을 확보한다
@@ -450,14 +465,18 @@ window.Explorer = (function () {
     async function uploadPaths(paths, destDir) {
       try {
         ex.busy = true;
+        ex.transferKind = 'upload';
+        showProgress('upload', paths.length === 1 ? paths[0].split(/[\\/]/).pop() : `${paths.length}개 항목`, 0, 1);
         setStatus(`업로드 중… (${paths.length}개)`, true);
         await api.sftp.upload({ id: ex.sftpId, localPaths: paths, remoteDir: destDir });
         setStatus(`업로드 완료 (${paths.length}개)`);
         await refresh();
       } catch (err) {
+        hideProgress();
         setStatus(`업로드 실패: ${cleanErr(err)}`, true);
       } finally {
         ex.busy = false;
+        ex.transferKind = null;
       }
     }
 
@@ -481,6 +500,8 @@ window.Explorer = (function () {
 
     async function dragOutToOS(entry) {
       try {
+        ex.transferKind = 'download';
+        showProgress('download', entry.name, 0, 1);
         setStatus(`${entry.name} 내려받는 중… (내 PC 로 꺼내기)`, true);
         const res = await api.sftp.dragOut({ id: ex.sftpId, remote: entry.path, name: entry.name });
         if (res && res.dragStarted) setStatus(`${entry.name} 을(를) 끌어다 놓으세요`);
@@ -495,6 +516,8 @@ window.Explorer = (function () {
     async function downloadEntries(entries) {
       for (const entry of entries) {
         try {
+          ex.transferKind = 'download';
+          showProgress('download', entry.name, 0, 1);
           setStatus(`${entry.name} 내려받는 중…`, true);
           const saved = await api.sftp.download({
             id: ex.sftpId,
@@ -502,9 +525,13 @@ window.Explorer = (function () {
             name: entry.name,
             isDir: entry.type === 'dir' || entry.linkToDir
           });
+          if (!saved) hideProgress(); // 저장 위치 선택을 취소한 경우
           setStatus(saved ? `저장됨: ${saved}` : '취소됨');
         } catch (err) {
+          hideProgress();
           setStatus(`다운로드 실패: ${cleanErr(err)}`, true);
+        } finally {
+          ex.transferKind = null;
         }
       }
     }
@@ -705,11 +732,32 @@ window.Explorer = (function () {
 
     /* -------------------------------- 진행률 표시 ------------------------------- */
 
+    let progressTimer = null;
+
+    /** 전송 진행 카드 표시 */
+    function showProgress(kind, name, transferred, total) {
+      const pct = total ? Math.round((transferred / total) * 100) : 0;
+      progress.classList.remove('hidden');
+      progress.classList.toggle('upload', kind === 'upload');
+      progTitle.textContent = `${kind === 'upload' ? '⬆ 업로드 중' : '⬇ 다운로드 중'} — ${name}`;
+      progFill.style.width = `${pct}%`;
+      progMeta.textContent = `${fmtSize(transferred)} / ${fmtSize(total)}`;
+      progPct.textContent = `${pct}%`;
+
+      clearTimeout(progressTimer);
+      // 전송이 끝나면 잠깐 100% 를 보여 주고 사라진다
+      progressTimer = setTimeout(() => progress.classList.add('hidden'), pct >= 100 ? 1200 : 4000);
+    }
+
+    function hideProgress() {
+      clearTimeout(progressTimer);
+      progress.classList.add('hidden');
+    }
+
     api.sftp.onProgress(({ id, name, transferred, total }) => {
       if (id !== ex.sftpId || !total) return;
-      const pct = Math.round((transferred / total) * 100);
       const base = String(name).split(/[\\/]/).pop();
-      setStatus(`${base} — ${pct}% (${fmtSize(transferred)} / ${fmtSize(total)})`, true);
+      showProgress(ex.transferKind || 'download', base, transferred, total);
     });
 
     /* ---------------------------------- 정리 --------------------------------- */
