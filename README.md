@@ -45,7 +45,11 @@ iTerm 스타일의 크로스플랫폼(Windows / macOS) SSH 터미널 클라이�
 | `⌘D` (mac) / `Ctrl+Shift+D` (win) | 좌우로 분할 |
 | `⌘⇧D` (mac) / `Ctrl+Shift+E` (win) | 위아래로 분할 |
 | `Ctrl` + `` ` `` | 파일 탐색기 켜고 끄기 |
-| `Alt` + 방향키 | 분할된 창 사이 이동 |
+| `⌘⌥`(mac) / `Ctrl+Alt`(win) + 방향키 | 분할된 창 사이 이동 |
+| `⌥←` `⌥→` (mac) / `Alt+←` `Alt+→` | 한 단어 뒤로 / 앞으로 |
+| `⌘←` `⌘→` (mac) | 줄 처음 / 줄 끝 |
+| `⌥⌫` / `Alt+⌫` | 한 단어 삭제 |
+| `⌘⌫` (mac) | 줄 처음까지 삭제 |
 | `Ctrl/⌘` + `W` | 현재 분할 창 닫기 (마지막이면 탭이 닫힘) |
 | `Ctrl+C` / `Ctrl+V` (win·linux) | 복사 / 붙여넣기. **선택한 글자가 없으면 `Ctrl+C` 는 평소대로 셸에 `^C`(SIGINT)로 전달된다** |
 | `⌘C` / `⌘V` (mac), `Ctrl+Shift+C` / `Ctrl+Shift+V` | 복사 / 붙여넣기 |

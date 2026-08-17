@@ -66,8 +66,13 @@ def write_icns(image, path):
         f.write(b'icns' + struct.pack('>I', len(body) + 8) + body)
 
 
+# macOS 아이콘은 다른 앱과 크기를 맞추기 위해 아트워크를 85% 로 줄이고 둘레에 투명 여백을 둔다
+mac_canvas = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+scaled = round(S * 0.85)
+off = (S - scaled) // 2
+mac_canvas.paste(img.resize((scaled, scaled), Image.LANCZOS), (off, off), img.resize((scaled, scaled), Image.LANCZOS))
 icns_path = os.path.join(out_dir, 'icon.icns')
-write_icns(img, icns_path)
+write_icns(mac_canvas, icns_path)
 
 # 렌더러(정보 창)에서 표시할 사본
 renderer_dir = os.path.join(os.path.dirname(out_dir), 'src', 'renderer', 'assets')

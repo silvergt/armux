@@ -252,6 +252,33 @@ function createLeaf(tab, connect, options) {
   }
   term.open(termHost);
 
+  // 터미널 커서 이동/삭제 단축키를 표준 시퀀스로 변환해 셸로 보낸다.
+  // (mac 의 ⌘/⌥ 조합과 Alt+방향키를 iTerm/Terminal.app 과 같게 맞춘다)
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    if (!leaf.sessionId || leaf.status !== 'ready') return true;
+    const send = (seq) => {
+      api.ssh.write(leaf.sessionId, seq);
+      return false; // xterm 기본 처리 중단
+    };
+    const mac = isMacPlatform;
+    const cmd = mac && e.metaKey && !e.ctrlKey && !e.altKey;
+    const opt = e.altKey && !e.metaKey && !e.ctrlKey; // Option / Alt 단독
+
+    // ⌘⌥ / Ctrl+Alt + 방향키는 분할 창 이동(위에서 처리)이므로 건드리지 않는다
+    if (e.altKey && (mac ? e.metaKey : e.ctrlKey)) return true;
+
+    if (opt && e.key === 'ArrowLeft') return send('\x1bb'); // 한 단어 뒤로
+    if (opt && e.key === 'ArrowRight') return send('\x1bf'); // 한 단어 앞으로
+    if (opt && (e.key === 'Backspace')) return send('\x1b\x7f'); // 한 단어 삭제
+
+    if (cmd && e.key === 'ArrowLeft') return send('\x01'); // 줄 처음(Ctrl+A)
+    if (cmd && e.key === 'ArrowRight') return send('\x05'); // 줄 끝(Ctrl+E)
+    if (cmd && e.key === 'Backspace') return send('\x15'); // 줄 처음까지 삭제(Ctrl+U)
+
+    return true;
+  });
+
   // GPU 렌더러. 기본 DOM 렌더러보다 훨씬 가볍다(특히 macOS).
   // 컨텍스트를 잃으면 자동으로 기본 렌더러로 돌아간다.
   try {
@@ -451,7 +478,8 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
  *   3) 그 밖의 모든 경우                 → 연결 상태 점
  * 일반 명령 실행이나 전체화면 앱은 따로 표시하지 않는다.
  */
-const CLAUDE_WORK_RE = /esc to interrupt/i; // Claude 가 작업 중일 때만 화면에 있는 문구
+// Claude Code 가 "작업 중"일 때만 화면 하단에 나타나는 문구들
+const CLAUDE_WORK_RE = /esc to interrupt|interrupt\)|to interrupt/i;
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
 /** 마지막 비어 있지 않은 줄 */
@@ -1532,8 +1560,8 @@ function rebuildLayout(tab, group, node, schedule) {
  * 조회는 그 서버에서 실행되고(토큰은 서버 밖으로 나가지 않는다) 결과만 받아온다.
  */
 
-const CLAUDE_POLL_MS = 300000; // 5분마다 갱신 (사용량 API 는 호출이 잦으면 제한된다)
-const CLAUDE_BACKOFF_MS = 900000; // 제한에 걸리면 15분 쉬었다 다시
+const CLAUDE_POLL_MS = 60000; // 60초마다 갱신
+const CLAUDE_BACKOFF_MS = 180000; // 호출 제한(429)에 걸리면 3분 쉬었다 다시
 let claudePollTimer = null;
 
 /** 그룹의 살아 있는 세션 하나를 고른다 (조회용 exec 채널을 열 연결) */
@@ -1641,6 +1669,11 @@ function renderClaudeStatus() {
 
   box.classList.remove('hidden');
   box.innerHTML = '';
+  box.title = '클릭하면 사용량을 지금 새로고침';
+  box.onclick = () => {
+    const g = activeGroup();
+    if (g) refreshClaudeInfo(g, true);
+  };
 
   const who = document.createElement('span');
   who.className = 'claude-who';
@@ -2565,8 +2598,9 @@ window.addEventListener(
       }
     }
 
-    // Alt + 방향키 → 분할된 페인 사이 이동
-    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+    // 분할 창 이동: ⌘⌥+방향키(mac) / Ctrl+Alt+방향키(win)
+    // (Alt+방향키 단독은 터미널의 "단어 이동" 으로 넘겨야 하므로 여기서 잡지 않는다)
+    if (e.altKey && hasMod(e)) {
       const dirs = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
       if (dirs[e.key]) {
         e.preventDefault();
@@ -3062,7 +3096,7 @@ claudePollTimer = setInterval(() => {
   const g = activeGroup();
   if (g) refreshClaudeInfo(g);
   renderClaudeStatus(); // 초기화까지 남은 시간을 갱신
-}, 30000);
+}, 20000);
 
 // 시작: 지난번 탭 구성이 있으면 되살리고, 없으면 빈 검은 화면.
 render();
