@@ -9,6 +9,7 @@ const ssh = require('./ssh');
 const sftp = require('./sftp');
 const claudeinfo = require('./claudeinfo');
 const notes = require('./notes');
+const updater = require('./updater');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -78,6 +79,8 @@ function createWindow() {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  updater.init(send); // 업데이트 진행 상태를 렌더러로 보낸다
 
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
@@ -173,6 +176,19 @@ function buildMenu() {
         { type: 'separator' },
         { role: 'togglefullscreen' },
         { role: 'toggleDevTools' }
+      ]
+    },
+    {
+      label: '정보',
+      submenu: [
+        {
+          label: '버전',
+          click: () => mainWindow && mainWindow.webContents.send('menu:about')
+        },
+        {
+          label: '업데이트 확인',
+          click: () => mainWindow && mainWindow.webContents.send('menu:update')
+        }
       ]
     },
     {
@@ -374,6 +390,42 @@ function dragIcon() {
   }
   return cachedDragIcon;
 }
+
+/* --------------------------- IPC: 앱 정보 / 업데이트 --------------------------- */
+
+/** 빌드 시점 정보 (scripts/write-buildinfo.js 가 만든다) */
+function buildInfo() {
+  try {
+    return require('../buildinfo.json');
+  } catch (err) {
+    return { version: app.getVersion(), builtAt: null, commit: '' };
+  }
+}
+
+ipcMain.handle('app:info', () => {
+  const info = buildInfo();
+  return {
+    name: 'Armux Terminal',
+    version: info.version || app.getVersion(),
+    builtAt: info.builtAt,
+    commit: info.commit || '',
+    developer: 'Jun Yeol Yang',
+    repoUrl: `https://github.com/${updater.REPO.owner}/${updater.REPO.repo}`,
+    releasesUrl: updater.RELEASES_URL,
+    electron: process.versions.electron,
+    node: process.versions.node,
+    packaged: app.isPackaged
+  };
+});
+
+ipcMain.handle('update:check', () => updater.check());
+ipcMain.handle('update:download', () => updater.download());
+ipcMain.handle('update:install', () => updater.install());
+ipcMain.handle('update:state', () => updater.getState());
+ipcMain.on('update:openReleases', () => updater.openReleases());
+ipcMain.on('app:openExternal', (e, url) => {
+  if (/^https:\/\//.test(String(url))) shell.openExternal(url);
+});
 
 /* --------------------------------- IPC: 메모장 -------------------------------- */
 

@@ -19,7 +19,14 @@
         <div id="tabstrip"></div>
         <button id="new-group-btn" class="plus-btn" title="새 SSH 탭 (Ctrl/⌘+N)">+</button>
         <div id="clock" title="한국 · 홍콩 · 미국 동부 시간"></div>
+        <button id="info-btn" class="help-btn" title="정보 (버전 / 업데이트)">정보 ▾</button>
         <button id="help-btn" class="help-btn" title="도움말 (tmux 사용법 / 단축키)">도움 ▾</button>
+      </div>
+
+      <!-- 정보 드롭다운 -->
+      <div id="info-menu" class="dropdown hidden">
+        <button data-info="version">버전</button>
+        <button data-info="update">업데이트</button>
       </div>
 
       <!-- 도움 드롭다운 -->
@@ -142,6 +149,51 @@
           <button id="host-save" class="btn hidden">저장</button>
           <button id="modal-cancel" class="btn">취소</button>
           <button id="modal-connect" class="btn btn-primary">접속</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 버전 정보 모달 -->
+    <div id="about-backdrop" class="hidden">
+      <div id="about-modal">
+        <div class="modal-head">
+          <span>프로그램 정보</span>
+          <button id="about-close" class="icon-btn">✕</button>
+        </div>
+        <div class="about-body">
+          <img id="about-icon" class="about-icon" src="assets/icon.png" alt="Armux Terminal" />
+          <div class="about-name">Armux Terminal</div>
+          <div class="about-rows">
+            <div><span>버전</span><b id="about-version">—</b></div>
+            <div><span>빌드 날짜</span><b id="about-built">—</b></div>
+            <div><span>개발자</span><b>Jun Yeol Yang</b></div>
+            <div><span>기반</span><b id="about-engine">—</b></div>
+          </div>
+          <div class="about-actions">
+            <button id="about-github" class="btn btn-primary">GitHub 바로가기</button>
+            <button id="about-update" class="btn">업데이트 확인</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 업데이트 모달 -->
+    <div id="update-backdrop" class="hidden">
+      <div id="update-modal">
+        <div class="modal-head">
+          <span>업데이트</span>
+          <button id="update-close" class="icon-btn">✕</button>
+        </div>
+        <div class="update-body">
+          <div id="update-message">업데이트를 확인하는 중…</div>
+          <div id="update-bar" class="update-bar hidden"><span id="update-fill"></span></div>
+          <div id="update-detail" class="hint"></div>
+        </div>
+        <div class="modal-foot">
+          <button id="update-releases" class="btn">릴리스 페이지 열기</button>
+          <span class="spacer"></span>
+          <button id="update-again" class="btn">다시 확인</button>
+          <button id="update-action" class="btn btn-primary hidden">내려받기</button>
         </div>
       </div>
     </div>

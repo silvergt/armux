@@ -904,37 +904,42 @@ const CLOCK_ZONES = [
   { label: '미국', tz: 'America/New_York' }
 ];
 
-function renderClock() {
-  const now = new Date();
-  el.clock.innerHTML = '';
-  for (const z of CLOCK_ZONES) {
-    const fmt = new Intl.DateTimeFormat('ko-KR', {
+// 지역별 포맷터와 DOM 은 한 번만 만들어 두고, 갱신할 때는 글자만 바꾼다(0.5초 주기라도 부담 없음)
+const clockCells = CLOCK_ZONES.map((z) => {
+  const item = document.createElement('span');
+  item.className = 'clock-item';
+  item.title = `${z.label} (${z.tz})`;
+  const name = document.createElement('span');
+  name.className = 'clock-zone';
+  name.textContent = z.label;
+  const val = document.createElement('span');
+  val.className = 'clock-time';
+  item.append(name, val);
+  el.clock.appendChild(item);
+  return {
+    val,
+    fmt: new Intl.DateTimeFormat('ko-KR', {
       timeZone: z.tz,
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
-    });
-    // "08. 17. 18:05" 형태를 "08/17 18:05" 로 정리
-    const text = fmt.format(now).replace(/\.\s*/g, '/').replace(/\/\s*(\d{2}:)/, ' $1').replace(/\/$/, '');
+    })
+  };
+});
 
-    const item = document.createElement('span');
-    item.className = 'clock-item';
-    const name = document.createElement('span');
-    name.className = 'clock-zone';
-    name.textContent = z.label;
-    const val = document.createElement('span');
-    val.className = 'clock-time';
-    val.textContent = text;
-    item.append(name, val);
-    item.title = `${z.label} (${z.tz})`;
-    el.clock.appendChild(item);
+function renderClock() {
+  const now = new Date();
+  for (const cell of clockCells) {
+    // "08. 17. 18:05" → "08/17 18:05"
+    const text = cell.fmt.format(now).replace(/\.\s*/g, '/').replace(/\/\s*(\d{2}:)/, ' $1').replace(/\/$/, '');
+    if (cell.val.textContent !== text) cell.val.textContent = text; // 바뀔 때만 DOM 갱신
   }
 }
 
 renderClock();
-setInterval(renderClock, 15000);
+setInterval(renderClock, 500); // 분이 바뀌는 순간을 놓치지 않도록 0.5초마다 확인
 
 /* --------------------------------- 메모장 ---------------------------------- */
 
@@ -1539,6 +1544,14 @@ function renderPaneOverlay(leaf) {
     };
     bar.append(
       mk('⇱', '이 창을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
+      mk('⤒', '맨 위로 (스크롤 처음으로)', () => {
+        focusLeaf(leaf);
+        leaf.term.scrollToTop();
+      }),
+      mk('⤓', '맨 아래로 (최신 출력으로)', () => {
+        focusLeaf(leaf);
+        leaf.term.scrollToBottom();
+      }),
       mk('▯|▯', '좌우로 분할 (mac ⌘D / win Ctrl+Shift+D)', () => {
         focusLeaf(leaf);
         splitActive('row');
@@ -1859,6 +1872,12 @@ api.onMenu(async (cmd, arg) => {
     case 'help-shortcuts':
       openHelp('shortcuts');
       break;
+    case 'about':
+      openAbout();
+      break;
+    case 'update':
+      openUpdate();
+      break;
     default:
       break;
   }
@@ -1868,10 +1887,14 @@ api.onMenu(async (cmd, arg) => {
 window.addEventListener(
   'keydown',
   (e) => {
-    if (modalOpen() || helpOpen()) {
+    const aboutOpen = !aboutBackdrop.classList.contains('hidden');
+    const updOpen = !updateBackdrop.classList.contains('hidden');
+    if (modalOpen() || helpOpen() || aboutOpen || updOpen) {
       if (e.key === 'Escape') {
         if (modalOpen()) closeDialog();
-        else closeHelp();
+        else if (helpOpen()) closeHelp();
+        else if (aboutOpen) closeAbout();
+        else closeUpdate();
       }
       return;
     }
@@ -2012,6 +2035,113 @@ document.addEventListener('click', () => toggleHelpMenu(false));
 document.getElementById('help-close').addEventListener('click', closeHelp);
 helpBackdrop.addEventListener('mousedown', (e) => {
   if (e.target === helpBackdrop) closeHelp();
+});
+
+/* ------------------------------ 정보 / 업데이트 ------------------------------- */
+
+const infoBtn = document.getElementById('info-btn');
+const infoMenu = document.getElementById('info-menu');
+const aboutBackdrop = document.getElementById('about-backdrop');
+const updateBackdrop = document.getElementById('update-backdrop');
+const updateMsg = document.getElementById('update-message');
+const updateDetail = document.getElementById('update-detail');
+const updateBar = document.getElementById('update-bar');
+const updateFill = document.getElementById('update-fill');
+const updateAction = document.getElementById('update-action');
+
+let appInfo = null;
+
+function toggleInfoMenu(show) {
+  const want = show === undefined ? infoMenu.classList.contains('hidden') : show;
+  infoMenu.classList.toggle('hidden', !want);
+  if (want) {
+    const r = infoBtn.getBoundingClientRect();
+    infoMenu.style.top = `${Math.round(r.bottom + 2)}px`;
+    infoMenu.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+  }
+}
+
+async function openAbout() {
+  toggleInfoMenu(false);
+  appInfo = appInfo || (await api.app.info());
+  document.getElementById('about-version').textContent = `v${appInfo.version}${
+    appInfo.commit ? ` (${appInfo.commit})` : ''
+  }`;
+  document.getElementById('about-built').textContent = appInfo.builtAt
+    ? new Date(appInfo.builtAt).toLocaleString('ko-KR', { dateStyle: 'long', timeStyle: 'short' })
+    : '알 수 없음';
+  document.getElementById('about-engine').textContent = `Electron ${appInfo.electron} · Node ${appInfo.node}`;
+  aboutBackdrop.classList.remove('hidden');
+}
+
+const closeAbout = () => aboutBackdrop.classList.add('hidden');
+
+/** 업데이트 상태를 화면에 반영 */
+function renderUpdateState(st) {
+  const texts = {
+    idle: '업데이트를 확인해 보세요.',
+    checking: '새 버전을 확인하는 중…',
+    none: `최신 버전입니다${appInfo ? ` (v${appInfo.version})` : ''}.`,
+    available: `새 버전 v${st.version} 이(가) 있습니다.`,
+    downloading: `새 버전을 내려받는 중… ${st.progress || 0}%`,
+    ready: `v${st.version} 내려받기 완료. 지금 설치하면 앱이 다시 시작됩니다.`,
+    error: '업데이트를 확인하지 못했습니다.',
+    unsupported: '이 실행 방식에서는 자동 업데이트를 쓸 수 없습니다.'
+  };
+  updateMsg.textContent = texts[st.status] || '';
+  updateDetail.textContent = st.error || '';
+
+  const showBar = st.status === 'downloading' || st.status === 'ready';
+  updateBar.classList.toggle('hidden', !showBar);
+  updateFill.style.width = `${st.status === 'ready' ? 100 : st.progress || 0}%`;
+
+  updateAction.classList.toggle('hidden', !(st.status === 'available' || st.status === 'ready'));
+  updateAction.textContent = st.status === 'ready' ? '지금 설치하고 다시 시작' : '내려받기';
+  updateAction.onclick = () => {
+    if (st.status === 'ready') api.update.install();
+    else api.update.download();
+  };
+}
+
+async function openUpdate() {
+  toggleInfoMenu(false);
+  appInfo = appInfo || (await api.app.info());
+  updateBackdrop.classList.remove('hidden');
+  renderUpdateState({ status: 'checking' });
+  renderUpdateState(await api.update.check());
+}
+
+const closeUpdate = () => updateBackdrop.classList.add('hidden');
+
+api.update.onState((st) => {
+  if (!updateBackdrop.classList.contains('hidden')) renderUpdateState(st);
+});
+
+infoBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleHelpMenu(false);
+  toggleInfoMenu();
+});
+infoMenu.querySelectorAll('button').forEach((b) => {
+  b.addEventListener('click', () => (b.dataset.info === 'version' ? openAbout() : openUpdate()));
+});
+document.addEventListener('click', () => toggleInfoMenu(false));
+
+document.getElementById('about-close').addEventListener('click', closeAbout);
+document.getElementById('about-github').addEventListener('click', () => api.app.openExternal(appInfo.repoUrl));
+document.getElementById('about-update').addEventListener('click', () => {
+  closeAbout();
+  openUpdate();
+});
+aboutBackdrop.addEventListener('mousedown', (e) => {
+  if (e.target === aboutBackdrop) closeAbout();
+});
+
+document.getElementById('update-close').addEventListener('click', closeUpdate);
+document.getElementById('update-releases').addEventListener('click', () => api.update.openReleases());
+document.getElementById('update-again').addEventListener('click', async () => renderUpdateState(await api.update.check()));
+updateBackdrop.addEventListener('mousedown', (e) => {
+  if (e.target === updateBackdrop) closeUpdate();
 });
 
 /* ---------------------------------- 검색바 ---------------------------------- */

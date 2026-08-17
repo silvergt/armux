@@ -41,6 +41,20 @@ contextBridge.exposeInMainWorld('armux', {
     onProgress: (cb) => ipcRenderer.on('sftp:progress', (e, p) => cb(p))
   },
 
+  /** 앱 정보 / 자동 업데이트 */
+  app: {
+    info: () => ipcRenderer.invoke('app:info'),
+    openExternal: (url) => ipcRenderer.send('app:openExternal', url)
+  },
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    install: () => ipcRenderer.invoke('update:install'),
+    state: () => ipcRenderer.invoke('update:state'),
+    openReleases: () => ipcRenderer.send('update:openReleases'),
+    onState: (cb) => ipcRenderer.on('update:state', (e, p) => cb(p))
+  },
+
   /** 메모장 (<userData>/notes/*.md) */
   notes: {
     list: () => ipcRenderer.invoke('notes:list'),
@@ -92,7 +106,9 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:find',
       'menu:font',
       'menu:help-tmux',
-      'menu:help-shortcuts'
+      'menu:help-shortcuts',
+      'menu:about',
+      'menu:update'
     ];
     for (const ch of channels) {
       ipcRenderer.on(ch, (e, arg) => cb(ch.replace('menu:', ''), arg));

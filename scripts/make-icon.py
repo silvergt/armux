@@ -69,6 +69,12 @@ def write_icns(image, path):
 icns_path = os.path.join(out_dir, 'icon.icns')
 write_icns(img, icns_path)
 
+# 렌더러(정보 창)에서 표시할 사본
+renderer_dir = os.path.join(os.path.dirname(out_dir), 'src', 'renderer', 'assets')
+os.makedirs(renderer_dir, exist_ok=True)
+img.resize((256, 256), Image.LANCZOS).save(os.path.join(renderer_dir, 'icon.png'))
+print('wrote', os.path.join(renderer_dir, 'icon.png'))
+
 print('wrote', png_path)
 print('wrote', ico_path)
 print('wrote', icns_path)
