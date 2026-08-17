@@ -188,9 +188,8 @@ function createLeaf(tab, connect, options) {
     lastInputAt: 0, // 마지막으로 사용자가 키를 누른 시각
     busy: false, // 명령이 돌아가는 중인지
     spin: null, // 표시할 스피너 종류: null | 'busy' | 'claude'
-    claudeAt: 0, // 마지막으로 Claude 작업 표시를 본 시각
+    wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지
     lastOutputAt: 0,
-    lastLine: '', // 마지막 출력 줄 (프롬프트로 돌아왔는지 판단용)
     connect
   };
 
@@ -370,15 +369,21 @@ const ALERT_PATTERNS = [
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g;
 
 /*
- * 무엇이 돌아가는 중인지 판단하는 규칙.
- *  - 사용자가 Enter 를 치면 실행 중으로 보고, 출력이 멎고 마지막 줄이 프롬프트면 끝난 것으로 본다.
- *  - Claude Code 는 작업 중일 때 "esc to interrupt" 같은 표시를 계속 다시 그리므로,
- *    최근 몇 초 안에 그 표시가 보였으면 "Claude 작동 중" 으로 본다.
+ * 무엇이 돌아가는 중인지는 "지금 화면에 무엇이 떠 있는가" 로 판단한다.
+ * (출력 스트림만 보고 추측하면, Claude 처럼 프롬프트를 감추는 화면에서 영원히 실행 중으로 남는다)
+ *
+ *   1) 화면에 "esc to interrupt" 가 있다        → Claude 가 생각하는 중  (✳ 스피너)
+ *   2) Claude 화면은 떠 있지만 위 표시가 없다    → 입력 대기. 아무 표시도 하지 않는다
+ *   3) 대체 화면 버퍼(vim·htop 등 전체화면 앱)   → 프로그램 실행 중       (원형 스피너)
+ *   4) 평범한 셸에서 Enter 후 프롬프트가 아직    → 명령 실행 중           (원형 스피너)
+ *      돌아오지 않았다
  */
 const PROMPT_RE = /[$#%>❯]\s*$/;
-const CLAUDE_BUSY_RE = /esc to interrupt|to interrupt\)|✻|Thinking…|Pondering|Puzzling|Deciphering/i;
-const BUSY_IDLE_MS = 400; // 출력이 이만큼 멎고 프롬프트면 종료로 판단
-const CLAUDE_WINDOW_MS = 2500; // 이 시간 안에 Claude 작업 표시가 있으면 작동 중
+const CLAUDE_WORK_RE = /esc to interrupt/i; // Claude 가 작업 중일 때만 화면에 있는 문구
+const CLAUDE_UI_RE = /esc to interrupt|\? for shortcuts|⏵⏵|╭─{3,}|╰─{3,}|bypass permissions/i;
+const PROMPT_IDLE_MS = 250; // 출력이 이만큼 멎고 프롬프트면 명령이 끝난 것으로 본다
+// tmux 상태줄 인식: 윈도우 목록("0:bash*") 이나 기본 status-right('"host" 18:43') 로 판단
+const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
 /** 마지막 비어 있지 않은 줄 */
 function lastNonEmptyLine(text) {
@@ -402,12 +407,6 @@ function feedAlertDetector(leaf, text) {
 
   /* --- 실행 상태 --- */
   leaf.lastOutputAt = Date.now();
-  if (CLAUDE_BUSY_RE.test(plain)) {
-    leaf.claudeAt = Date.now();
-    leaf.busy = true;
-  }
-  const line = lastNonEmptyLine(plain);
-  if (line) leaf.lastLine = line;
 
   /* --- 진짜 벨 --- */
   if (plain.includes('\x07')) {
@@ -456,6 +455,51 @@ function clearAlertsInTab(tab) {
 const tabHasAlert = (tab) => leavesOf(tab.root).some((l) => l.alert);
 const groupHasAlert = (group) => group.tabs.some(tabHasAlert);
 
+/** 지금 눈에 보이는 화면을 글자로 읽어 온다 (스크롤백이 아니라 현재 화면) */
+function readScreenTail(leaf) {
+  const buf = leaf.term.buffer.active;
+  const start = buf.baseY;
+  const end = Math.min(buf.length, start + leaf.term.rows);
+  let text = '';
+  for (let i = start; i < end; i++) {
+    const line = buf.getLine(i);
+    if (line) text += line.translateToString(true) + '\n';
+  }
+  return text;
+}
+
+/** tmux 안인지 (상태줄로 판단) */
+function looksLikeTmux(leaf) {
+  return TMUX_STATUS_RE.test(readScreenTail(leaf));
+}
+
+/**
+ * 페인 스크롤. tmux 안에서는 터미널 스크롤백이 아니라 tmux 히스토리를 움직여야 한다.
+ * (tmux 기본 prefix 인 Ctrl+B 를 사용한다)
+ */
+function scrollPane(leaf, dir) {
+  const alt = leaf.term.buffer.active.type === 'alternate';
+  if (alt && looksLikeTmux(leaf) && leaf.sessionId && leaf.status === 'ready') {
+    // 복사 모드로 들어가 맨 위로 / 복사 모드를 나와 최신 출력으로
+    sendTmuxCommand(leaf, dir === 'top' ? 'copy-mode ; send -X history-top' : 'copy-mode -q');
+    return;
+  }
+  if (dir === 'top') leaf.term.scrollToTop();
+  else leaf.term.scrollToBottom();
+}
+
+/**
+ * tmux 명령 프롬프트(prefix + :)로 명령을 보낸다.
+ * 한 번에 몰아서 보내면 tmux 가 prefix 처리 중 뒷부분을 흘리므로 조금씩 끊어서 보낸다.
+ */
+function sendTmuxCommand(leaf, cmdline) {
+  const w = (data) => leaf.sessionId && api.ssh.write(leaf.sessionId, data);
+  w('\x02'); // prefix (Ctrl+B)
+  setTimeout(() => w(':'), 70);
+  setTimeout(() => w(cmdline), 150);
+  setTimeout(() => w('\r'), 240);
+}
+
 /** 모든 페인의 실행 상태를 다시 계산해 스피너 표시를 정한다 */
 function evaluateActivity() {
   const now = Date.now();
@@ -464,19 +508,40 @@ function evaluateActivity() {
   for (const g of state.groups) {
     for (const t of g.tabs) {
       for (const leaf of leavesOf(t.root)) {
-        const claude = now - (leaf.claudeAt || 0) < CLAUDE_WINDOW_MS;
-
-        let busy = leaf.busy;
-        if (busy && !claude && now - leaf.lastOutputAt > BUSY_IDLE_MS && PROMPT_RE.test(leaf.lastLine || '')) {
-          busy = false; // 프롬프트가 돌아왔다 = 명령이 끝났다
-        }
-        if (leaf.status !== 'ready') busy = false;
-        if (leaf.busy !== busy) {
-          leaf.busy = busy;
-          changed = true;
+        if (leaf.status !== 'ready') {
+          if (leaf.spin || leaf.busy) {
+            leaf.spin = null;
+            leaf.busy = false;
+            changed = true;
+          }
+          continue;
         }
 
-        const kind = leaf.status !== 'ready' ? null : claude ? 'claude' : busy ? 'busy' : null;
+        const screen = readScreenTail(leaf);
+        const lastLine = lastNonEmptyLine(screen);
+        const thinking = CLAUDE_WORK_RE.test(screen); // Claude 작업 중
+        const claudeOpen = CLAUDE_UI_RE.test(screen); // Claude 화면이 떠 있음
+        const altScreen = leaf.term.buffer.active.type === 'alternate'; // vim/htop 등
+
+        // 셸 명령 실행 여부: 프롬프트가 돌아오면 끝난 것
+        if (claudeOpen || altScreen) {
+          leaf.busy = false; // 셸 프롬프트 개념이 없는 화면
+        } else if (leaf.busy && PROMPT_RE.test(lastLine) && now - leaf.lastOutputAt > PROMPT_IDLE_MS) {
+          leaf.busy = false;
+        }
+
+        let kind = null;
+        if (thinking) kind = 'claude';
+        else if (altScreen || leaf.busy) kind = 'busy';
+
+        // Claude 가 생각을 끝냈는데 그 창을 보고 있지 않다면 알림
+        if (leaf.wasThinking && !thinking) {
+          const cur = activeLeaf();
+          const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
+          if (!looking) raiseAlert(leaf);
+        }
+        leaf.wasThinking = thinking;
+
         if (leaf.spin !== kind) {
           leaf.spin = kind;
           changed = true;
@@ -487,7 +552,7 @@ function evaluateActivity() {
   if (changed) scheduleRender();
 }
 
-setInterval(evaluateActivity, 300);
+setInterval(evaluateActivity, 400);
 
 /** 탭 안에서 돌아가는 것이 있으면 그 종류를 알려준다 ('claude' 가 우선) */
 function tabSpin(tab) {
@@ -1417,9 +1482,14 @@ function spinner(kind) {
   return el2;
 }
 
-/** 돌아가는 것이 있으면 스피너를, 없으면 상태 점을 보여준다 */
-function statusMark(status, spin) {
-  return spin ? spinner(spin) : statusDot(status);
+/**
+ * 탭 앞에 붙는 표시 하나를 고른다.
+ * 우선순위: 초록 느낌표(응답 대기) > Claude 작업 중 > 명령 실행 중 > 연결 상태 점
+ */
+function statusMark(status, spin, alerted) {
+  if (alerted) return alertBadge();
+  if (spin) return spinner(spin);
+  return statusDot(status);
 }
 
 /** 탭(서브탭) 전체 상태: 하나라도 connecting 이면 connecting, 전부 closed 면 closed … */
@@ -1466,9 +1536,8 @@ function renderTabstrip() {
       confirmCloseGroup(group);
     });
 
-    node.append(statusMark(cur ? tabStatus(cur) : 'closed', groupSpin(group)), idx, label);
-    // 서브탭 중 하나라도 응답 대기면 메인탭에도 표시
-    if (groupHasAlert(group)) node.appendChild(alertBadge());
+    // 서브탭 중 하나라도 응답 대기면 메인탭도 초록 느낌표
+    node.append(statusMark(cur ? tabStatus(cur) : 'closed', groupSpin(group), groupHasAlert(group)), idx, label);
     node.appendChild(close);
 
     // 끌어서 메인탭 순서 바꾸기
@@ -1564,8 +1633,7 @@ function renderSubstrip() {
       confirmCloseTab(group, tab);
     });
 
-    node.append(statusMark(tabStatus(tab), tabSpin(tab)), idx, label);
-    if (tabHasAlert(tab)) node.appendChild(alertBadge());
+    node.append(statusMark(tabStatus(tab), tabSpin(tab), tabHasAlert(tab)), idx, label);
     node.appendChild(close);
 
     // 끌어서 서브탭 순서 바꾸기
@@ -1666,13 +1734,13 @@ function renderPaneOverlay(leaf) {
     };
     bar.append(
       mk('⇱', '이 창을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
-      mk('⤒', '맨 위로 (스크롤 처음으로)', () => {
+      mk('⤒', '맨 위로 (tmux 안에서도 동작)', () => {
         focusLeaf(leaf);
-        leaf.term.scrollToTop();
+        scrollPane(leaf, 'top');
       }),
-      mk('⤓', '맨 아래로 (최신 출력으로)', () => {
+      mk('⤓', '맨 아래로 (tmux 안에서도 동작)', () => {
         focusLeaf(leaf);
-        leaf.term.scrollToBottom();
+        scrollPane(leaf, 'bottom');
       }),
       mk('▯|▯', '좌우로 분할 (mac ⌘D / win Ctrl+Shift+D)', () => {
         focusLeaf(leaf);

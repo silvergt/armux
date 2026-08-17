@@ -55,6 +55,9 @@ function cleanError(err) {
   if (/net::|ENOTFOUND|EAI_AGAIN|ETIMEDOUT/i.test(msg)) {
     return '네트워크에 연결할 수 없습니다.';
   }
+  if (/code signature|codesign|not signed/i.test(msg)) {
+    return 'macOS 는 코드 서명이 있어야 앱 안에서 설치까지 됩니다. 릴리스 페이지에서 새 버전을 받아 주세요.';
+  }
   return msg.replace(/^Error:\s*/, '');
 }
 
