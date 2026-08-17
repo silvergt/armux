@@ -4,6 +4,7 @@
  * 판(페인) 안에 뜨는 웹 브라우저.
  *
  * 주소창 · 뒤로/앞으로 · 새로고침을 갖춘 단순한 브라우저다.
+ * 주소창에는 이 PC 크롬의 방문 기록을 읽어와 자동완성 후보를 띄운다(읽기 전용).
  *
  * 크롬의 로그인 세션(쿠키)까지 가져올 수는 없다. 크롬이 프로필을 암호화해
  * 잠가 두기 때문이다. 그래서 로그인은 이 창에서 따로 하거나,
@@ -51,23 +52,115 @@ window.WebPane = (function () {
     const reloadBtn = mk('⟳', '새로고침', () => view.reload());
     const homeBtn = mk('⌂', '홈 (google.com)', () => go('https://www.google.com'));
 
+    const urlWrap = document.createElement('div');
+    urlWrap.className = 'web-url-wrap';
+
     const urlInput = document.createElement('input');
     urlInput.className = 'web-url';
     urlInput.spellcheck = false;
     urlInput.placeholder = '주소를 입력하거나 검색어를 입력하세요';
+
+    // 방문 기록 자동완성 드롭다운
+    const sugg = document.createElement('div');
+    sugg.className = 'web-suggest hidden';
+    let suggItems = [];
+    let suggIndex = -1;
+
+    const hideSuggest = () => {
+      sugg.classList.add('hidden');
+      suggItems = [];
+      suggIndex = -1;
+    };
+
+    function renderSuggest() {
+      sugg.innerHTML = '';
+      if (!suggItems.length) {
+        hideSuggest();
+        return;
+      }
+      suggItems.forEach((it, i) => {
+        const row = document.createElement('div');
+        row.className = 'web-suggest-row' + (i === suggIndex ? ' active' : '');
+        const t = document.createElement('span');
+        t.className = 'ws-title';
+        t.textContent = it.title || it.url;
+        const u = document.createElement('span');
+        u.className = 'ws-url';
+        u.textContent = it.url;
+        row.append(t, u);
+        row.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          go(it.url);
+          hideSuggest();
+        });
+        row.addEventListener('mouseenter', () => {
+          suggIndex = i;
+          for (const [j, el2] of [...sugg.children].entries()) el2.classList.toggle('active', j === i);
+        });
+        sugg.appendChild(row);
+      });
+      sugg.classList.remove('hidden');
+    }
+
+    let suggTimer = null;
+    async function updateSuggest() {
+      const q = urlInput.value.trim();
+      if (!q || !api.web.historySuggest) {
+        hideSuggest();
+        return;
+      }
+      try {
+        const items = await api.web.historySuggest(q);
+        // 입력 도중 값이 바뀌었으면 버린다
+        if (urlInput.value.trim() !== q) return;
+        suggItems = items || [];
+        suggIndex = -1;
+        renderSuggest();
+      } catch (e) {
+        hideSuggest();
+      }
+    }
+
+    urlInput.addEventListener('input', () => {
+      clearTimeout(suggTimer);
+      suggTimer = setTimeout(updateSuggest, 120);
+    });
     urlInput.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if (e.key === 'Enter') go(urlInput.value);
-      if (e.key === 'Escape') urlInput.value = state.url;
+      const open = !sugg.classList.contains('hidden') && suggItems.length;
+      if (e.key === 'ArrowDown' && open) {
+        e.preventDefault();
+        suggIndex = (suggIndex + 1) % suggItems.length;
+        renderSuggest();
+        return;
+      }
+      if (e.key === 'ArrowUp' && open) {
+        e.preventDefault();
+        suggIndex = (suggIndex - 1 + suggItems.length) % suggItems.length;
+        renderSuggest();
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (open && suggIndex >= 0) go(suggItems[suggIndex].url);
+        else go(urlInput.value);
+        hideSuggest();
+      }
+      if (e.key === 'Escape') {
+        if (open) hideSuggest();
+        else urlInput.value = state.url;
+      }
     });
     urlInput.addEventListener('focus', () => urlInput.select());
+    urlInput.addEventListener('blur', () => setTimeout(hideSuggest, 120));
+
+    urlWrap.append(urlInput, sugg);
 
     const chromeBtn = mk('크롬에서 열기', '이 PC 의 기본 브라우저(크롬)로 열기 — 크롬 로그인/설정 그대로', () =>
       api.web.openExternal(state.url)
     );
     chromeBtn.classList.add('web-btn-wide');
 
-    bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, urlInput, chromeBtn);
+    bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, urlWrap, chromeBtn);
 
     /* -------------------------------- 웹 화면 -------------------------------- */
 

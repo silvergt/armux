@@ -1680,7 +1680,6 @@ function makeReorderable(node, arr, index, kind, after) {
     e.dataTransfer.setData(`armux/${kind}`, String(index));
     e.dataTransfer.setData('text/plain', String(index)); // 일부 환경에서 이게 없으면 드래그가 시작되지 않는다
     node.classList.add('dragging');
-    hoverAdd.classList.add('hidden');
   });
 
   node.addEventListener('dragend', () => {
@@ -1789,10 +1788,6 @@ function tabStatus(tab) {
 }
 
 function renderTabstrip() {
-  if (hoverAddGroup && !state.groups.includes(hoverAddGroup)) {
-    hoverAdd.classList.add('hidden');
-    hoverAddGroup = null;
-  }
   el.tabstrip.innerHTML = '';
 
   state.groups.forEach((group, gi) => {
@@ -1834,8 +1829,6 @@ function renderTabstrip() {
     });
 
     node.addEventListener('click', () => selectGroup(group.id));
-    node.addEventListener('mouseenter', () => showHoverAdd(node, group));
-    node.addEventListener('mouseleave', () => hideHoverAdd());
     node.addEventListener('auxclick', (e) => {
       if (e.button === 1) confirmCloseGroup(group);
     });
@@ -2262,48 +2255,6 @@ function startRenameTab(group, tab, node) {
   input.addEventListener('mousedown', (e) => e.stopPropagation());
   input.addEventListener('click', (e) => e.stopPropagation());
 }
-
-/* ------------------------- 탭 호버 시 뜨는 서브탭 추가 버튼 ------------------------ */
-
-const hoverAdd = document.createElement('button');
-hoverAdd.id = 'hover-add';
-hoverAdd.className = 'hidden';
-hoverAdd.textContent = '+';
-hoverAdd.title = '이 그룹에 서브탭 추가 (Shift+클릭: 다른 호스트로 접속)';
-document.body.appendChild(hoverAdd);
-
-let hoverAddGroup = null;
-let hoverAddTimer = null;
-
-function showHoverAdd(tabNode, group) {
-  clearTimeout(hoverAddTimer);
-  hoverAddGroup = group;
-  const r = tabNode.getBoundingClientRect();
-  hoverAdd.style.left = `${Math.round(r.left + r.width / 2 - 12)}px`;
-  hoverAdd.style.top = `${Math.round(r.bottom + 3)}px`;
-  hoverAdd.classList.remove('hidden');
-}
-
-function hideHoverAdd() {
-  clearTimeout(hoverAddTimer);
-  hoverAddTimer = setTimeout(() => {
-    if (!hoverAdd.matches(':hover')) {
-      hoverAdd.classList.add('hidden');
-      hoverAddGroup = null;
-    }
-  }, 220);
-}
-
-hoverAdd.addEventListener('mouseenter', () => clearTimeout(hoverAddTimer));
-hoverAdd.addEventListener('mouseleave', () => hideHoverAdd());
-hoverAdd.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const group = hoverAddGroup;
-  hoverAdd.classList.add('hidden');
-  if (!group) return;
-  if (e.shiftKey) openConnectDialog({ group });
-  else addSubTab(group);
-});
 
 /* ------------------------------- 크기 조정 처리 ------------------------------- */
 

@@ -166,30 +166,7 @@ body.is-mac #mac-spacer {
  * 탭 스트립은 가로 스크롤(overflow) 영역이라 그 안에 두면 잘리므로,
  * body 에 붙는 떠 있는(fixed) 버튼 하나를 JS 로 위치만 옮겨 재사용한다.
  */
-#hover-add {
-  position: fixed;
-  width: 24px;
-  height: 20px;
-  line-height: 17px;
-  text-align: center;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--chrome-2);
-  color: var(--fg);
-  font-size: 13px;
-  padding: 0;
-  z-index: 90;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.55);
-  -webkit-app-region: no-drag;
-}
-#hover-add.hidden {
-  display: none;
-}
-#hover-add:hover {
-  background: var(--accent-dim);
-  border-color: var(--accent);
-  color: #fff;
-}
+
 
 .plus-btn {
   flex: none;
@@ -1794,6 +1771,56 @@ button {
 .web-url:focus {
   border-color: #8ab4f8;
   background: #17181a;
+}
+.web-url-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.web-url-wrap .web-url {
+  flex: 1;
+}
+.web-suggest {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  background: #202124;
+  border: 1px solid #3c4043;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.web-suggest.hidden {
+  display: none;
+}
+.web-suggest-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 12px;
+  cursor: default;
+}
+.web-suggest-row.active {
+  background: #2f3136;
+}
+.web-suggest-row .ws-title {
+  color: #e8eaed;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.web-suggest-row .ws-url {
+  color: #8ab4f8;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .web-view {
