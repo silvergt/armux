@@ -33,11 +33,16 @@ jobs:
       - run: npm ci
 
       - run: npm run ${{ matrix.script }}
+        env:
+          # 서명 인증서가 없는 CI 에서 키체인 인증서를 찾다가 실패하는 것을 막는다
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # 일부 타깃이 실패해도 그때까지 만들어진 산출물은 받을 수 있게 always()
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ${{ matrix.artifact }}
-          if-no-files-found: error
+          if-no-files-found: warn
           path: |
             dist/*.exe
             dist/*.dmg
