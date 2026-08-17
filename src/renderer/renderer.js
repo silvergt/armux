@@ -200,6 +200,8 @@ function createLeaf(tab, connect, options) {
     spin: null, // 표시할 스피너 종류: null | 'busy' | 'claude'
     wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지
     lastOutputAt: 0,
+    mode: 'terminal', // 'terminal' | 'web'
+    web: null, // 웹 브라우저 화면 (웹으로 전환할 때 만든다)
     connect
   };
 
@@ -289,7 +291,9 @@ function createLeaf(tab, connect, options) {
   // 페인 클릭 → 그 페인이 활성 페인이 되고 알림도 확인 처리
   pane.addEventListener('mousedown', () => focusLeaf(leaf));
 
-  if (opts.mode === 'orphan') {
+  if (opts.mode === 'orphan' && opts.silent) {
+    leaf.status = 'closed'; // 웹 전용 판: 터미널은 쓰지 않는다
+  } else if (opts.mode === 'orphan') {
     // 복원했지만 저장된 접속 정보가 없는 경우: 접속하지 않고 안내만 남긴다
     leaf.status = 'closed';
     leaf.term.writeln('\x1b[90m● 지난번에 열려 있던 창입니다. 저장된 접속 정보가 없어 자동 접속하지 않았습니다.\x1b[0m');
@@ -357,6 +361,46 @@ function disposeLeaf(leaf) {
     /* noop */
   }
   leaf.el.remove();
+}
+
+/* ------------------------------ 판을 웹으로 전환 ------------------------------ */
+
+/**
+ * 판을 터미널 ↔ 웹 브라우저로 전환한다.
+ * 터미널은 없애지 않고 감춰 두므로, 돌아오면 SSH 세션이 그대로 살아 있다.
+ */
+function setLeafMode(leaf, mode, url) {
+  if (mode === 'web') {
+    if (!leaf.web) {
+      leaf.web = window.WebPane.create({
+        url: url || 'https://www.google.com',
+        onTitle: (title) => {
+          leaf.title = title || leaf.title;
+          scheduleRender();
+        },
+        onUrl: () => saveSession()
+      });
+      leaf.el.appendChild(leaf.web.el);
+    } else if (url) {
+      leaf.web.go(url);
+    }
+    leaf.mode = 'web';
+  } else {
+    leaf.mode = 'terminal';
+  }
+
+  const termHost = leaf.el.querySelector('.pane-term');
+  if (termHost) termHost.classList.toggle('hidden', leaf.mode === 'web');
+  if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
+
+  renderPaneOverlay(leaf, true);
+  render();
+  if (leaf.mode === 'web') leaf.web.focus();
+  else {
+    fitLeaf(leaf);
+    leaf.term.focus();
+  }
+  saveSession();
 }
 
 /* --------------------------- Claude Code 응답 대기 알림 -------------------------- */
@@ -518,6 +562,14 @@ function evaluateActivity() {
   for (const g of state.groups) {
     for (const t of g.tabs) {
       for (const leaf of leavesOf(t.root)) {
+        if (leaf.mode === 'web') {
+          if (leaf.spin || leaf.busy) {
+            leaf.spin = null;
+            leaf.busy = false;
+            changed = true;
+          }
+          continue; // 웹 화면에는 실행 표시가 없다
+        }
         if (leaf.status !== 'ready') {
           if (leaf.spin || leaf.busy) {
             leaf.spin = null;
@@ -675,6 +727,47 @@ function createGroup(hostInfo, connect) {
   state.activeGroupId = group.id;
   createTab(group, connect);
   return group;
+}
+
+/** 웹페이지만 있는 메인탭을 만든다 (SSH 접속 없이) */
+function createWebGroup(url) {
+  const group = {
+    id: nextId('g'),
+    host: { id: null, name: hostLabelForUrl(url), host: url, port: 0, username: 'web' },
+    credId: null,
+    connect: null,
+    isWeb: true,
+    tabs: [],
+    activeTabId: null,
+    explorer: null,
+    explorerPinned: false,
+    explorerSelected: false
+  };
+  state.groups.push(group);
+  state.activeGroupId = group.id;
+  createWebTab(group, url);
+  return group;
+}
+
+/** 웹페이지 판 하나짜리 서브탭 */
+function createWebTab(group, url) {
+  const tab = makeTabShell(group);
+  const leaf = createLeaf(tab, {}, { mode: 'orphan', silent: true });
+  tab.root = leaf;
+  tab.activeLeafId = leaf.id;
+  layoutTab(tab);
+  setLeafMode(leaf, 'web', url);
+  render();
+  return tab;
+}
+
+/** 주소에서 탭 이름으로 쓸 호스트 부분만 */
+function hostLabelForUrl(url) {
+  try {
+    return new URL(url).hostname || '웹페이지';
+  } catch (e) {
+    return '웹페이지';
+  }
 }
 
 /** 기존 그룹에 서브탭 추가 (같은 호스트로 새 셸) */
@@ -1154,7 +1247,9 @@ function toggleNotes() {
 
 function serializeNode(node) {
   if (!node) return null;
-  if (node.kind === 'leaf') return { kind: 'leaf' };
+  if (node.kind === 'leaf') {
+    return node.mode === 'web' ? { kind: 'leaf', mode: 'web', url: node.web ? node.web.url : null } : { kind: 'leaf' };
+  }
   return {
     kind: 'split',
     dir: node.dir,
@@ -1263,7 +1358,11 @@ function rebuildLayout(tab, group, node, schedule) {
   if (!node || node.kind === 'leaf') {
     const connect = group.connect;
     const leaf = createLeaf(tab, connect || {}, { mode: connect ? 'later' : 'orphan' });
-    if (connect) schedule(leaf);
+    if (node && node.mode === 'web') {
+      setLeafMode(leaf, 'web', node.url); // 웹 판으로 복원
+    } else if (connect) {
+      schedule(leaf);
+    }
     return leaf;
   }
   return {
@@ -1762,24 +1861,33 @@ function renderPanes() {
   }
 }
 
-/** 페인 우상단의 분할/닫기 버튼 */
-function renderPaneOverlay(leaf) {
+/** 페인 우상단의 도구 버튼 (두 줄) */
+function renderPaneOverlay(leaf, rebuild) {
   let bar = leaf.el.querySelector('.pane-tools');
+  if (bar && rebuild) {
+    bar.remove();
+    bar = null;
+  }
   if (!bar) {
     bar = document.createElement('div');
     bar.className = 'pane-tools';
 
-    const mk = (text, title, fn) => {
+    const mk = (text, title, fn, cls) => {
       const b = document.createElement('button');
       b.textContent = text;
       b.title = title;
+      if (cls) b.className = cls;
       b.addEventListener('click', (e) => {
         e.stopPropagation();
         fn();
       });
       return b;
     };
-    bar.append(
+
+    // 첫 줄: 새 탭으로 / 스크롤 / 분할 / 닫기
+    const row1 = document.createElement('div');
+    row1.className = 'pane-tools-row';
+    row1.append(
       mk('⇱', '이 창을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
       mk('⤒', '맨 위로 (tmux 안에서도 동작)', () => {
         focusLeaf(leaf);
@@ -1799,8 +1907,23 @@ function renderPaneOverlay(leaf) {
       }),
       mk('✕', '이 분할 창 닫기 (Ctrl/⌘+W)', () => closeLeaf(leaf))
     );
+
+    // 둘째 줄: 터미널 ↔ 웹페이지 전환
+    const row2 = document.createElement('div');
+    row2.className = 'pane-tools-row';
+    row2.append(
+      mk(
+        leaf.mode === 'web' ? '⌨ 터미널로 전환' : '🌐 웹페이지로 전환',
+        leaf.mode === 'web' ? '이 판을 다시 터미널로 (SSH 세션은 그대로 살아 있습니다)' : '이 판에 웹 브라우저를 띄웁니다',
+        () => setLeafMode(leaf, leaf.mode === 'web' ? 'terminal' : 'web'),
+        'wide'
+      )
+    );
+
+    bar.append(row1, row2);
     leaf.el.appendChild(bar);
   }
+
   const badge = leaf.el.querySelector('.pane-alert');
   if (leaf.alert && !badge) {
     const b = alertBadge();
@@ -1963,6 +2086,7 @@ hoverAdd.addEventListener('click', (e) => {
  * 컨테이너 아래로 삐져나가 상태바에 잘린다. 실제 그려진 줄 높이로 다시 확인해 한 줄 줄인다.
  */
 function fitLeaf(leaf) {
+  if (leaf.mode === 'web') return; // 웹 판은 크기 계산이 필요 없다
   try {
     leaf.fit.fit();
   } catch (e) {
@@ -2415,6 +2539,13 @@ const dlg = {
   closeBtn: document.getElementById('modal-close'),
   deleteBtn: document.getElementById('host-delete'),
   registerBtn: document.getElementById('host-register'),
+  modeSsh: document.getElementById('mode-ssh'),
+  modeWeb: document.getElementById('mode-web'),
+  webForm: document.getElementById('web-form'),
+  webUrl: document.getElementById('web-url-input'),
+  webChromeInfo: document.getElementById('web-chrome-info'),
+  openWebBtn: document.getElementById('modal-open-web'),
+  body: document.querySelector('#modal .modal-body'),
   saveBtn: document.getElementById('host-save'),
   newBtn: document.getElementById('host-new')
 };
@@ -2423,10 +2554,39 @@ let dlgHosts = [];
 let dlgSelectedId = null;
 let dlgTargetGroup = null;
 let canSavePassword = true;
+let dlgMode = 'ssh'; // 'ssh' | 'web'
 
 const modalOpen = () => !dlg.backdrop.classList.contains('hidden');
 
-async function openConnectDialog({ group }) {
+/** 다이얼로그를 SSH / 웹페이지 모드로 전환 */
+async function setDialogMode(mode) {
+  dlgMode = mode;
+  dlg.modeSsh.classList.toggle('active', mode === 'ssh');
+  dlg.modeWeb.classList.toggle('active', mode === 'web');
+  dlg.body.classList.toggle('hidden', mode === 'web');
+  dlg.webForm.classList.toggle('hidden', mode !== 'web');
+
+  // 아래 버튼도 모드에 맞춰서
+  for (const b of [dlg.connectBtn, dlg.registerBtn, dlg.saveBtn, dlg.deleteBtn]) {
+    b.classList.toggle('hidden', mode === 'web' || (b === dlg.saveBtn && !dlgSelectedId) || (b === dlg.deleteBtn && !dlgSelectedId));
+  }
+  dlg.openWebBtn.classList.toggle('hidden', mode !== 'web');
+  dlg.title.textContent = mode === 'web' ? '웹페이지 열기' : dlgTargetGroup ? `"${dlgTargetGroup.host.name}" 그룹에 서브탭 추가` : '새 SSH 접속';
+
+  if (mode === 'web') {
+    dlg.webUrl.focus();
+    try {
+      const info = await api.web.chromeInfo();
+      dlg.webChromeInfo.textContent = info.chromeSource
+        ? `이 PC 의 크롬 북마크 ${info.count}개를 불러와 북마크 바에 보여 줍니다. (Chromium ${info.chromiumVersion})`
+        : `이 PC 에서 크롬 북마크를 찾지 못했습니다. 앱에서 ☆ 로 북마크를 직접 추가할 수 있습니다. (Chromium ${info.chromiumVersion})`;
+    } catch (e) {
+      dlg.webChromeInfo.textContent = '';
+    }
+  }
+}
+
+async function openConnectDialog({ group, mode }) {
   dlgTargetGroup = group || null;
   dlg.title.textContent = group ? `"${group.host.name}" 그룹에 서브탭 추가` : '새 SSH 접속';
   dlg.error.classList.add('hidden');
@@ -2441,7 +2601,8 @@ async function openConnectDialog({ group }) {
   await refreshHostList();
   if (dlgHosts.length > 0) selectHost(dlgHosts[0].id);
   else clearForm();
-  (dlgHosts.length ? dlg.connectBtn : dlg.host).focus();
+  await setDialogMode(mode || 'ssh');
+  if (dlgMode === 'ssh') (dlgHosts.length ? dlg.connectBtn : dlg.host).focus();
 }
 
 function closeDialog() {
@@ -2606,6 +2767,13 @@ dlg.keyBrowse.addEventListener('click', async () => {
   const p = await api.util.pickKeyFile();
   if (p) dlg.key.value = p;
 });
+dlg.modeSsh.addEventListener('click', () => setDialogMode('ssh'));
+dlg.modeWeb.addEventListener('click', () => setDialogMode('web'));
+dlg.webUrl.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Enter') openWebPage();
+});
+dlg.openWebBtn.addEventListener('click', () => openWebPage());
 dlg.newBtn.addEventListener('click', clearForm);
 dlg.registerBtn.addEventListener('click', registerHost);
 dlg.saveBtn.addEventListener('click', saveHost);
@@ -2624,12 +2792,26 @@ dlg.deleteBtn.addEventListener('click', async () => {
 
 dlg.backdrop.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeDialog();
-  if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') doConnect();
+  if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') {
+    if (dlgMode === 'web') openWebPage();
+    else doConnect();
+  }
   e.stopPropagation();
 });
 dlg.backdrop.addEventListener('mousedown', (e) => {
   if (e.target === dlg.backdrop) closeDialog();
 });
+
+/** 웹페이지를 새 탭(또는 현재 그룹의 서브탭)으로 연다 */
+function openWebPage() {
+  const url = window.WebPane.toUrl(dlg.webUrl.value || 'https://www.google.com');
+  closeDialog();
+  if (dlgTargetGroup) {
+    const tab = createWebTab(dlgTargetGroup, url);
+    return tab;
+  }
+  return createWebGroup(url);
+}
 
 /**
  * 폼 내용으로 접속.

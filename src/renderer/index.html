@@ -64,7 +64,25 @@
       <div id="modal">
         <div class="modal-head">
           <span id="modal-title">새 SSH 접속</span>
+          <div class="modal-tabs">
+            <button id="mode-ssh" class="modal-tab active">새 SSH 접속</button>
+            <button id="mode-web" class="modal-tab">웹페이지</button>
+          </div>
           <button id="modal-close" class="icon-btn">✕</button>
+        </div>
+
+        <!-- 웹페이지 열기 -->
+        <div id="web-form" class="hidden">
+          <div class="web-form-body">
+            <div class="panel-title">웹페이지 주소</div>
+            <input id="web-url-input" class="field" type="text" placeholder="예: github.com 또는 검색어" spellcheck="false" />
+            <div class="hint">
+              이 판에 크롬(Chromium) 화면이 뜹니다. 주소창·뒤로/앞으로·북마크 바가 함께 열리고,
+              이 PC 크롬의 북마크 바를 읽어와 같이 보여 줍니다.
+              <b>크롬 로그인 세션은 가져올 수 없습니다</b> — 필요하면 화면 오른쪽 위 "크롬에서 열기" 로 진짜 크롬에 넘길 수 있습니다.
+            </div>
+            <div id="web-chrome-info" class="hint"></div>
+          </div>
         </div>
 
         <div class="modal-body">
@@ -134,6 +152,7 @@
           <button id="host-save" class="btn hidden">저장</button>
           <button id="modal-cancel" class="btn">취소</button>
           <button id="modal-connect" class="btn btn-primary">접속</button>
+          <button id="modal-open-web" class="btn btn-primary hidden">열기</button>
         </div>
       </div>
     </div>
@@ -202,6 +221,7 @@
     <script src="help-content.js"></script>
     <script src="explorer.js"></script>
     <script src="notes.js"></script>
+    <script src="webpane.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

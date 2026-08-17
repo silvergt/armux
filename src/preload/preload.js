@@ -55,6 +55,24 @@ contextBridge.exposeInMainWorld('armux', {
     onState: (cb) => ipcRenderer.on('update:state', (e, p) => cb(p))
   },
 
+  /** 웹 페인 (판 안의 브라우저) */
+  web: {
+    bookmarks: () => ipcRenderer.invoke('web:bookmarks'),
+    addBookmark: (item) => ipcRenderer.invoke('web:addBookmark', item),
+    removeBookmark: (url) => ipcRenderer.invoke('web:removeBookmark', { url }),
+    chromeInfo: () => ipcRenderer.invoke('web:chromeInfo'),
+    openExternal: (url) => ipcRenderer.send('web:openExternal', url),
+    /** 크롬처럼 보이게 할 User-Agent (Electron 표시를 뺀다) */
+    userAgent: () =>
+      `Mozilla/5.0 (${
+        process.platform === 'win32'
+          ? 'Windows NT 10.0; Win64; x64'
+          : process.platform === 'darwin'
+            ? 'Macintosh; Intel Mac OS X 10_15_7'
+            : 'X11; Linux x86_64'
+      }) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`
+  },
+
   /** 메모장 (<userData>/notes/*.md) */
   notes: {
     list: () => ipcRenderer.invoke('notes:list'),

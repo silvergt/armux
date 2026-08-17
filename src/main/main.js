@@ -10,6 +10,7 @@ const sftp = require('./sftp');
 const claudeinfo = require('./claudeinfo');
 const notes = require('./notes');
 const updater = require('./updater');
+const webinfo = require('./webinfo');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -53,7 +54,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      spellcheck: false
+      spellcheck: false,
+      webviewTag: true // 판 안에 웹 페이지를 띄우기 위해
     }
   });
 
@@ -425,6 +427,20 @@ ipcMain.handle('update:state', () => updater.getState());
 ipcMain.on('update:openReleases', () => updater.openReleases());
 ipcMain.on('app:openExternal', (e, url) => {
   if (/^https:\/\//.test(String(url))) shell.openExternal(url);
+});
+
+/* ------------------------------- IPC: 웹 페인 -------------------------------- */
+
+ipcMain.handle('web:bookmarks', () => webinfo.bookmarks());
+ipcMain.handle('web:addBookmark', (e, item) => webinfo.addBookmark(item));
+ipcMain.handle('web:removeBookmark', (e, { url }) => webinfo.removeBookmark(url));
+ipcMain.handle('web:chromeInfo', () => {
+  const c = webinfo.chromeBookmarks();
+  return { chromeSource: c.source, count: c.items.length, chromiumVersion: process.versions.chrome };
+});
+/** 시스템 기본 브라우저(보통 크롬)로 열기 */
+ipcMain.on('web:openExternal', (e, url) => {
+  if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);
 });
 
 /* --------------------------------- IPC: 메모장 -------------------------------- */

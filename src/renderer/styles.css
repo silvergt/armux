@@ -415,17 +415,27 @@ body.resizing-row * {
   height: 100%;
 }
 
-/* 페인 우상단 도구 (분할/닫기) */
+/* 페인 우상단 도구 (두 줄) */
 .pane-tools {
   position: absolute;
   top: 2px;
   right: 8px;
   display: none;
-  gap: 2px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
   z-index: 5;
 }
 .pane:hover .pane-tools {
   display: flex;
+}
+.pane-tools-row {
+  display: flex;
+  gap: 2px;
+}
+.pane-tools button.wide {
+  font-size: 10.5px;
+  padding: 3px 8px;
 }
 .pane-tools button {
   border: 1px solid var(--border);
@@ -1702,4 +1712,155 @@ button {
   font-variant-numeric: tabular-nums;
   font-size: 10.5px;
   padding-left: 2px;
+}
+
+/* --------------------------------- 웹 판 ----------------------------------- */
+
+.webpane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #202124;
+}
+.webpane.hidden {
+  display: none;
+}
+.pane-term.hidden {
+  display: none;
+}
+
+.web-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: #2b2d31;
+  border-bottom: 1px solid #1b1d21;
+}
+.web-btn {
+  flex: none;
+  min-width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 13px;
+  background: transparent;
+  color: #cfd3d8;
+  font-size: 13px;
+}
+.web-btn:hover:not(:disabled) {
+  background: #3c4043;
+  color: #fff;
+}
+.web-btn:disabled {
+  opacity: 0.35;
+}
+.web-btn-wide {
+  padding: 0 12px;
+  border-radius: 13px;
+  background: #3c4043;
+  font-size: 11.5px;
+}
+.web-url {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #3c4043;
+  border-radius: 14px;
+  background: #202124;
+  color: #e8eaed;
+  font-size: 12.5px;
+  outline: none;
+  user-select: text;
+}
+.web-url:focus {
+  border-color: #8ab4f8;
+  background: #17181a;
+}
+
+.web-marks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #292a2d;
+  border-bottom: 1px solid #1b1d21;
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-height: 28px;
+}
+.web-marks::-webkit-scrollbar {
+  display: none;
+}
+.web-mark {
+  flex: none;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #cfd3d8;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.web-mark:hover {
+  background: #3c4043;
+  color: #fff;
+}
+.web-mark.mine {
+  color: #a8c7fa;
+}
+.web-marks-hint {
+  color: #7a8087;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.web-view {
+  flex: 1;
+  min-height: 0;
+  border: none;
+  background: #fff;
+}
+.web-status {
+  padding: 2px 10px;
+  background: #202124;
+  color: #9aa0a6;
+  font-size: 11px;
+  min-height: 16px;
+}
+
+/* 접속 다이얼로그의 모드 탭 */
+.modal-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 10px;
+}
+.modal-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.modal-tab:hover {
+  color: #fff;
+  background: #22262e;
+}
+.modal-tab.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #fff;
+}
+.web-form-body {
+  padding: 18px 20px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#web-form.hidden,
+.modal-body.hidden {
+  display: none;
 }
