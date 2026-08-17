@@ -243,6 +243,16 @@ function buildMenu() {
       ]
     }
   ];
+  // 보여 줄 순서: 정보 · 탭 · 편집 · 보기 · 도움 (앱 메뉴는 mac 규칙상 항상 맨 앞)
+  const order = ['정보', '탭', '편집', '보기', '도움'];
+  template.sort((a, b) => {
+    const ai = order.indexOf(a.label);
+    const bi = order.indexOf(b.label);
+    if (ai < 0) return -1;
+    if (bi < 0) return 1;
+    return ai - bi;
+  });
+
   // macOS 는 화면 상단 시스템 메뉴 막대를 그대로 쓰고,
   // 윈도우/리눅스는 앱이 직접 그리는 메뉴 줄만 쓰므로 네이티브 메뉴는 없앤다.
   Menu.setApplicationMenu(isMac ? Menu.buildFromTemplate(template) : null);

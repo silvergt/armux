@@ -1270,6 +1270,10 @@ const APP_MENUS = [
   }
 ];
 
+// 보여 줄 순서: 정보 · 탭 · 편집 · 보기 · 도움
+const MENU_ORDER = ['정보', '탭', '편집', '보기', '도움'];
+APP_MENUS.sort((a, b) => MENU_ORDER.indexOf(a.label) - MENU_ORDER.indexOf(b.label));
+
 let openMenuIndex = -1;
 
 function renderMenuBar() {
