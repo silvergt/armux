@@ -1,14 +1,18 @@
 'use strict';
 
-/* global Terminal, FitAddon, WebLinksAddon, SearchAddon */
+/* global Terminal, FitAddon, WebLinksAddon, SearchAddon, UnicodeGraphemesAddon */
 
 /**
  * Armux Terminal 렌더러.
  *
- * 탭 구조는 2단계다.
- *   - 그룹(메인탭)  : 상단 탭바의 각 항목 = "세로 열". Ctrl+Shift+숫자 로 이동.
+ * 화면 계층은 3단계다.
+ *   - 그룹(메인탭)  : 상단 탭바의 각 항목 = "세로 열". Ctrl+Alt+숫자 로 이동.
  *   - 탭(서브탭)    : 그룹 아래 탭바의 각 항목 = "가로 줄". Ctrl+숫자 로 이동.
- * 그룹 하나는 하나의 SSH 호스트에 대응하고, 그 안의 서브탭들은 같은 호스트로의 별도 셸 세션이다.
+ *   - 페인(분할 창) : 탭 하나를 좌우/상하로 쪼갠 조각. 각각이 독립된 SSH 셸이다.
+ *
+ * 페인 구조는 이진 트리로 관리한다.
+ *   leaf  = { kind:'leaf',  ... 터미널 1개 = SSH 세션 1개 }
+ *   split = { kind:'split', dir:'row'|'col', children:[a,b], sizes:[0.5,0.5] }
  */
 
 const api = window.armux;
@@ -16,12 +20,12 @@ const api = window.armux;
 /* --------------------------------- 전역 상태 --------------------------------- */
 
 const state = {
-  groups: [], // [{ id, host, credId, tabs: [], activeTabId }]
+  groups: [], // 메인탭 목록
   activeGroupId: null,
   fontSize: Number(localStorage.getItem('fontSize')) || 13
 };
 
-const sessionToTab = new Map(); // sessionId -> tab (IPC 이벤트 라우팅용)
+const sessionToLeaf = new Map(); // sessionId -> leaf (IPC 이벤트 라우팅용)
 let uid = 0;
 const nextId = (prefix) => `${prefix}${++uid}`;
 
@@ -34,6 +38,8 @@ const el = {
   terms: document.getElementById('terms'),
   emptyState: document.getElementById('empty-state'),
   newGroupBtn: document.getElementById('new-group-btn'),
+  helpBtn: document.getElementById('help-btn'),
+  helpMenu: document.getElementById('help-menu'),
   statusLeft: document.getElementById('status-left'),
   statusRight: document.getElementById('status-right'),
   findbar: document.getElementById('findbar'),
@@ -42,7 +48,7 @@ const el = {
 
 if (api.platform === 'darwin') el.body.classList.add('is-mac');
 
-/* -------------------------------- 터미널 테마 -------------------------------- */
+/* ------------------------------ 터미널 테마/폰트 ------------------------------ */
 
 const THEME = {
   background: '#000000',
@@ -68,42 +74,118 @@ const THEME = {
   brightWhite: '#ffffff'
 };
 
-const FONT_STACK =
-  'Menlo, "SF Mono", Consolas, "Cascadia Mono", "DejaVu Sans Mono", "D2Coding", "Nanum Gothic Coding", monospace';
+/**
+ * OS별 폰트 스택.
+ * - windows: PowerShell / Windows Terminal 기본 글꼴인 Cascadia Mono → Consolas 순.
+ *   한글은 윈도우 터미널과 동일하게 맑은 고딕으로 폴백하고, 이모지는 Segoe UI Emoji 가 받는다.
+ * - macOS: 터미널 기본 Menlo → SF Mono, 한글 Apple SD Gothic Neo, 이모지 Apple Color Emoji.
+ */
+const FONT_STACKS = {
+  win32:
+    '"Cascadia Mono", "Cascadia Code", Consolas, "D2Coding", "Malgun Gothic", "맑은 고딕", "Segoe UI Emoji", "Segoe UI Symbol", monospace',
+  darwin:
+    'Menlo, "SF Mono", Monaco, "D2Coding", "Apple SD Gothic Neo", "Apple Color Emoji", monospace',
+  linux:
+    '"DejaVu Sans Mono", "Liberation Mono", "D2Coding", "Noto Sans Mono CJK KR", "Noto Color Emoji", monospace'
+};
+const FONT_STACK = FONT_STACKS[api.platform] || FONT_STACKS.linux;
+
+// 메인탭 전환 단축키 표시 (Ctrl+Alt+숫자)
+const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌥' : 'Alt';
 
 /* ------------------------------- 상태 조회 헬퍼 ------------------------------- */
 
 const activeGroup = () => state.groups.find((g) => g.id === state.activeGroupId) || null;
-const activeTab = () => {
+
+function activeTab() {
   const g = activeGroup();
   return g ? g.tabs.find((t) => t.id === g.activeTabId) || null : null;
-};
+}
 
-/* --------------------------------- 세션 생성 --------------------------------- */
+function activeLeaf() {
+  const t = activeTab();
+  if (!t) return null;
+  return findLeaf(t.root, t.activeLeafId) || firstLeaf(t.root);
+}
+
+/** 트리를 순회하며 leaf 를 모두 모은다 */
+function leavesOf(node, out = []) {
+  if (!node) return out;
+  if (node.kind === 'leaf') out.push(node);
+  else node.children.forEach((c) => leavesOf(c, out));
+  return out;
+}
+
+const firstLeaf = (node) => leavesOf(node)[0] || null;
+const findLeaf = (node, id) => leavesOf(node).find((l) => l.id === id) || null;
+
+/** 트리에서 target 노드를 replacement 로 교체 (루트면 tab.root 자체를 바꾼다) */
+function replaceNode(tab, target, replacement) {
+  if (tab.root === target) {
+    tab.root = replacement;
+    return true;
+  }
+  const walk = (node) => {
+    if (!node || node.kind !== 'split') return false;
+    for (let i = 0; i < node.children.length; i++) {
+      if (node.children[i] === target) {
+        node.children[i] = replacement;
+        return true;
+      }
+      if (walk(node.children[i])) return true;
+    }
+    return false;
+  };
+  return walk(tab.root);
+}
+
+/** 트리에서 leaf 를 떼어낸다. 형제 노드가 부모 자리를 물려받는다. */
+function detachLeaf(tab, leaf) {
+  if (tab.root === leaf) {
+    tab.root = null;
+    return;
+  }
+  const walk = (node, parent) => {
+    if (!node || node.kind !== 'split') return false;
+    const idx = node.children.indexOf(leaf);
+    if (idx >= 0) {
+      const sibling = node.children[1 - idx];
+      if (parent === null) tab.root = sibling;
+      else replaceNode(tab, node, sibling);
+      return true;
+    }
+    return node.children.some((c) => walk(c, node));
+  };
+  walk(tab.root, null);
+}
+
+/* ------------------------------- 페인(leaf) 생성 ------------------------------ */
 
 /**
- * 새 SSH 세션 탭을 만든다.
- * @param {object} group    소속 그룹
- * @param {object} connect  { hostId, credId, profile, save } 접속 파라미터
+ * 터미널 1개짜리 페인을 만든다. SSH 접속까지 시작한다.
+ * @param {object} tab      소속 서브탭
+ * @param {object} connect  { hostId, credId, profile } 접속 파라미터
  */
-async function createTab(group, connect) {
-  const tab = {
-    id: nextId('t'),
-    groupId: group.id,
+function createLeaf(tab, connect) {
+  const leaf = {
+    kind: 'leaf',
+    id: nextId('p'),
+    tabId: tab.id,
+    groupId: tab.groupId,
     sessionId: null,
-    title: group.host.name,
     status: 'connecting', // connecting | ready | closed | error
-    pane: null,
-    term: null,
-    fit: null,
-    search: null,
-    connect // 재연결에 사용할 접속 파라미터 보관
+    title: '',
+    alert: false, // Claude Code 등이 사용자 응답을 기다리는 중인지
+    tail: '', // 알림 감지를 위한 최근 출력 버퍼(ANSI 제거본)
+    connect
   };
 
-  // 터미널 DOM/인스턴스 생성
+  // 페인 DOM + xterm 인스턴스
   const pane = document.createElement('div');
-  pane.className = 'term-pane';
-  el.terms.appendChild(pane);
+  pane.className = 'pane';
+  const termHost = document.createElement('div');
+  termHost.className = 'pane-term';
+  pane.appendChild(termHost);
 
   const term = new Terminal({
     fontFamily: FONT_STACK,
@@ -113,42 +195,53 @@ async function createTab(group, connect) {
     scrollback: 10000,
     allowProposedApi: true,
     macOptionIsMeta: true,
-    rightClickSelectsWord: false
+    rightClickSelectsWord: false,
+    drawBoldTextInBrightColors: true
   });
   const fit = new FitAddon.FitAddon();
   const search = new SearchAddon.SearchAddon();
   term.loadAddon(fit);
   term.loadAddon(search);
   try {
+    // 이모지/한글 등 폭 계산을 유니코드 15 grapheme 기준으로 (깨짐 방지)
+    term.loadAddon(new UnicodeGraphemesAddon.UnicodeGraphemesAddon());
+    term.unicode.activeVersion = '15-graphemes';
+  } catch (e) {
+    /* 애드온 실패해도 기본 동작은 유지 */
+  }
+  try {
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
   } catch (e) {
-    /* 링크 애드온 실패는 무시 */
+    /* noop */
   }
-  term.open(pane);
+  term.open(termHost);
 
-  tab.pane = pane;
-  tab.term = term;
-  tab.fit = fit;
-  tab.search = search;
+  leaf.el = pane;
+  leaf.term = term;
+  leaf.fit = fit;
+  leaf.search = search;
 
-  // 키 입력 → SSH 로 전달
+  // 키 입력 → SSH 로 전달. 사용자가 직접 입력했다면 알림은 확인한 것으로 본다.
   term.onData((data) => {
-    if (tab.sessionId && tab.status === 'ready') {
-      api.ssh.write(tab.sessionId, data);
-    } else if (tab.status === 'closed' || tab.status === 'error') {
-      // 종료된 탭에서 Enter 를 누르면 같은 호스트로 재접속
-      if (data === '\r') reconnect(tab);
+    clearAlert(leaf);
+    if (leaf.sessionId && leaf.status === 'ready') {
+      api.ssh.write(leaf.sessionId, data);
+    } else if (leaf.status === 'closed' || leaf.status === 'error') {
+      if (data === '\r') reconnect(leaf); // 종료된 페인에서 Enter → 재접속
     }
   });
 
-  // 셸이 보낸 타이틀(OSC 0/2)을 탭 이름으로 사용
+  // 셸이 보낸 타이틀(OSC 0/2)
   term.onTitleChange((title) => {
     if (!title) return;
-    tab.title = title;
+    leaf.title = title;
     scheduleRender();
   });
 
-  // 드래그 선택 시 자동 복사 (iTerm 동작)
+  // 터미널 벨(^G) → 사용자 주의가 필요하다는 표준 신호
+  term.onBell(() => raiseAlert(leaf));
+
+  // 드래그 선택 시 자동 복사
   term.onSelectionChange(() => {
     const sel = term.getSelection();
     if (sel) api.util.clipboardWrite(sel);
@@ -158,62 +251,175 @@ async function createTab(group, connect) {
   pane.addEventListener('contextmenu', async (e) => {
     e.preventDefault();
     const text = await api.util.clipboardRead();
-    if (text && tab.sessionId && tab.status === 'ready') api.ssh.write(tab.sessionId, text);
+    if (text && leaf.sessionId && leaf.status === 'ready') api.ssh.write(leaf.sessionId, text);
   });
 
-  group.tabs.push(tab);
-  group.activeTabId = tab.id;
-  state.activeGroupId = group.id;
-  render();
-  fitTab(tab);
+  // 페인 클릭 → 그 페인이 활성 페인이 되고 알림도 확인 처리
+  pane.addEventListener('mousedown', () => focusLeaf(leaf));
 
-  await startSession(tab);
-  return tab;
+  startSession(leaf);
+  return leaf;
 }
 
-/** 실제 SSH 접속을 시작한다 (탭/터미널은 이미 준비된 상태) */
-async function startSession(tab) {
-  const group = state.groups.find((g) => g.id === tab.groupId);
+/** 실제 SSH 접속 시작 (페인/터미널은 이미 만들어진 상태) */
+async function startSession(leaf) {
+  const group = state.groups.find((g) => g.id === leaf.groupId);
   const h = group.host;
-  tab.status = 'connecting';
-  tab.term.writeln(`\x1b[90m→ ${h.username}@${h.host}:${h.port} 접속 중…\x1b[0m`);
+  leaf.status = 'connecting';
+  leaf.term.writeln(`\x1b[90m→ ${h.username}@${h.host}:${h.port} 접속 중…\x1b[0m`);
   render();
 
   try {
     const res = await api.ssh.connect({
-      ...tab.connect,
-      size: { cols: tab.term.cols, rows: tab.term.rows }
+      ...leaf.connect,
+      size: { cols: leaf.term.cols, rows: leaf.term.rows }
     });
-    tab.sessionId = res.sessionId;
-    sessionToTab.set(res.sessionId, tab);
+    leaf.sessionId = res.sessionId;
+    sessionToLeaf.set(res.sessionId, leaf);
 
-    // 그룹이 아직 임시 정보만 갖고 있으면 서버가 확정한 값으로 갱신
     group.host = { ...group.host, ...res.host };
-    // 이후 서브탭은 같은 자격증명으로 접속할 수 있도록 토큰 보관
     group.credId = res.credId || group.credId;
     group.connect = { hostId: res.host.id || null, credId: group.credId };
-    tab.connect = { ...group.connect };
+    leaf.connect = { ...group.connect };
     render();
   } catch (err) {
-    tab.status = 'error';
-    tab.term.writeln(`\r\n\x1b[31m✖ 접속 실패: ${String(err.message || err).replace(/^Error:\s*/, '')}\x1b[0m`);
-    tab.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
+    leaf.status = 'error';
+    leaf.term.writeln(`\r\n\x1b[31m✖ 접속 실패: ${String(err.message || err).replace(/^Error:\s*/, '')}\x1b[0m`);
+    leaf.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
     render();
   }
 }
 
-/** 종료/실패한 탭을 같은 접속 정보로 다시 연결 */
-function reconnect(tab) {
-  if (tab.sessionId) sessionToTab.delete(tab.sessionId);
-  tab.sessionId = null;
-  tab.term.reset();
-  startSession(tab);
+/** 종료/실패한 페인을 같은 정보로 재접속 */
+function reconnect(leaf) {
+  if (leaf.sessionId) sessionToLeaf.delete(leaf.sessionId);
+  leaf.sessionId = null;
+  leaf.term.reset();
+  startSession(leaf);
 }
 
-/* --------------------------------- 그룹 관리 --------------------------------- */
+/** 페인 정리 (세션 종료 + 터미널 파기) */
+function disposeLeaf(leaf) {
+  if (leaf.sessionId) {
+    api.ssh.close(leaf.sessionId);
+    sessionToLeaf.delete(leaf.sessionId);
+  }
+  try {
+    leaf.term.dispose();
+  } catch (e) {
+    /* noop */
+  }
+  leaf.el.remove();
+}
+
+/* --------------------------- Claude Code 응답 대기 알림 -------------------------- */
+
+// Claude Code 가 사용자 입력을 기다릴 때 화면에 남는 전형적인 문구들
+const ALERT_PATTERNS = [
+  /Do you want to [^\n]{0,80}\?/i,
+  /Would you like [^\n]{0,80}\?/i,
+  /❯\s*1\.\s/, // 선택지 목록 (❯ 1. Yes ...)
+  /\b1\.\s*Yes\b/,
+  /\(y\/n\)/i,
+  /\[y\/N\]/i,
+  /\[Y\/n\]/i,
+  /Press Enter to continue/i,
+  /Continue\?\s*$/im,
+  /waiting for (your )?(input|response|confirmation)/i,
+  /Allow .{0,40}\?/i
+];
+
+const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g;
+
+/** 출력 스트림을 훑어 "사용자 응답 대기" 상태를 감지한다 */
+function feedAlertDetector(leaf, text) {
+  if (text.includes('\x07')) {
+    raiseAlert(leaf); // 터미널 벨은 그 자체로 주의 신호
+    return;
+  }
+  const plain = text.replace(ANSI_RE, '');
+  if (!plain.trim()) return;
+
+  leaf.tail = (leaf.tail + plain).slice(-4000);
+  const recent = leaf.tail.slice(-1200);
+  if (ALERT_PATTERNS.some((re) => re.test(recent))) {
+    raiseAlert(leaf);
+    leaf.tail = ''; // 같은 문구로 계속 다시 울리지 않도록 버퍼를 비운다
+  }
+}
+
+/** 알림 켜기. 지금 보고 있는 페인이면 굳이 표시하지 않는다. */
+function raiseAlert(leaf) {
+  if (leaf.alert) return;
+  const cur = activeLeaf();
+  if (cur && cur.id === leaf.id && document.hasFocus()) return;
+  leaf.alert = true;
+  scheduleRender();
+}
+
+function clearAlert(leaf) {
+  if (!leaf || !leaf.alert) return;
+  leaf.alert = false;
+  scheduleRender();
+}
+
+/** 탭 안의 모든 페인 알림 해제 (탭을 열어 확인한 경우) */
+function clearAlertsInTab(tab) {
+  let changed = false;
+  for (const l of leavesOf(tab.root)) {
+    if (l.alert) {
+      l.alert = false;
+      changed = true;
+    }
+  }
+  if (changed) scheduleRender();
+}
+
+const tabHasAlert = (tab) => leavesOf(tab.root).some((l) => l.alert);
+const groupHasAlert = (group) => group.tabs.some(tabHasAlert);
+
+/* --------------------------------- 탭 / 그룹 --------------------------------- */
+
+/** 서브탭(가로 줄) 하나를 만든다. 안에 페인 1개로 시작. */
+function createTab(group, connect) {
+  const tab = {
+    id: nextId('t'),
+    groupId: group.id,
+    root: null,
+    activeLeafId: null,
+    container: null,
+    panesWrap: null,
+    explorer: null,
+    showExplorer: false
+  };
+
+  const container = document.createElement('div');
+  container.className = 'tab-panes';
+  const panesWrap = document.createElement('div');
+  panesWrap.className = 'panes-wrap';
+  container.appendChild(panesWrap);
+  el.terms.appendChild(container);
+  tab.container = container;
+  tab.panesWrap = panesWrap;
+  tab.explorer = null; // 파일 탐색기(SFTP) 인스턴스. 폴더 버튼을 처음 누를 때 만든다
+  tab.showExplorer = false;
+
+  group.tabs.push(tab);
+  group.activeTabId = tab.id;
+  state.activeGroupId = group.id;
+
+  const leaf = createLeaf(tab, connect);
+  tab.root = leaf;
+  tab.activeLeafId = leaf.id;
+
+  layoutTab(tab);
+  render();
+  focusLeaf(leaf);
+  return tab;
+}
 
 /** 새 메인탭(그룹)을 만들고 첫 세션을 연다 */
-async function createGroup(hostInfo, connect) {
+function createGroup(hostInfo, connect) {
   const group = {
     id: nextId('g'),
     host: {
@@ -230,32 +436,35 @@ async function createGroup(hostInfo, connect) {
   };
   state.groups.push(group);
   state.activeGroupId = group.id;
-  await createTab(group, connect);
+  createTab(group, connect);
   return group;
 }
 
 /** 기존 그룹에 서브탭 추가 (같은 호스트로 새 셸) */
-async function addSubTab(group) {
+function addSubTab(group) {
   const connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
   if (!connect.hostId && !connect.credId) {
-    // 최초 접속이 실패해 자격증명이 없는 경우: 다이얼로그를 다시 띄운다
-    openConnectDialog({ group });
+    openConnectDialog({ group }); // 자격증명이 없으면 다시 물어본다
     return;
   }
-  await createTab(group, connect);
+  createTab(group, connect);
+}
+
+/** 서브탭 닫기 전에 확인 (메인탭과 동일하게) */
+async function confirmCloseTab(group, tab) {
+  const panes = leavesOf(tab.root).length;
+  const ok = await api.util.confirm(
+    '이 서브탭을 닫을까요?',
+    `${group.host.name} · ${panes > 1 ? `분할 창 ${panes}개가 함께 종료됩니다.` : '연결이 종료됩니다.'}`
+  );
+  if (!ok) return;
+  closeTab(group, tab);
 }
 
 function closeTab(group, tab) {
-  if (tab.sessionId) {
-    api.ssh.close(tab.sessionId);
-    sessionToTab.delete(tab.sessionId);
-  }
-  try {
-    tab.term.dispose();
-  } catch (e) {
-    /* noop */
-  }
-  tab.pane.remove();
+  for (const l of leavesOf(tab.root)) disposeLeaf(l);
+  if (tab.explorer) tab.explorer.dispose();
+  tab.container.remove();
 
   const idx = group.tabs.indexOf(tab);
   group.tabs.splice(idx, 1);
@@ -265,8 +474,7 @@ function closeTab(group, tab) {
     return;
   }
   if (group.activeTabId === tab.id) {
-    const next = group.tabs[Math.min(idx, group.tabs.length - 1)];
-    group.activeTabId = next.id;
+    group.activeTabId = group.tabs[Math.min(idx, group.tabs.length - 1)].id;
   }
   render();
   fitTab(activeTab());
@@ -274,16 +482,8 @@ function closeTab(group, tab) {
 
 function closeGroup(group) {
   for (const t of [...group.tabs]) {
-    if (t.sessionId) {
-      api.ssh.close(t.sessionId);
-      sessionToTab.delete(t.sessionId);
-    }
-    try {
-      t.term.dispose();
-    } catch (e) {
-      /* noop */
-    }
-    t.pane.remove();
+    for (const l of leavesOf(t.root)) disposeLeaf(l);
+    t.container.remove();
   }
   const idx = state.groups.indexOf(group);
   state.groups.splice(idx, 1);
@@ -295,24 +495,242 @@ function closeGroup(group) {
   fitTab(activeTab());
 }
 
-/* --------------------------------- 탭 활성화 -------------------------------- */
+async function confirmCloseGroup(group) {
+  const paneCount = group.tabs.reduce((n, t) => n + leavesOf(t.root).length, 0);
+  if (paneCount > 1) {
+    const ok = await api.util.confirm(
+      `"${group.host.name}" 탭을 닫을까요?`,
+      `서브탭 ${group.tabs.length}개 / 분할 창 ${paneCount}개가 함께 종료됩니다.`
+    );
+    if (!ok) return;
+  }
+  closeGroup(group);
+}
+
+/* ---------------------------------- 분할 ----------------------------------- */
+
+/**
+ * 현재 페인을 둘로 나눈다.
+ * @param {'row'|'col'} dir  row = 좌우 분할(세로선), col = 상하 분할(가로선)
+ */
+function splitActive(dir) {
+  const tab = activeTab();
+  const leaf = activeLeaf();
+  if (!tab || !leaf) return;
+
+  const group = state.groups.find((g) => g.id === tab.groupId);
+  const connect = leaf.connect || group.connect || { hostId: group.host.id || null, credId: group.credId };
+  if (!connect.hostId && !connect.credId) {
+    openConnectDialog({ group });
+    return;
+  }
+
+  const newLeaf = createLeaf(tab, connect);
+  const split = {
+    kind: 'split',
+    id: nextId('s'),
+    dir,
+    children: [leaf, newLeaf],
+    sizes: [0.5, 0.5]
+  };
+  replaceNode(tab, leaf, split);
+  tab.activeLeafId = newLeaf.id;
+
+  layoutTab(tab);
+  render();
+  focusLeaf(newLeaf);
+}
+
+/** 페인 하나 닫기. 마지막 페인이면 탭을 닫는다. */
+function closeLeaf(leaf) {
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  if (!tab) return;
+
+  if (leavesOf(tab.root).length === 1) {
+    confirmCloseTab(group, tab); // 마지막 창이면 탭이 닫히므로 한 번 물어본다
+    return;
+  }
+  detachLeaf(tab, leaf);
+  disposeLeaf(leaf);
+  const next = firstLeaf(tab.root);
+  tab.activeLeafId = next ? next.id : null;
+  layoutTab(tab);
+  render();
+  if (next) focusLeaf(next);
+}
+
+/** 활성 페인 지정 + 알림 해제 + 포커스 */
+function focusLeaf(leaf) {
+  if (!leaf) return;
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  if (!group || !tab) return;
+  state.activeGroupId = group.id;
+  group.activeTabId = tab.id;
+  tab.activeLeafId = leaf.id;
+  clearAlert(leaf);
+  render();
+  fitTab(tab);
+  leaf.term.focus();
+}
+
+/** 방향키로 이웃 페인으로 이동 (화면 좌표 기준으로 가장 가까운 페인 선택) */
+function focusNeighbor(direction) {
+  const tab = activeTab();
+  const cur = activeLeaf();
+  if (!tab || !cur) return;
+  const leaves = leavesOf(tab.root);
+  if (leaves.length < 2) return;
+
+  const base = cur.el.getBoundingClientRect();
+  const cx = base.left + base.width / 2;
+  const cy = base.top + base.height / 2;
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const l of leaves) {
+    if (l === cur) continue;
+    const r = l.el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const okDir =
+      (direction === 'left' && x < cx) ||
+      (direction === 'right' && x > cx) ||
+      (direction === 'up' && y < cy) ||
+      (direction === 'down' && y > cy);
+    if (!okDir) continue;
+    const dist = Math.abs(x - cx) + Math.abs(y - cy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = l;
+    }
+  }
+  if (best) focusLeaf(best);
+}
+
+/* ------------------------------ 분할 레이아웃 그리기 ----------------------------- */
+
+/** 트리를 실제 DOM 으로 조립한다 (leaf.el 은 재사용) */
+function layoutTab(tab) {
+  tab.panesWrap.innerHTML = '';
+  if (!tab.root) return;
+  tab.panesWrap.appendChild(buildNode(tab, tab.root));
+  requestAnimationFrame(() => fitTab(tab));
+}
+
+/* ------------------------------ 파일 탐색기 전환 ------------------------------ */
+
+/** 서브탭 왼쪽 폴더 버튼: 터미널 ↔ 파일 탐색기 전환 */
+function toggleExplorer(tab) {
+  if (!tab) return;
+  const group = state.groups.find((g) => g.id === tab.groupId);
+  if (!group) return;
+
+  if (!tab.explorer) {
+    const connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
+    if (!connect.hostId && !connect.credId) {
+      el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
+      return;
+    }
+    tab.explorer = window.Explorer.create({ connect, hostLabel: group.host.name });
+    tab.container.appendChild(tab.explorer.el);
+  }
+  tab.showExplorer = !tab.showExplorer;
+  applyTabView(tab);
+  render();
+}
+
+/**
+ * 터미널/탐색기 중 무엇을 보여줄지 반영.
+ * 상태가 실제로 바뀐 경우에만 크기 재계산/포커스를 건드린다(렌더가 자주 돌기 때문).
+ */
+function applyTabView(tab, force) {
+  if (!tab) return;
+  const key = `${tab.showExplorer ? 'ex' : 'term'}`;
+  if (!force && tab._viewKey === key) return;
+  tab._viewKey = key;
+
+  tab.panesWrap.classList.toggle('hidden', tab.showExplorer);
+  if (tab.explorer) tab.explorer.el.classList.toggle('hidden', !tab.showExplorer);
+
+  const isActive = activeTab() === tab;
+  if (tab.showExplorer) {
+    if (isActive && tab.explorer) tab.explorer.focus();
+  } else if (isActive) {
+    fitTab(tab);
+    const l = activeLeaf();
+    if (l && l.tabId === tab.id) l.term.focus();
+  }
+}
+
+function buildNode(tab, node) {
+  if (node.kind === 'leaf') return node.el;
+
+  const box = document.createElement('div');
+  box.className = `split split-${node.dir}`;
+
+  const a = buildNode(tab, node.children[0]);
+  const b = buildNode(tab, node.children[1]);
+  a.style.flex = `${node.sizes[0]} 1 0`;
+  b.style.flex = `${node.sizes[1]} 1 0`;
+
+  const divider = document.createElement('div');
+  divider.className = `divider divider-${node.dir}`;
+  divider.addEventListener('mousedown', (e) => startDividerDrag(e, tab, node, box, a, b));
+
+  box.append(a, divider, b);
+  return box;
+}
+
+/** 분할선 드래그로 비율 조절 */
+function startDividerDrag(e, tab, node, box, a, b) {
+  e.preventDefault();
+  const horizontal = node.dir === 'row'; // 좌우 분할이면 x축으로 움직인다
+  const rect = box.getBoundingClientRect();
+  const total = horizontal ? rect.width : rect.height;
+  document.body.classList.add(horizontal ? 'resizing-col' : 'resizing-row');
+
+  const onMove = (ev) => {
+    const pos = horizontal ? ev.clientX - rect.left : ev.clientY - rect.top;
+    let ratio = pos / total;
+    ratio = Math.max(0.1, Math.min(0.9, ratio)); // 너무 작아지지 않게 제한
+    node.sizes = [ratio, 1 - ratio];
+    a.style.flex = `${node.sizes[0]} 1 0`;
+    b.style.flex = `${node.sizes[1]} 1 0`;
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.classList.remove('resizing-col', 'resizing-row');
+    fitTab(tab);
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+/* ---------------------------------- 탭 활성화 --------------------------------- */
 
 function selectGroup(groupId) {
   if (state.activeGroupId === groupId) return;
   state.activeGroupId = groupId;
-  render();
   const t = activeTab();
+  if (t) clearAlertsInTab(t); // 열어서 확인했으므로 알림 해제
+  render();
   fitTab(t);
-  if (t) t.term.focus();
+  const l = activeLeaf();
+  if (l) l.term.focus();
 }
 
 function selectTab(group, tabId) {
   group.activeTabId = tabId;
   state.activeGroupId = group.id;
-  render();
   const t = activeTab();
+  if (t) clearAlertsInTab(t);
+  render();
   fitTab(t);
-  if (t) t.term.focus();
+  const l = activeLeaf();
+  if (l) l.term.focus();
 }
 
 /** Ctrl+Shift+숫자 : n번째 메인탭 */
@@ -349,13 +767,37 @@ function render() {
   el.emptyState.classList.toggle('hidden', state.groups.length > 0);
 }
 
+/** 초록 느낌표 배지 */
+function alertBadge() {
+  const b = document.createElement('span');
+  b.className = 'alert-badge';
+  b.textContent = '!';
+  b.title = '응답을 기다리는 중입니다';
+  return b;
+}
+
+function statusDot(status) {
+  const dot = document.createElement('span');
+  dot.className = 'dot ' + status;
+  return dot;
+}
+
+/** 탭(서브탭) 전체 상태: 하나라도 connecting 이면 connecting, 전부 closed 면 closed … */
+function tabStatus(tab) {
+  const sts = leavesOf(tab.root).map((l) => l.status);
+  if (sts.includes('connecting')) return 'connecting';
+  if (sts.includes('ready')) return 'ready';
+  if (sts.includes('error')) return 'error';
+  return 'closed';
+}
+
 function renderTabstrip() {
-  // 탭이 다시 그려지면 떠 있던 + 버튼의 기준 탭이 사라졌을 수 있으므로 정리
   if (hoverAddGroup && !state.groups.includes(hoverAddGroup)) {
     hoverAdd.classList.add('hidden');
     hoverAddGroup = null;
   }
   el.tabstrip.innerHTML = '';
+
   state.groups.forEach((group, gi) => {
     const active = group.id === state.activeGroupId;
     const cur = group.tabs.find((t) => t.id === group.activeTabId) || group.tabs[0];
@@ -364,16 +806,14 @@ function renderTabstrip() {
     node.className = 'tab' + (active ? ' active' : '');
     node.title = `${group.host.username}@${group.host.host}:${group.host.port}`;
 
-    const dot = document.createElement('span');
-    dot.className = 'dot ' + (cur ? cur.status : 'closed');
-
     const idx = document.createElement('span');
     idx.className = 'idx';
-    idx.textContent = gi < 9 ? `⇧${gi + 1}` : ''; // Ctrl+Shift+숫자
+    idx.textContent = gi < 9 ? `${MAIN_TAB_MOD}${gi + 1}` : '';
 
     const label = document.createElement('span');
     label.className = 'label';
-    label.textContent = group.host.name + (group.tabs.length > 1 ? ` (${group.tabs.length})` : '');
+    const paneCount = group.tabs.reduce((n, t) => n + leavesOf(t.root).length, 0);
+    label.textContent = group.host.name + (paneCount > 1 ? ` (${paneCount})` : '');
 
     const close = document.createElement('span');
     close.className = 'close';
@@ -383,16 +823,258 @@ function renderTabstrip() {
       confirmCloseGroup(group);
     });
 
-    node.append(dot, idx, label, close);
+    node.append(statusDot(cur ? tabStatus(cur) : 'closed'), idx, label);
+    // 서브탭 중 하나라도 응답 대기면 메인탭에도 표시
+    if (groupHasAlert(group)) node.appendChild(alertBadge());
+    node.appendChild(close);
+
     node.addEventListener('click', () => selectGroup(group.id));
-    // 탭에 마우스를 올리면 탭 아래에 "서브탭 추가(+)" 버튼을 띄운다
     node.addEventListener('mouseenter', () => showHoverAdd(node, group));
     node.addEventListener('mouseleave', () => hideHoverAdd());
     node.addEventListener('auxclick', (e) => {
-      if (e.button === 1) confirmCloseGroup(group); // 휠클릭으로 닫기
+      if (e.button === 1) confirmCloseGroup(group);
     });
     el.tabstrip.appendChild(node);
   });
+}
+
+function renderSubstrip() {
+  const group = activeGroup();
+  el.substrip.innerHTML = '';
+  if (!group) {
+    el.substrip.classList.add('hidden');
+    return;
+  }
+  el.substrip.classList.remove('hidden');
+
+  // 맨 왼쪽 폴더 버튼: 현재 서브탭을 파일 탐색기로 전환
+  const cur = group.tabs.find((t) => t.id === group.activeTabId) || group.tabs[0];
+  const folderBtn = document.createElement('button');
+  folderBtn.className = 'subtab-folder' + (cur && cur.showExplorer ? ' on' : '');
+  folderBtn.textContent = '📁';
+  folderBtn.title = '파일 탐색기 열기/닫기 (SFTP)';
+  folderBtn.addEventListener('click', () => toggleExplorer(activeTab()));
+  el.substrip.appendChild(folderBtn);
+
+  group.tabs.forEach((tab, ti) => {
+    const node = document.createElement('div');
+    node.className = 'subtab' + (tab.id === group.activeTabId ? ' active' : '');
+
+    const idx = document.createElement('span');
+    idx.className = 'idx';
+    idx.textContent = ti < 9 ? `${ti + 1}` : '';
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    const leaves = leavesOf(tab.root);
+    label.textContent = tabTitle(group, tab);
+    if (leaves.length > 1) label.textContent += ` ⧉${leaves.length}`; // 분할 개수
+
+    const close = document.createElement('span');
+    close.className = 'close';
+    close.textContent = '✕';
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      confirmCloseTab(group, tab);
+    });
+
+    node.append(statusDot(tabStatus(tab)), idx, label);
+    if (tabHasAlert(tab)) node.appendChild(alertBadge());
+    node.appendChild(close);
+
+    node.addEventListener('click', () => selectTab(group, tab.id));
+    node.addEventListener('auxclick', (e) => {
+      if (e.button === 1) confirmCloseTab(group, tab);
+    });
+    node.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      selectTab(group, tab.id);
+      // render() 로 노드가 새로 그려지므로 같은 위치의 탭 노드를 다시 찾아서 넘긴다
+      const fresh = el.substrip.querySelectorAll('.subtab')[ti];
+      showContextMenu(e.clientX, e.clientY, [
+        ['이름 변경', () => startRenameTab(group, tab, fresh || node)],
+        ['기본 이름으로 되돌리기', () => {
+          tab.customTitle = null;
+          render();
+        }],
+        ['-'],
+        ['서브탭 추가', () => addSubTab(group)],
+        ['서브탭 닫기', () => confirmCloseTab(group, tab), 'danger']
+      ]);
+    });
+    el.substrip.appendChild(node);
+  });
+
+  const add = document.createElement('button');
+  add.className = 'subtab-add';
+  add.textContent = '+';
+  add.title = '서브탭 추가 (Ctrl/⌘+T)';
+  add.addEventListener('click', () => addSubTab(group));
+  el.substrip.appendChild(add);
+}
+
+function renderPanes() {
+  const curTab = activeTab();
+  const curLeaf = activeLeaf();
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      const on = curTab && t.id === curTab.id;
+      t.container.classList.toggle('active', Boolean(on));
+      applyTabView(t);
+      for (const l of leavesOf(t.root)) {
+        const isActive = Boolean(curLeaf && l.id === curLeaf.id);
+        l.el.classList.toggle('focused', isActive);
+        // 분할이 하나뿐이면 포커스 테두리를 굳이 그리지 않는다
+        l.el.classList.toggle('solo', leavesOf(t.root).length === 1);
+        renderPaneOverlay(l);
+      }
+    }
+  }
+}
+
+/** 페인 우상단의 분할/닫기 버튼 */
+function renderPaneOverlay(leaf) {
+  let bar = leaf.el.querySelector('.pane-tools');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'pane-tools';
+
+    const mk = (text, title, fn) => {
+      const b = document.createElement('button');
+      b.textContent = text;
+      b.title = title;
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        fn();
+      });
+      return b;
+    };
+    bar.append(
+      mk('▯|▯', '좌우로 분할 (Ctrl/⌘+D)', () => {
+        focusLeaf(leaf);
+        splitActive('row');
+      }),
+      mk('▤', '위아래로 분할 (Ctrl/⌘+Shift+D)', () => {
+        focusLeaf(leaf);
+        splitActive('col');
+      }),
+      mk('✕', '이 분할 창 닫기 (Ctrl/⌘+W)', () => closeLeaf(leaf))
+    );
+    leaf.el.appendChild(bar);
+  }
+  const badge = leaf.el.querySelector('.pane-alert');
+  if (leaf.alert && !badge) {
+    const b = alertBadge();
+    b.classList.add('pane-alert');
+    leaf.el.appendChild(b);
+  } else if (!leaf.alert && badge) {
+    badge.remove();
+  }
+}
+
+function renderStatus() {
+  const g = activeGroup();
+  const t = activeTab();
+  const l = activeLeaf();
+  if (!g || !t || !l) {
+    el.statusLeft.textContent = '준비됨';
+    el.statusRight.textContent = '';
+    return;
+  }
+  const statusText = {
+    connecting: '접속 중…',
+    ready: '연결됨',
+    closed: '연결 종료',
+    error: '접속 실패'
+  }[l.status];
+  el.statusLeft.textContent = `${g.host.username}@${g.host.host}:${g.host.port} · ${statusText}`;
+  const panes = leavesOf(t.root);
+  el.statusRight.textContent =
+    `${l.term.cols}×${l.term.rows} · ${state.fontSize}px · ` +
+    `메인 ${state.groups.indexOf(g) + 1}/${state.groups.length} · ` +
+    `서브 ${g.tabs.indexOf(t) + 1}/${g.tabs.length}` +
+    (panes.length > 1 ? ` · 분할 ${panes.indexOf(l) + 1}/${panes.length}` : '');
+}
+
+/* ------------------------------ 공용 컨텍스트 메뉴 ----------------------------- */
+
+const ctxMenu = document.createElement('div');
+ctxMenu.className = 'ex-menu hidden';
+document.body.appendChild(ctxMenu);
+
+/** items = [[라벨, 실행함수, 'danger'?] | ['-']] */
+function showContextMenu(x, y, items) {
+  ctxMenu.innerHTML = '';
+  for (const item of items) {
+    if (item[0] === '-') {
+      const hr = document.createElement('div');
+      hr.className = 'ex-menu-sep';
+      ctxMenu.appendChild(hr);
+      continue;
+    }
+    const b = document.createElement('button');
+    b.textContent = item[0];
+    if (item[2]) b.classList.add(item[2]);
+    b.addEventListener('click', () => {
+      hideContextMenu();
+      item[1]();
+    });
+    ctxMenu.appendChild(b);
+  }
+  ctxMenu.classList.remove('hidden');
+  ctxMenu.style.left = `${Math.min(x, window.innerWidth - ctxMenu.offsetWidth - 8)}px`;
+  ctxMenu.style.top = `${Math.min(y, window.innerHeight - ctxMenu.offsetHeight - 8)}px`;
+}
+
+function hideContextMenu() {
+  ctxMenu.classList.add('hidden');
+}
+document.addEventListener('click', hideContextMenu);
+window.addEventListener('blur', hideContextMenu);
+
+/* ------------------------------ 서브탭 이름 관리 ------------------------------ */
+
+/** 서브탭에 보여줄 이름: 사용자가 정한 이름 > 현재 세션(셸)이 알려준 제목 > 호스트 이름 */
+function tabTitle(group, tab) {
+  if (tab.customTitle) return tab.customTitle;
+  const leaves = leavesOf(tab.root);
+  const head = leaves.find((l) => l.id === tab.activeLeafId) || leaves[0];
+  return (head && head.title) || group.host.name;
+}
+
+/** 서브탭 라벨을 입력창으로 바꿔 그 자리에서 이름을 고친다 */
+function startRenameTab(group, tab, node) {
+  const label = node.querySelector('.label');
+  if (!label) return;
+  const input = document.createElement('input');
+  input.className = 'subtab-rename';
+  input.value = tabTitle(group, tab);
+  input.spellcheck = false;
+  label.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const commit = () => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    tab.customTitle = v || null; // 비우면 기본 이름(세션 제목)으로 돌아간다
+    render();
+  };
+  const cancel = () => {
+    if (done) return;
+    done = true;
+    render();
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') commit();
+    if (e.key === 'Escape') cancel();
+  });
+  input.addEventListener('blur', commit);
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('click', (e) => e.stopPropagation());
 }
 
 /* ------------------------- 탭 호버 시 뜨는 서브탭 추가 버튼 ------------------------ */
@@ -404,8 +1086,8 @@ hoverAdd.textContent = '+';
 hoverAdd.title = '이 그룹에 서브탭 추가 (Shift+클릭: 다른 호스트로 접속)';
 document.body.appendChild(hoverAdd);
 
-let hoverAddGroup = null; // 현재 + 버튼이 가리키는 그룹
-let hoverAddTimer = null; // 탭 → 버튼으로 마우스가 넘어갈 시간을 주는 타이머
+let hoverAddGroup = null;
+let hoverAddTimer = null;
 
 function showHoverAdd(tabNode, group) {
   clearTimeout(hoverAddTimer);
@@ -417,7 +1099,6 @@ function showHoverAdd(tabNode, group) {
 }
 
 function hideHoverAdd() {
-  // 탭에서 버튼으로 마우스를 옮기는 짧은 순간에는 사라지지 않도록 지연
   clearTimeout(hoverAddTimer);
   hoverAddTimer = setTimeout(() => {
     if (!hoverAdd.matches(':hover')) {
@@ -434,109 +1115,24 @@ hoverAdd.addEventListener('click', (e) => {
   const group = hoverAddGroup;
   hoverAdd.classList.add('hidden');
   if (!group) return;
-  if (e.shiftKey) openConnectDialog({ group }); // Shift+클릭이면 다른 호스트로 접속
+  if (e.shiftKey) openConnectDialog({ group });
   else addSubTab(group);
 });
 
-function renderSubstrip() {
-  const group = activeGroup();
-  el.substrip.innerHTML = '';
-  if (!group) {
-    el.substrip.classList.add('hidden');
-    return;
-  }
-  el.substrip.classList.remove('hidden');
-
-  group.tabs.forEach((tab, ti) => {
-    const node = document.createElement('div');
-    node.className = 'subtab' + (tab.id === group.activeTabId ? ' active' : '');
-
-    const dot = document.createElement('span');
-    dot.className = 'dot ' + tab.status;
-
-    const idx = document.createElement('span');
-    idx.className = 'idx';
-    idx.textContent = ti < 9 ? `${ti + 1}` : ''; // Ctrl+숫자
-
-    const label = document.createElement('span');
-    label.className = 'label';
-    label.textContent = tab.title;
-
-    const close = document.createElement('span');
-    close.className = 'close';
-    close.textContent = '✕';
-    close.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeTab(group, tab);
-    });
-
-    node.append(dot, idx, label, close);
-    node.addEventListener('click', () => selectTab(group, tab.id));
-    node.addEventListener('auxclick', (e) => {
-      if (e.button === 1) closeTab(group, tab);
-    });
-    el.substrip.appendChild(node);
-  });
-
-  const add = document.createElement('button');
-  add.className = 'subtab-add';
-  add.textContent = '+';
-  add.title = '서브탭 추가 (Ctrl/⌘+T)';
-  add.addEventListener('click', () => addSubTab(group));
-  el.substrip.appendChild(add);
-}
-
-function renderPanes() {
-  const cur = activeTab();
-  for (const g of state.groups) {
-    for (const t of g.tabs) {
-      t.pane.classList.toggle('active', cur && t.id === cur.id);
-    }
-  }
-}
-
-function renderStatus() {
-  const g = activeGroup();
-  const t = activeTab();
-  if (!g || !t) {
-    el.statusLeft.textContent = '준비됨';
-    el.statusRight.textContent = '';
-    return;
-  }
-  const statusText = {
-    connecting: '접속 중…',
-    ready: '연결됨',
-    closed: '연결 종료',
-    error: '접속 실패'
-  }[t.status];
-  el.statusLeft.textContent = `${g.host.username}@${g.host.host}:${g.host.port} · ${statusText}`;
-  el.statusRight.textContent = `${t.term.cols}×${t.term.rows} · ${state.fontSize}px · 메인 ${
-    state.groups.indexOf(g) + 1
-  }/${state.groups.length} · 서브 ${g.tabs.indexOf(t) + 1}/${g.tabs.length}`;
-}
-
-async function confirmCloseGroup(group) {
-  if (group.tabs.length > 1) {
-    const ok = await api.util.confirm(
-      `"${group.host.name}" 탭을 닫을까요?`,
-      `${group.tabs.length}개의 서브탭이 함께 종료됩니다.`
-    );
-    if (!ok) return;
-  }
-  closeGroup(group);
-}
-
 /* ------------------------------- 크기 조정 처리 ------------------------------- */
 
+/** 탭 안의 모든 페인 크기를 다시 맞춘다 */
 function fitTab(tab) {
   if (!tab) return;
-  try {
-    tab.fit.fit();
-  } catch (e) {
-    return;
-  }
-  if (tab.sessionId && tab.status === 'ready') {
-    api.ssh.resize(tab.sessionId, tab.term.cols, tab.term.rows);
+  for (const leaf of leavesOf(tab.root)) {
+    try {
+      leaf.fit.fit();
+    } catch (e) {
+      continue;
+    }
+    if (leaf.sessionId && leaf.status === 'ready') {
+      api.ssh.resize(leaf.sessionId, leaf.term.cols, leaf.term.rows);
+    }
   }
   renderStatus();
 }
@@ -550,47 +1146,55 @@ function setFontSize(size) {
   localStorage.setItem('fontSize', String(state.fontSize));
   for (const g of state.groups) {
     for (const t of g.tabs) {
-      t.term.options.fontSize = state.fontSize;
+      for (const l of leavesOf(t.root)) l.term.options.fontSize = state.fontSize;
     }
   }
-  // 폰트 크기가 바뀌면 모든 탭의 셀 수가 바뀌므로 활성 탭 기준으로 다시 맞춘다
   fitTab(activeTab());
 }
 
 /* --------------------------------- IPC 수신 --------------------------------- */
 
 api.ssh.onReady(({ id }) => {
-  const tab = sessionToTab.get(id);
-  if (!tab) return;
-  tab.status = 'ready';
-  api.ssh.resize(id, tab.term.cols, tab.term.rows);
+  const leaf = sessionToLeaf.get(id);
+  if (!leaf) return;
+  leaf.status = 'ready';
+  api.ssh.resize(id, leaf.term.cols, leaf.term.rows);
   render();
-  if (tab === activeTab()) tab.term.focus();
+  const cur = activeLeaf();
+  if (cur && cur.id === leaf.id) leaf.term.focus();
 });
 
+const utf8 = new TextDecoder('utf-8', { fatal: false });
+
 api.ssh.onData(({ id, data }) => {
-  const tab = sessionToTab.get(id);
-  if (tab) tab.term.write(data);
+  const leaf = sessionToLeaf.get(id);
+  if (!leaf) return;
+  leaf.term.write(data);
+  try {
+    feedAlertDetector(leaf, utf8.decode(data, { stream: true }));
+  } catch (e) {
+    /* 감지 실패는 무시 */
+  }
 });
 
 api.ssh.onExit(({ id }) => {
-  const tab = sessionToTab.get(id);
-  if (!tab) return;
-  tab.status = 'closed';
-  tab.term.writeln('\r\n\x1b[90m● 연결이 종료되었습니다. Enter 를 누르면 다시 접속합니다.\x1b[0m');
-  sessionToTab.delete(id);
-  tab.sessionId = null;
+  const leaf = sessionToLeaf.get(id);
+  if (!leaf) return;
+  leaf.status = 'closed';
+  leaf.term.writeln('\r\n\x1b[90m● 연결이 종료되었습니다. Enter 를 누르면 다시 접속합니다.\x1b[0m');
+  sessionToLeaf.delete(id);
+  leaf.sessionId = null;
   render();
 });
 
 api.ssh.onError(({ id, message }) => {
-  const tab = sessionToTab.get(id);
-  if (!tab) return;
-  tab.status = 'error';
-  tab.term.writeln(`\r\n\x1b[31m✖ ${message}\x1b[0m`);
-  tab.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
-  sessionToTab.delete(id);
-  tab.sessionId = null;
+  const leaf = sessionToLeaf.get(id);
+  if (!leaf) return;
+  leaf.status = 'error';
+  leaf.term.writeln(`\r\n\x1b[31m✖ ${message}\x1b[0m`);
+  leaf.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
+  sessionToLeaf.delete(id);
+  leaf.sessionId = null;
   render();
 });
 
@@ -599,6 +1203,7 @@ api.ssh.onError(({ id, message }) => {
 api.onMenu(async (cmd, arg) => {
   const g = activeGroup();
   const t = activeTab();
+  const l = activeLeaf();
   switch (cmd) {
     case 'new-group':
       openConnectDialog({});
@@ -607,16 +1212,23 @@ api.onMenu(async (cmd, arg) => {
       if (g) addSubTab(g);
       else openConnectDialog({});
       break;
+    case 'split-vertical': // 좌우
+      splitActive('row');
+      break;
+    case 'split-horizontal': // 상하
+      splitActive('col');
+      break;
     case 'close-tab':
-      if (g && t) closeTab(g, t);
+      if (l) closeLeaf(l);
+      else if (g && t) closeTab(g, t);
       break;
     case 'copy':
-      if (t && t.term.hasSelection()) api.util.clipboardWrite(t.term.getSelection());
+      if (l && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
       break;
     case 'paste': {
-      if (!t || t.status !== 'ready') break;
+      if (!l || l.status !== 'ready') break;
       const text = await api.util.clipboardRead();
-      if (text) api.ssh.write(t.sessionId, text);
+      if (text) api.ssh.write(l.sessionId, text);
       break;
     }
     case 'find':
@@ -625,60 +1237,130 @@ api.onMenu(async (cmd, arg) => {
     case 'font':
       setFontSize(arg === 0 ? 13 : state.fontSize + arg);
       break;
+    case 'help-tmux':
+      openHelp('tmux');
+      break;
+    case 'help-shortcuts':
+      openHelp('shortcuts');
+      break;
     default:
       break;
   }
 });
 
-// Ctrl+숫자 / Ctrl+Shift+숫자 로 탭 이동 (xterm 이 키를 먹기 전에 캡처 단계에서 처리)
+// 탭/페인 단축키는 xterm 이 키를 먹기 전에 캡처 단계에서 처리한다
 window.addEventListener(
   'keydown',
   (e) => {
-    if (!modalOpen() && e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (modalOpen() || helpOpen()) {
+      if (e.key === 'Escape') {
+        if (modalOpen()) closeDialog();
+        else closeHelp();
+      }
+      return;
+    }
+
+    // Ctrl+숫자 = 서브탭, Ctrl+Alt+숫자 = 메인탭
+    if (e.ctrlKey && !e.metaKey && !e.shiftKey) {
       const m = /^Digit([1-9])$/.exec(e.code);
       if (m) {
         e.preventDefault();
         e.stopPropagation();
         const n = Number(m[1]) - 1;
-        if (e.shiftKey) selectGroupByIndex(n);
+        if (e.altKey) selectGroupByIndex(n);
         else selectTabByIndex(n);
         return;
       }
     }
-    if (e.key === 'Escape') {
-      if (modalOpen()) closeDialog();
-      else if (!el.findbar.classList.contains('hidden')) closeFind();
+
+    // Alt + 방향키 → 분할된 페인 사이 이동
+    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+      const dirs = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+      if (dirs[e.key]) {
+        e.preventDefault();
+        e.stopPropagation();
+        focusNeighbor(dirs[e.key]);
+        return;
+      }
     }
+
+    if (e.key === 'Escape' && !el.findbar.classList.contains('hidden')) closeFind();
   },
   true
 );
 
 el.newGroupBtn.addEventListener('click', () => openConnectDialog({}));
 
+/* --------------------------------- 도움 메뉴 -------------------------------- */
+
+const helpBackdrop = document.getElementById('help-backdrop');
+const helpTitle = document.getElementById('help-title');
+const helpBody = document.getElementById('help-body');
+const helpOpen = () => !helpBackdrop.classList.contains('hidden');
+
+function toggleHelpMenu(show) {
+  const want = show === undefined ? el.helpMenu.classList.contains('hidden') : show;
+  el.helpMenu.classList.toggle('hidden', !want);
+  if (want) {
+    const r = el.helpBtn.getBoundingClientRect();
+    el.helpMenu.style.top = `${Math.round(r.bottom + 2)}px`;
+    el.helpMenu.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+  }
+}
+
+function openHelp(key) {
+  const content = (window.HELP_CONTENT || {})[key];
+  if (!content) return;
+  helpTitle.textContent = content.title;
+  helpBody.innerHTML = content.html;
+  helpBody.scrollTop = 0;
+  helpBackdrop.classList.remove('hidden');
+  toggleHelpMenu(false);
+}
+
+function closeHelp() {
+  helpBackdrop.classList.add('hidden');
+  const l = activeLeaf();
+  if (l) l.term.focus();
+}
+
+el.helpBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleHelpMenu();
+});
+el.helpMenu.querySelectorAll('button').forEach((b) => {
+  b.addEventListener('click', () => openHelp(b.dataset.help));
+});
+document.addEventListener('click', () => toggleHelpMenu(false));
+document.getElementById('help-close').addEventListener('click', closeHelp);
+helpBackdrop.addEventListener('mousedown', (e) => {
+  if (e.target === helpBackdrop) closeHelp();
+});
+
 /* ---------------------------------- 검색바 ---------------------------------- */
 
 function openFind() {
-  if (!activeTab()) return;
+  if (!activeLeaf()) return;
   el.findbar.classList.remove('hidden');
   el.findInput.focus();
   el.findInput.select();
 }
 function closeFind() {
   el.findbar.classList.add('hidden');
-  const t = activeTab();
-  if (t) {
-    t.search.clearDecorations();
-    t.term.focus();
+  const l = activeLeaf();
+  if (l) {
+    l.search.clearDecorations();
+    l.term.focus();
   }
 }
 function findNext(back) {
-  const t = activeTab();
-  if (!t) return;
+  const l = activeLeaf();
+  if (!l) return;
   const q = el.findInput.value;
   if (!q) return;
   const opts = { decorations: { activeMatchBackground: '#f3f99d', matchBackground: '#3a4a5a' } };
-  if (back) t.search.findPrevious(q, opts);
-  else t.search.findNext(q, opts);
+  if (back) l.search.findPrevious(q, opts);
+  else l.search.findNext(q, opts);
 }
 document.getElementById('find-next').addEventListener('click', () => findNext(false));
 document.getElementById('find-prev').addEventListener('click', () => findNext(true));
@@ -694,6 +1376,7 @@ el.findInput.addEventListener('keydown', (e) => {
 const dlg = {
   backdrop: document.getElementById('modal-backdrop'),
   title: document.getElementById('modal-title'),
+  formTitle: document.getElementById('form-title'),
   list: document.getElementById('host-list'),
   filter: document.getElementById('host-filter'),
   name: document.getElementById('f-name'),
@@ -705,19 +1388,21 @@ const dlg = {
   key: document.getElementById('f-key'),
   keyBrowse: document.getElementById('f-key-browse'),
   passphrase: document.getElementById('f-passphrase'),
-  save: document.getElementById('f-save'),
   savePw: document.getElementById('f-save-pw'),
   error: document.getElementById('modal-error'),
   connectBtn: document.getElementById('modal-connect'),
   cancelBtn: document.getElementById('modal-cancel'),
   closeBtn: document.getElementById('modal-close'),
-  deleteBtn: document.getElementById('host-delete')
+  deleteBtn: document.getElementById('host-delete'),
+  registerBtn: document.getElementById('host-register'),
+  saveBtn: document.getElementById('host-save'),
+  newBtn: document.getElementById('host-new')
 };
 
-let dlgHosts = []; // 저장된 호스트 목록
-let dlgSelectedId = null; // 목록에서 선택된 호스트 id
-let dlgTargetGroup = null; // null 이면 새 그룹, 있으면 해당 그룹에 서브탭 추가
-let canSavePassword = true; // OS 암호화 사용 가능 여부
+let dlgHosts = [];
+let dlgSelectedId = null;
+let dlgTargetGroup = null;
+let canSavePassword = true;
 
 const modalOpen = () => !dlg.backdrop.classList.contains('hidden');
 
@@ -731,39 +1416,35 @@ async function openConnectDialog({ group }) {
   dlg.savePw.disabled = !canSavePassword;
   dlg.savePw.parentElement.title = canSavePassword
     ? 'OS 키체인으로 암호화해 저장합니다.'
-    : '이 환경에서는 안전한 암호화를 사용할 수 없어 비밀번호를 저장하지 않습니다.';
+    : '이 환경에서는 안전한 암호화를 쓸 수 없어 비밀번호를 저장하지 않습니다.';
 
-  dlgHosts = await api.hosts.list();
-  dlgSelectedId = null;
-  renderHostList();
-  updateAuthRows();
-
-  if (dlgHosts.length > 0) {
-    selectHost(dlgHosts[0].id); // 가장 최근에 쓴 호스트를 기본 선택
-  } else {
-    clearForm();
-    dlg.host.focus();
-  }
+  await refreshHostList();
+  if (dlgHosts.length > 0) selectHost(dlgHosts[0].id);
+  else clearForm();
+  (dlgHosts.length ? dlg.connectBtn : dlg.host).focus();
 }
 
 function closeDialog() {
   dlg.backdrop.classList.add('hidden');
   dlg.password.value = '';
   dlg.passphrase.value = '';
-  const t = activeTab();
-  if (t) t.term.focus();
+  const l = activeLeaf();
+  if (l) l.term.focus();
+}
+
+async function refreshHostList() {
+  dlgHosts = await api.hosts.list();
+  renderHostList();
 }
 
 function renderHostList() {
   const q = dlg.filter.value.trim().toLowerCase();
-  const items = dlgHosts.filter(
-    (h) => !q || `${h.name} ${h.username}@${h.host}`.toLowerCase().includes(q)
-  );
+  const items = dlgHosts.filter((h) => !q || `${h.name} ${h.username}@${h.host}`.toLowerCase().includes(q));
   dlg.list.innerHTML = '';
   if (items.length === 0) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = dlgHosts.length ? '검색 결과가 없습니다.' : '저장된 접속이 없습니다.';
+    li.textContent = dlgHosts.length ? '검색 결과가 없습니다.' : '저장된 접속이 없습니다. 오른쪽에 정보를 넣고 "새로 등록" 을 누르세요.';
     dlg.list.appendChild(li);
     return;
   }
@@ -777,7 +1458,7 @@ function renderHostList() {
     sub.className = 'h-sub';
     sub.textContent = `${h.username}@${h.host}:${h.port} · ${
       { password: '비밀번호', key: '키', agent: 'agent' }[h.authType] || h.authType
-    }${h.hasSavedPassword ? ' · 저장됨' : ''}`;
+    }${h.hasSavedPassword ? ' · 비밀번호 저장됨' : ''}`;
     li.append(name, sub);
     li.addEventListener('click', () => selectHost(h.id));
     li.addEventListener('dblclick', () => doConnect());
@@ -798,14 +1479,16 @@ function selectHost(id) {
     dlg.password.value = '';
     dlg.password.placeholder = h.hasSavedPassword ? '저장된 비밀번호 사용' : '';
     dlg.passphrase.value = '';
-    dlg.save.checked = true;
     dlg.savePw.checked = false;
+    dlg.formTitle.textContent = `접속 정보 — ${h.name}`;
   }
   dlg.deleteBtn.classList.remove('hidden');
+  dlg.saveBtn.classList.remove('hidden');
   updateAuthRows();
   renderHostList();
 }
 
+/** 폼을 비우고 "신규 등록" 상태로 만든다 */
 function clearForm() {
   dlgSelectedId = null;
   dlg.name.value = '';
@@ -817,12 +1500,15 @@ function clearForm() {
   dlg.password.placeholder = '';
   dlg.key.value = '';
   dlg.passphrase.value = '';
+  dlg.savePw.checked = false;
+  dlg.formTitle.textContent = '새 접속 정보';
   dlg.deleteBtn.classList.add('hidden');
+  dlg.saveBtn.classList.add('hidden'); // 선택된 항목이 없으면 "저장"(덮어쓰기)은 숨긴다
   updateAuthRows();
   renderHostList();
+  dlg.host.focus();
 }
 
-/** 인증 방식에 따라 비밀번호 / 키 관련 입력을 보여주거나 숨긴다 */
 function updateAuthRows() {
   const isPw = dlg.auth.value === 'password';
   const isKey = dlg.auth.value === 'key';
@@ -830,11 +1516,68 @@ function updateAuthRows() {
   document.querySelectorAll('.row-key').forEach((n) => n.classList.toggle('hidden', !isKey));
 }
 
-// 폼을 직접 수정하면 "저장된 호스트 선택" 상태를 해제하지 않고 값만 덮어쓴다(임시 변경).
-for (const f of [dlg.name, dlg.host, dlg.port, dlg.user]) {
-  f.addEventListener('input', () => {
-    dlg.deleteBtn.classList.toggle('hidden', !dlgSelectedId);
-  });
+/** 폼 → 프로필 객체 (검증 포함, 실패하면 null) */
+function readForm() {
+  const profile = {
+    name: dlg.name.value.trim(),
+    host: dlg.host.value.trim(),
+    port: Number(dlg.port.value) || 22,
+    username: dlg.user.value.trim(),
+    authType: dlg.auth.value,
+    password: dlg.auth.value === 'password' ? dlg.password.value : '',
+    privateKeyPath: dlg.auth.value === 'key' ? dlg.key.value.trim() : '',
+    passphrase: dlg.auth.value === 'key' ? dlg.passphrase.value : '',
+    savePassword: dlg.savePw.checked && canSavePassword
+  };
+  if (!profile.host) {
+    showDlgError('호스트를 입력하세요.');
+    return null;
+  }
+  if (!profile.username) {
+    showDlgError('사용자 이름을 입력하세요.');
+    return null;
+  }
+  if (!profile.name) profile.name = `${profile.username}@${profile.host}`;
+  dlg.error.classList.add('hidden');
+  return profile;
+}
+
+/** 새 항목으로 등록 (기존 항목을 절대 건드리지 않는다) */
+async function registerHost() {
+  const profile = readForm();
+  if (!profile) return;
+  const saved = await api.hosts.save({ ...profile, id: null });
+  await refreshHostList();
+  selectHost(saved.id);
+  flashDlgInfo(`"${saved.name}" 등록됨`);
+}
+
+/** 선택된 항목 덮어쓰기 */
+async function saveHost() {
+  if (!dlgSelectedId) return registerHost();
+  const profile = readForm();
+  if (!profile) return;
+  const saved = await api.hosts.save({ ...profile, id: dlgSelectedId });
+  await refreshHostList();
+  selectHost(saved.id);
+  flashDlgInfo(`"${saved.name}" 저장됨`);
+}
+
+function flashDlgInfo(msg) {
+  dlg.error.textContent = msg;
+  dlg.error.classList.remove('hidden', 'error');
+  dlg.error.classList.add('info');
+  setTimeout(() => {
+    dlg.error.classList.add('hidden');
+    dlg.error.classList.remove('info');
+    dlg.error.classList.add('error');
+  }, 1800);
+}
+
+function showDlgError(msg) {
+  dlg.error.textContent = msg;
+  dlg.error.classList.remove('hidden', 'info');
+  dlg.error.classList.add('error');
 }
 
 dlg.auth.addEventListener('change', updateAuthRows);
@@ -843,6 +1586,9 @@ dlg.keyBrowse.addEventListener('click', async () => {
   const p = await api.util.pickKeyFile();
   if (p) dlg.key.value = p;
 });
+dlg.newBtn.addEventListener('click', clearForm);
+dlg.registerBtn.addEventListener('click', registerHost);
+dlg.saveBtn.addEventListener('click', saveHost);
 dlg.closeBtn.addEventListener('click', closeDialog);
 dlg.cancelBtn.addEventListener('click', closeDialog);
 dlg.connectBtn.addEventListener('click', () => doConnect());
@@ -852,7 +1598,7 @@ dlg.deleteBtn.addEventListener('click', async () => {
   const ok = await api.util.confirm(`"${h.name}" 접속 정보를 삭제할까요?`, `${h.username}@${h.host}:${h.port}`);
   if (!ok) return;
   await api.hosts.remove(dlgSelectedId);
-  dlgHosts = await api.hosts.list();
+  await refreshHostList();
   clearForm();
 });
 
@@ -865,43 +1611,18 @@ dlg.backdrop.addEventListener('mousedown', (e) => {
   if (e.target === dlg.backdrop) closeDialog();
 });
 
-/** 다이얼로그 입력값으로 접속 실행 */
-async function doConnect() {
-  const profile = {
-    name: dlg.name.value.trim(),
-    host: dlg.host.value.trim(),
-    port: Number(dlg.port.value) || 22,
-    username: dlg.user.value.trim(),
-    authType: dlg.auth.value,
-    password: dlg.auth.value === 'password' ? dlg.password.value : '',
-    privateKeyPath: dlg.auth.value === 'key' ? dlg.key.value.trim() : '',
-    passphrase: dlg.auth.value === 'key' ? dlg.passphrase.value : '',
-    savePassword: dlg.savePw.checked && canSavePassword
-  };
-  if (!profile.host) return showDlgError('호스트를 입력하세요.');
-  if (!profile.username) return showDlgError('사용자 이름을 입력하세요.');
-  if (!profile.name) profile.name = `${profile.username}@${profile.host}`;
+/** 폼 내용으로 접속 (저장은 하지 않는다 — 저장은 "새로 등록" / "저장" 버튼) */
+function doConnect() {
+  const profile = readForm();
+  if (!profile) return;
 
-  const connect = {
-    hostId: dlgSelectedId || null,
-    profile,
-    save: dlg.save.checked
-  };
-
+  const connect = { hostId: dlgSelectedId || null, profile };
   closeDialog();
-  if (dlgTargetGroup) {
-    await createTab(dlgTargetGroup, connect);
-  } else {
-    await createGroup(profile, connect);
-  }
-}
-
-function showDlgError(msg) {
-  dlg.error.textContent = msg;
-  dlg.error.classList.remove('hidden');
+  if (dlgTargetGroup) createTab(dlgTargetGroup, connect);
+  else createGroup(profile, connect);
 }
 
 /* --------------------------------- 시작 동작 -------------------------------- */
 
-// 시작 시에는 빈 검은 터미널 화면만 보여준다. 접속은 상단 + 버튼 / Ctrl(⌘)+N 으로 시작.
+// 시작 시에는 빈 검은 터미널 화면만 보여준다.
 render();

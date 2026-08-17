@@ -17,20 +17,29 @@
         <div id="mac-spacer"></div>
         <div id="tabstrip"></div>
         <button id="new-group-btn" class="plus-btn" title="새 SSH 탭 (Ctrl/⌘+N)">+</button>
+        <button id="help-btn" class="help-btn" title="도움말">도움 ▾</button>
+      </div>
+
+      <!-- 도움 드롭다운 -->
+      <div id="help-menu" class="dropdown hidden">
+        <button data-help="tmux">tmux 사용법</button>
+        <button data-help="shortcuts">단축키 모음</button>
       </div>
 
       <!-- 그 아래: 활성 그룹의 서브탭(로우) 스트립 -->
       <div id="substrip"></div>
 
-      <!-- 터미널 영역 -->
+      <!-- 터미널 영역: 탭마다 분할 트리를 담는 컨테이너가 하나씩 들어간다 -->
       <div id="terms">
         <div id="empty-state">
           <div class="empty-title">ARMUX TERMINAL</div>
           <div class="empty-sub">오른쪽 위 <b>+</b> 버튼 또는 <b>Ctrl/⌘ + N</b> 으로 SSH 세션을 시작하세요.</div>
           <div class="empty-keys">
             <div><span>Ctrl + 숫자</span> 서브탭(가로 줄) 이동</div>
-            <div><span>Ctrl + Shift + 숫자</span> 메인탭(세로 열) 이동</div>
+            <div><span>Ctrl + Alt + 숫자</span> 메인탭(세로 열) 이동</div>
             <div><span>탭에 마우스 올리기</span> 아래 <b>+</b> 로 서브탭 추가</div>
+            <div><span>서브탭 왼쪽 📁</span> 서버 파일 탐색기 (SFTP)</div>
+            <div><span>Ctrl/⌘ + D</span> 좌우 분할 &nbsp;·&nbsp; <span>Ctrl/⌘ + Shift + D</span> 상하 분할</div>
           </div>
         </div>
       </div>
@@ -61,15 +70,18 @@
         <div class="modal-body">
           <!-- 좌측: 저장된 호스트 -->
           <div class="panel panel-left">
-            <div class="panel-title">저장된 접속</div>
+            <div class="panel-title">
+              <span>저장된 접속</span>
+              <button id="host-new" class="btn-sm" title="빈 폼으로 새 접속 만들기">+ 새로 만들기</button>
+            </div>
             <input id="host-filter" class="field" type="text" placeholder="검색…" spellcheck="false" />
             <ul id="host-list"></ul>
-            <div class="hint">더블클릭하면 바로 접속합니다.</div>
+            <div class="hint">클릭하면 폼에 불러오고, 더블클릭하면 바로 접속합니다.</div>
           </div>
 
           <!-- 우측: 새 접속 / 선택된 접속 정보 -->
           <div class="panel panel-right">
-            <div class="panel-title">접속 정보</div>
+            <div class="panel-title"><span id="form-title">새 접속 정보</span></div>
             <div class="form-grid">
               <label for="f-name">이름</label>
               <input id="f-name" class="field" type="text" placeholder="my-server" spellcheck="false" />
@@ -104,20 +116,36 @@
 
               <span></span>
               <div class="checks">
-                <label><input id="f-save" type="checkbox" checked /> 접속 정보 저장</label>
                 <label><input id="f-save-pw" type="checkbox" /> 비밀번호도 저장(암호화)</label>
               </div>
             </div>
             <div id="modal-error" class="error hidden"></div>
+            <div class="hint form-hint">
+              <b>새로 등록</b> 은 항상 새 항목을 추가하고, <b>저장</b> 은 왼쪽에서 고른 항목을 덮어씁니다.
+              저장하지 않고 <b>접속</b> 만 해도 됩니다.
+            </div>
           </div>
         </div>
 
         <div class="modal-foot">
           <button id="host-delete" class="btn btn-danger hidden">삭제</button>
           <span class="spacer"></span>
+          <button id="host-register" class="btn">새로 등록</button>
+          <button id="host-save" class="btn hidden">저장</button>
           <button id="modal-cancel" class="btn">취소</button>
           <button id="modal-connect" class="btn btn-primary">접속</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 도움말(tmux / 단축키) 모달 -->
+    <div id="help-backdrop" class="hidden">
+      <div id="help-modal">
+        <div class="modal-head">
+          <span id="help-title">도움말</span>
+          <button id="help-close" class="icon-btn">✕</button>
+        </div>
+        <div id="help-body" class="help-body"></div>
       </div>
     </div>
 
@@ -125,6 +153,9 @@
     <script src="vendor/addon-fit.js"></script>
     <script src="vendor/addon-web-links.js"></script>
     <script src="vendor/addon-search.js"></script>
+    <script src="vendor/addon-unicode-graphemes.js"></script>
+    <script src="help-content.js"></script>
+    <script src="explorer.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

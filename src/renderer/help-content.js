@@ -1,0 +1,170 @@
+'use strict';
+
+/**
+ * 도움말 모달에 들어가는 내용.
+ * renderer.js 에서 window.HELP_CONTENT[key] 로 꺼내 쓴다.
+ */
+
+window.HELP_CONTENT = {
+  tmux: {
+    title: 'tmux 사용법',
+    html: `
+      <p class="lead">
+        tmux 는 <b>SSH 접속이 끊겨도 원격 서버에서 작업이 계속 돌아가게</b> 해 주는 터미널 멀티플렉서다.
+        노트북을 닫거나 네트워크가 끊겨도, 다시 접속해 <code>tmux attach</code> 하면 하던 화면이 그대로 나온다.
+      </p>
+
+      <h3>1. 구조</h3>
+      <ul>
+        <li><b>세션(session)</b> — 작업 공간 한 덩어리. 서버에 계속 남아 있는 단위.</li>
+        <li><b>윈도우(window)</b> — 세션 안의 탭. 하나의 세션에 여러 개.</li>
+        <li><b>페인(pane)</b> — 윈도우를 나눈 화면 조각.</li>
+      </ul>
+      <pre>세션 dev
+ ├─ 윈도우 0: editor   ├ 페인 0 (vim)  ├ 페인 1 (테스트 실행)
+ └─ 윈도우 1: server   └ 페인 0 (로그 tail)</pre>
+
+      <h3>2. 셸에서 치는 명령</h3>
+      <table>
+        <tr><th>명령</th><th>설명</th></tr>
+        <tr><td><code>tmux</code></td><td>이름 없는 새 세션 시작</td></tr>
+        <tr><td><code>tmux new -s dev</code></td><td><b>dev</b> 라는 이름으로 새 세션 시작</td></tr>
+        <tr><td><code>tmux ls</code></td><td>세션 목록 보기</td></tr>
+        <tr><td><code>tmux attach -t dev</code></td><td>dev 세션에 다시 붙기 (<code>tmux a -t dev</code>)</td></tr>
+        <tr><td><code>tmux attach</code></td><td>마지막 세션에 붙기</td></tr>
+        <tr><td><code>tmux kill-session -t dev</code></td><td>dev 세션 종료</td></tr>
+        <tr><td><code>tmux kill-server</code></td><td>모든 세션 종료</td></tr>
+      </table>
+
+      <h3>3. prefix 키</h3>
+      <p>
+        tmux 단축키는 전부 <b>prefix 를 누른 뒤</b> 이어서 누른다. 기본 prefix 는 <kbd>Ctrl</kbd>+<kbd>b</kbd> 다.
+        아래 표에서 <code>prefix + d</code> 는 “Ctrl+b 를 눌렀다 떼고 d” 라는 뜻이다.
+      </p>
+
+      <h3>4. 세션 / 윈도우</h3>
+      <table>
+        <tr><th>키</th><th>동작</th></tr>
+        <tr><td><code>prefix + d</code></td><td><b>detach</b>. 세션을 서버에 남겨둔 채 빠져나온다 (가장 많이 씀)</td></tr>
+        <tr><td><code>prefix + s</code></td><td>세션 목록에서 골라 이동</td></tr>
+        <tr><td><code>prefix + $</code></td><td>현재 세션 이름 바꾸기</td></tr>
+        <tr><td><code>prefix + c</code></td><td>새 윈도우(탭) 만들기</td></tr>
+        <tr><td><code>prefix + n</code> / <code>prefix + p</code></td><td>다음 / 이전 윈도우</td></tr>
+        <tr><td><code>prefix + 0~9</code></td><td>번호로 윈도우 이동</td></tr>
+        <tr><td><code>prefix + w</code></td><td>윈도우 목록에서 골라 이동</td></tr>
+        <tr><td><code>prefix + ,</code></td><td>윈도우 이름 바꾸기</td></tr>
+        <tr><td><code>prefix + &amp;</code></td><td>현재 윈도우 닫기</td></tr>
+      </table>
+
+      <h3>5. 페인(화면 분할)</h3>
+      <table>
+        <tr><th>키</th><th>동작</th></tr>
+        <tr><td><code>prefix + %</code></td><td>좌우로 분할</td></tr>
+        <tr><td><code>prefix + "</code></td><td>위아래로 분할</td></tr>
+        <tr><td><code>prefix + 방향키</code></td><td>페인 간 이동</td></tr>
+        <tr><td><code>prefix + o</code></td><td>다음 페인으로 순환 이동</td></tr>
+        <tr><td><code>prefix + z</code></td><td>현재 페인 전체화면 토글 (다시 누르면 복귀)</td></tr>
+        <tr><td><code>prefix + Ctrl+방향키</code></td><td>페인 크기 조절</td></tr>
+        <tr><td><code>prefix + {</code> / <code>prefix + }</code></td><td>페인 위치 앞/뒤로 교체</td></tr>
+        <tr><td><code>prefix + space</code></td><td>미리 정의된 배치로 레이아웃 변경</td></tr>
+        <tr><td><code>prefix + x</code></td><td>현재 페인 닫기 (<code>exit</code> 와 동일)</td></tr>
+      </table>
+
+      <h3>6. 복사 모드 (스크롤 / 텍스트 복사)</h3>
+      <table>
+        <tr><th>키</th><th>동작</th></tr>
+        <tr><td><code>prefix + [</code></td><td>복사 모드 진입. 방향키·PgUp 으로 스크롤</td></tr>
+        <tr><td><code>space</code> → 이동 → <code>Enter</code></td><td>선택 시작 → 범위 지정 → 복사</td></tr>
+        <tr><td><code>prefix + ]</code></td><td>복사한 내용 붙여넣기</td></tr>
+        <tr><td><code>q</code></td><td>복사 모드 나가기</td></tr>
+      </table>
+
+      <h3>7. 자주 쓰는 흐름</h3>
+      <pre>ssh 접속
+tmux new -s work        # 작업 시작
+  ... 오래 걸리는 작업 실행 ...
+Ctrl+b d                # 빠져나오기 (작업은 계속 돌아감)
+exit                    # ssh 끊어도 됨
+
+# 나중에 다시
+ssh 접속
+tmux ls                 # work: 1 windows ...
+tmux attach -t work     # 하던 화면 그대로 복귀</pre>
+
+      <h3>8. 설정 팁 (~/.tmux.conf)</h3>
+      <pre># 마우스로 페인 선택·크기조절·스크롤
+set -g mouse on
+
+# 스크롤백 넉넉히
+set -g history-limit 100000
+
+# 윈도우 번호를 1부터
+set -g base-index 1
+
+# prefix 를 Ctrl+a 로 바꾸기 (screen 사용자에게 익숙)
+unbind C-b
+set -g prefix C-a
+bind C-a send-prefix</pre>
+      <p>설정을 고친 뒤에는 <code>tmux source-file ~/.tmux.conf</code> 로 적용한다.</p>
+
+      <h3>9. Armux 와 같이 쓰기</h3>
+      <p>
+        Armux 의 탭·분할은 <b>내 PC 쪽</b> 화면 분할이라 접속이 끊기면 사라진다.
+        서버에서 돌아가는 작업 자체를 지키려면 tmux 를 함께 쓰는 게 좋다.
+        예를 들어 서버에 붙자마자 <code>tmux new -s main</code> 또는 <code>tmux attach -t main</code> 을 실행해 두면,
+        네트워크가 끊겨도 재접속 후 그대로 이어서 작업할 수 있다.
+      </p>
+    `
+  },
+
+  shortcuts: {
+    title: 'Armux 단축키',
+    html: `
+      <h3>탭 이동</h3>
+      <table>
+        <tr><th>키</th><th>동작</th></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>~<kbd>9</kbd></td><td>서브탭(가로 줄) 이동</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>~<kbd>9</kbd></td><td>메인탭(세로 열) 이동</td></tr>
+      </table>
+
+      <h3>탭 / 분할</h3>
+      <table>
+        <tr><th>키</th><th>동작</th></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>N</kbd></td><td>새 메인탭 (새 SSH 접속)</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>T</kbd></td><td>현재 그룹에 서브탭 추가</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>D</kbd></td><td>좌우로 분할 (split vertically)</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></td><td>위아래로 분할 (split horizontally)</td></tr>
+        <tr><td><kbd>Alt</kbd>+<kbd>방향키</kbd></td><td>분할된 창 사이 이동</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>W</kbd></td><td>현재 분할 창 닫기 (마지막이면 탭이 닫힘)</td></tr>
+      </table>
+
+      <h3>편집 / 보기</h3>
+      <table>
+        <tr><th>키</th><th>동작</th></tr>
+        <tr><td><kbd>⌘C</kbd> / <kbd>⌘V</kbd> (mac)<br /><kbd>Ctrl+Shift+C</kbd> / <kbd>Ctrl+Shift+V</kbd> (win)</td><td>복사 / 붙여넣기</td></tr>
+        <tr><td>드래그</td><td>선택하면 자동 복사</td></tr>
+        <tr><td>우클릭</td><td>붙여넣기</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>F</kbd></td><td>화면 내 검색</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd></td><td>글자 크기 확대 / 축소 / 초기화</td></tr>
+      </table>
+
+      <h3>파일 탐색기 (SFTP)</h3>
+      <table>
+        <tr><th>동작</th><th>설명</th></tr>
+        <tr><td>서브탭 왼쪽 <b>📁</b></td><td>터미널 ↔ 파일 탐색기 전환</td></tr>
+        <tr><td>더블클릭</td><td>폴더 열기 / 파일 내려받기</td></tr>
+        <tr><td>우클릭</td><td>이름 변경, 새 폴더, 새 파일, 업로드, 다운로드, 삭제</td></tr>
+        <tr><td>내 PC 에서 끌어다 놓기</td><td>그 폴더로 업로드</td></tr>
+        <tr><td>항목을 폴더 위로 끌기</td><td>서버 안에서 이동</td></tr>
+        <tr><td><kbd>Alt</kbd> + 끌기</td><td>내 PC 로 꺼내기(다운로드 후 시스템 드래그)</td></tr>
+        <tr><td><kbd>F5</kbd> / <kbd>Backspace</kbd> / <kbd>Delete</kbd></td><td>새로고침 / 상위 폴더 / 삭제</td></tr>
+      </table>
+
+      <h3>알림</h3>
+      <p>
+        터미널에서 Claude Code 가 사용자의 응답을 기다리면 해당 탭에 <span class="alert-demo">!</span> 표시가 뜬다.
+        서브탭에 하나라도 있으면 메인탭에도 같이 표시되고, 그 탭을 열어 확인하면 사라진다.
+      </p>
+    `
+  }
+};

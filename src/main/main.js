@@ -2,9 +2,10 @@
 
 const path = require('path');
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils } = require('electron');
 const store = require('./store');
 const ssh = require('./ssh');
+const sftp = require('./sftp');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -76,7 +77,18 @@ function buildMenu() {
         },
         { type: 'separator' },
         {
-          label: '탭 닫기',
+          label: '좌우로 분할',
+          accelerator: 'CmdOrCtrl+D',
+          click: () => mainWindow && mainWindow.webContents.send('menu:split-vertical')
+        },
+        {
+          label: '위아래로 분할',
+          accelerator: 'CmdOrCtrl+Shift+D',
+          click: () => mainWindow && mainWindow.webContents.send('menu:split-horizontal')
+        },
+        { type: 'separator' },
+        {
+          label: '현재 창 닫기',
           accelerator: 'CmdOrCtrl+W',
           click: () => mainWindow && mainWindow.webContents.send('menu:close-tab')
         }
@@ -125,6 +137,19 @@ function buildMenu() {
         { role: 'togglefullscreen' },
         { role: 'toggleDevTools' }
       ]
+    },
+    {
+      label: '도움',
+      submenu: [
+        {
+          label: 'tmux 사용법',
+          click: () => mainWindow && mainWindow.webContents.send('menu:help-tmux')
+        },
+        {
+          label: '단축키 모음',
+          click: () => mainWindow && mainWindow.webContents.send('menu:help-shortcuts')
+        }
+      ]
     }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -153,28 +178,26 @@ function send(channel, payload) {
  */
 const ephemeralCreds = new Map(); // credId -> profile(비밀번호 포함)
 
-ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, save, size }) => {
-  // 우선순위: 메모리 자격증명 → 저장된 호스트 → 폼 입력값.
-  // 폼에서 새로 들어온 값이 있으면 그 값으로 덮어쓴다.
-  let effective = null;
+/**
+ * 접속에 쓸 자격증명을 정한다.
+ * 우선순위: 메모리 자격증명(credId) → 저장된 호스트(hostId) → 폼 입력값.
+ * 폼에서 새로 들어온 값이 있으면 그 값으로 덮어쓴다.
+ */
+function resolveCredentials({ hostId, credId, profile }) {
   if (credId && ephemeralCreds.has(credId)) {
-    effective = { ...ephemeralCreds.get(credId), ...pruneEmpty(profile || {}) };
-  } else if (hostId) {
+    return { ...ephemeralCreds.get(credId), ...pruneEmpty(profile || {}) };
+  }
+  if (hostId) {
     const secret = store.getSecret(hostId);
     if (!secret) throw new Error('저장된 호스트를 찾을 수 없습니다.');
-    effective = { ...secret, ...pruneEmpty(profile || {}) };
     store.touch(hostId);
-  } else {
-    effective = profile || {};
+    return { ...secret, ...pruneEmpty(profile || {}) };
   }
+  return profile || {};
+}
 
-  let savedHost = null;
-  if (save && !hostId) {
-    savedHost = store.save({ ...effective, savePassword: Boolean(profile && profile.savePassword) });
-    store.touch(savedHost.id);
-  } else if (hostId && profile && profile.savePassword) {
-    savedHost = store.save({ ...effective, id: hostId, savePassword: true });
-  }
+ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, size }) => {
+  const effective = resolveCredentials({ hostId, credId, profile });
 
   // 서브탭/재접속에서 재사용할 자격증명 토큰
   const token = credId && ephemeralCreds.has(credId) ? credId : crypto.randomUUID();
@@ -191,7 +214,7 @@ ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, save, size }) => {
     sessionId,
     credId: token,
     host: {
-      id: hostId || (savedHost && savedHost.id) || null,
+      id: hostId || null,
       name: effective.name || `${effective.username}@${effective.host}`,
       host: effective.host,
       port: Number(effective.port) || 22,
@@ -213,6 +236,107 @@ function pruneEmpty(obj) {
 ipcMain.on('ssh:write', (e, { id, data }) => ssh.write(id, data));
 ipcMain.on('ssh:resize', (e, { id, cols, rows }) => ssh.resize(id, cols, rows));
 ipcMain.on('ssh:close', (e, { id }) => ssh.close(id));
+
+/* --------------------------------- IPC: SFTP --------------------------------- */
+
+// 탐색기용 SFTP 세션. 터미널 세션과 같은 자격증명(credId/hostId)을 재사용한다.
+ipcMain.handle('sftp:open', async (e, { hostId, credId, profile }) => {
+  const effective = resolveCredentials({ hostId, credId, profile });
+  const id = await sftp.open(effective);
+  const home = await sftp.realpath(id, '.');
+  return { sftpId: id, home };
+});
+
+ipcMain.handle('sftp:list', (e, { id, path: p }) => sftp.list(id, p));
+ipcMain.handle('sftp:realpath', (e, { id, path: p }) => sftp.realpath(id, p));
+ipcMain.handle('sftp:mkdir', (e, { id, path: p }) => sftp.mkdir(id, p));
+ipcMain.handle('sftp:createFile', (e, { id, path: p }) => sftp.createFile(id, p));
+ipcMain.handle('sftp:rename', (e, { id, from, to }) => sftp.rename(id, from, to));
+ipcMain.handle('sftp:remove', (e, { id, path: p }) => sftp.remove(id, p));
+ipcMain.on('sftp:close', (e, { id }) => sftp.close(id));
+
+/** 전송 진행률을 렌더러로 (100ms 간격으로만) */
+function progressReporter(id) {
+  let last = 0;
+  return (name, transferred, total) => {
+    const now = Date.now();
+    if (now - last < 100 && transferred !== total) return;
+    last = now;
+    send('sftp:progress', { id, name, transferred, total });
+  };
+}
+
+/** 원격 → 로컬. localPath 를 안 주면 저장 위치를 물어본다. */
+ipcMain.handle('sftp:download', async (e, { id, remote, name, isDir, localPath }) => {
+  let target = localPath;
+  if (!target) {
+    if (isDir) {
+      const res = await dialog.showOpenDialog(mainWindow, {
+        title: '폴더를 내려받을 위치 선택',
+        properties: ['openDirectory', 'createDirectory']
+      });
+      if (res.canceled || !res.filePaths.length) return null;
+      target = path.join(res.filePaths[0], name);
+    } else {
+      const res = await dialog.showSaveDialog(mainWindow, {
+        title: '다른 이름으로 저장',
+        defaultPath: path.join(app.getPath('downloads'), name)
+      });
+      if (res.canceled || !res.filePath) return null;
+      target = res.filePath;
+    }
+  }
+  await sftp.download(id, remote, target, progressReporter(id));
+  return target;
+});
+
+/** 로컬 → 원격 업로드 */
+ipcMain.handle('sftp:upload', async (e, { id, localPaths, remoteDir }) => {
+  const done = [];
+  for (const local of localPaths) {
+    const base = path.basename(local);
+    await sftp.upload(id, local, sftp.joinRemote(remoteDir, base), progressReporter(id));
+    done.push(base);
+  }
+  return done;
+});
+
+/** 로컬에서 업로드할 파일 고르기 */
+ipcMain.handle('sftp:pickUpload', async (e, { directory }) => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: directory ? '업로드할 폴더 선택' : '업로드할 파일 선택',
+    properties: directory ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections']
+  });
+  if (res.canceled) return [];
+  return res.filePaths;
+});
+
+/**
+ * 탐색기에서 바탕화면 등으로 파일을 끌어다 놓기 위한 처리.
+ * 원격 파일을 임시 폴더로 내려받은 뒤 OS 드래그를 시작한다.
+ */
+ipcMain.handle('sftp:dragOut', async (e, { id, remote, name }) => {
+  const dir = path.join(app.getPath('temp'), 'armux-drag', String(Date.now()));
+  const local = path.join(dir, name);
+  await sftp.download(id, remote, local, progressReporter(id));
+  try {
+    e.sender.startDrag({ file: local, icon: dragIcon() });
+  } catch (err) {
+    return { path: local, dragStarted: false };
+  }
+  return { path: local, dragStarted: true };
+});
+
+/** startDrag 는 아이콘이 필수라 1x1 투명 이미지를 만들어 쓴다 */
+let cachedDragIcon = null;
+function dragIcon() {
+  if (!cachedDragIcon) {
+    const iconPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
+    const img = nativeImage.createFromPath(iconPath);
+    cachedDragIcon = img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 64, height: 64 });
+  }
+  return cachedDragIcon;
+}
 
 /* ------------------------------- IPC: 기타 유틸 -------------------------------- */
 
@@ -252,10 +376,12 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   ssh.closeAll();
+  sftp.closeAll();
   if (!isMac) app.quit();
 });
 
 app.on('before-quit', () => {
   ssh.closeAll();
+  sftp.closeAll();
   ephemeralCreds.clear();
 });

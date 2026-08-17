@@ -1,0 +1,573 @@
+'use strict';
+
+/**
+ * SFTP 파일 탐색기.
+ * 서브탭 왼쪽의 폴더 버튼을 누르면 터미널 대신 이 화면이 뜬다.
+ *
+ * - 더블클릭: 폴더 열기 / 파일 내려받기
+ * - 우클릭: 이름 변경, 새 폴더, 새 파일, 다운로드, 업로드, 삭제 …
+ * - 드래그: 항목을 폴더 위로 끌면 이동. OS 창에서 파일을 끌어다 놓으면 업로드.
+ *   Alt(⌥) 를 누른 채 끌면 내 PC 로 꺼내기(다운로드 후 시스템 드래그).
+ */
+
+window.Explorer = (function () {
+  const api = window.armux;
+
+  const fmtSize = (n) => {
+    if (n === undefined || n === null) return '';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    let v = Number(n);
+    while (v >= 1024 && i < u.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${i === 0 ? v : v.toFixed(1)} ${u[i]}`;
+  };
+
+  const fmtTime = (ms) => {
+    if (!ms) return '';
+    const d = new Date(ms);
+    const p = (x) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+
+  const parentOf = (p) => {
+    if (!p || p === '/') return '/';
+    const trimmed = p.replace(/\/+$/, '');
+    const idx = trimmed.lastIndexOf('/');
+    return idx <= 0 ? '/' : trimmed.slice(0, idx);
+  };
+
+  const joinRemote = (base, name) => (base === '/' ? `/${name}` : `${base.replace(/\/+$/, '')}/${name}`);
+
+  /**
+   * @param {object} opts { connect: {hostId, credId}, hostLabel: string }
+   */
+  function create(opts) {
+    const ex = {
+      sftpId: null,
+      cwd: '.',
+      entries: [],
+      selected: new Set(), // 선택된 경로들
+      showHidden: false,
+      busy: false,
+      el: null,
+      dispose,
+      refresh,
+      focus: () => ex.el && ex.el.focus()
+    };
+
+    /* --------------------------------- DOM --------------------------------- */
+
+    const root = document.createElement('div');
+    root.className = 'explorer';
+    root.tabIndex = 0;
+
+    const bar = document.createElement('div');
+    bar.className = 'ex-bar';
+
+    const mkBtn = (label, title, fn, cls) => {
+      const b = document.createElement('button');
+      b.className = 'ex-btn' + (cls ? ' ' + cls : '');
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', fn);
+      return b;
+    };
+
+    const upBtn = mkBtn('↑', '상위 폴더', () => navigate(parentOf(ex.cwd)));
+    const homeBtn = mkBtn('⌂', '홈 디렉터리', () => navigate('.'));
+    const reloadBtn = mkBtn('⟳', '새로고침 (F5)', () => refresh());
+
+    const pathInput = document.createElement('input');
+    pathInput.className = 'ex-path';
+    pathInput.spellcheck = false;
+    pathInput.title = '경로를 입력하고 Enter';
+    pathInput.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') navigate(pathInput.value.trim());
+      if (e.key === 'Escape') pathInput.value = ex.cwd;
+    });
+
+    const uploadBtn = mkBtn('⬆ 업로드', '이 폴더로 파일 업로드', () => pickAndUpload(false));
+    const newDirBtn = mkBtn('+ 폴더', '새 폴더 만들기', () => createEntry('dir'));
+    const hiddenBtn = mkBtn('숨김', '숨김 파일 표시 토글', () => {
+      ex.showHidden = !ex.showHidden;
+      hiddenBtn.classList.toggle('on', ex.showHidden);
+      renderList();
+    });
+
+    bar.append(upBtn, homeBtn, reloadBtn, pathInput, hiddenBtn, newDirBtn, uploadBtn);
+
+    const head = document.createElement('div');
+    head.className = 'ex-head';
+    head.innerHTML =
+      '<span class="c-name">이름</span><span class="c-size">크기</span>' +
+      '<span class="c-time">수정한 날짜</span><span class="c-perm">권한</span>';
+
+    const listEl = document.createElement('div');
+    listEl.className = 'ex-list';
+
+    const status = document.createElement('div');
+    status.className = 'ex-status';
+
+    root.append(bar, head, listEl, status);
+    ex.el = root;
+
+    /* ------------------------------- 상태 표시 ------------------------------- */
+
+    let statusTimer = null;
+    function setStatus(text, sticky) {
+      status.textContent = text;
+      clearTimeout(statusTimer);
+      if (!sticky) statusTimer = setTimeout(() => summarize(), 2500);
+    }
+
+    function summarize() {
+      const dirs = ex.entries.filter((e) => e.type === 'dir' || e.linkToDir).length;
+      const files = ex.entries.length - dirs;
+      const bytes = ex.entries.filter((e) => e.type === 'file').reduce((a, b) => a + (b.size || 0), 0);
+      status.textContent = `폴더 ${dirs} · 파일 ${files} · ${fmtSize(bytes)}`;
+    }
+
+    /* ------------------------------ 접속 / 이동 ------------------------------ */
+
+    async function ensureSession() {
+      if (ex.sftpId) return ex.sftpId;
+      setStatus('SFTP 연결 중…', true);
+      const res = await api.sftp.open(opts.connect);
+      ex.sftpId = res.sftpId;
+      ex.cwd = res.home || '/';
+      return ex.sftpId;
+    }
+
+    async function navigate(target) {
+      try {
+        await ensureSession();
+        const abs = await api.sftp.realpath(ex.sftpId, target || '.');
+        ex.cwd = abs;
+        await refresh();
+      } catch (err) {
+        setStatus(`이동 실패: ${cleanErr(err)}`, true);
+      }
+    }
+
+    async function refresh() {
+      try {
+        await ensureSession();
+        setStatus('불러오는 중…', true);
+        ex.entries = await api.sftp.list(ex.sftpId, ex.cwd);
+        ex.selected.clear();
+        pathInput.value = ex.cwd;
+        renderList();
+        summarize();
+      } catch (err) {
+        listEl.innerHTML = '';
+        setStatus(`목록을 불러오지 못했습니다: ${cleanErr(err)}`, true);
+      }
+    }
+
+    const cleanErr = (err) => String((err && err.message) || err).replace(/^Error:\s*/, '');
+
+    /* -------------------------------- 목록 그리기 ------------------------------- */
+
+    function visibleEntries() {
+      return ex.showHidden ? ex.entries : ex.entries.filter((e) => !e.name.startsWith('.'));
+    }
+
+    function renderList() {
+      listEl.innerHTML = '';
+
+      // 상위 폴더로 가는 줄 (여기로 파일을 끌어다 놓으면 상위로 이동)
+      if (ex.cwd !== '/') {
+        const up = document.createElement('div');
+        up.className = 'ex-row up';
+        up.innerHTML = '<span class="c-name">📁 <b>..</b></span><span class="c-size"></span><span class="c-time"></span><span class="c-perm"></span>';
+        up.addEventListener('dblclick', () => navigate(parentOf(ex.cwd)));
+        makeDropTarget(up, parentOf(ex.cwd));
+        listEl.appendChild(up);
+      }
+
+      for (const entry of visibleEntries()) {
+        const isDir = entry.type === 'dir' || entry.linkToDir;
+        const row = document.createElement('div');
+        row.className = 'ex-row' + (isDir ? ' is-dir' : '');
+        row.draggable = true;
+        row.dataset.path = entry.path;
+
+        const icon = entry.type === 'dir' ? '📁' : entry.type === 'link' ? '🔗' : fileIcon(entry.name);
+        const name = document.createElement('span');
+        name.className = 'c-name';
+        name.textContent = `${icon} ${entry.name}`;
+        name.title = entry.path;
+
+        const size = document.createElement('span');
+        size.className = 'c-size';
+        size.textContent = isDir ? '' : fmtSize(entry.size);
+
+        const time = document.createElement('span');
+        time.className = 'c-time';
+        time.textContent = fmtTime(entry.mtime);
+
+        const perm = document.createElement('span');
+        perm.className = 'c-perm';
+        perm.textContent = entry.rights || '';
+
+        row.append(name, size, time, perm);
+
+        row.addEventListener('click', (e) => selectRow(entry, row, e));
+        row.addEventListener('dblclick', () => {
+          if (isDir) navigate(entry.path);
+          else downloadEntries([entry]);
+        });
+        row.addEventListener('contextmenu', (e) => {
+          if (!ex.selected.has(entry.path)) selectRow(entry, row, e);
+          openMenu(e, entry);
+        });
+
+        // 드래그 시작: Alt 를 누르고 있으면 내 PC 로 꺼내기, 아니면 내부 이동
+        row.addEventListener('dragstart', (e) => {
+          if (e.altKey) {
+            e.preventDefault();
+            dragOutToOS(entry);
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/armux-path', entry.path);
+          e.dataTransfer.setData('text/plain', entry.path);
+        });
+
+        if (isDir) makeDropTarget(row, entry.path);
+        listEl.appendChild(row);
+      }
+
+      if (visibleEntries().length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'ex-empty';
+        empty.textContent = '빈 폴더입니다. 파일을 끌어다 놓거나 우클릭해 새로 만들 수 있습니다.';
+        listEl.appendChild(empty);
+      }
+    }
+
+    function fileIcon(name) {
+      const ext = name.split('.').pop().toLowerCase();
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) return '🖼️';
+      if (['zip', 'gz', 'tar', 'bz2', 'xz', '7z', 'rar'].includes(ext)) return '🗜️';
+      if (['mp4', 'mkv', 'mov', 'avi', 'webm'].includes(ext)) return '🎞️';
+      if (['mp3', 'wav', 'flac', 'ogg', 'm4a'].includes(ext)) return '🎵';
+      if (['pdf'].includes(ext)) return '📕';
+      if (['py', 'js', 'ts', 'sh', 'rs', 'go', 'c', 'cpp', 'java', 'rb', 'php'].includes(ext)) return '📜';
+      if (['json', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'env'].includes(ext)) return '⚙️';
+      if (['md', 'txt', 'log', 'csv'].includes(ext)) return '📄';
+      return '📄';
+    }
+
+    function selectRow(entry, row, e) {
+      if (!e.ctrlKey && !e.metaKey) ex.selected.clear();
+      if (ex.selected.has(entry.path)) ex.selected.delete(entry.path);
+      else ex.selected.add(entry.path);
+      for (const r of listEl.querySelectorAll('.ex-row')) {
+        r.classList.toggle('selected', ex.selected.has(r.dataset.path));
+      }
+    }
+
+    const selectedEntries = () => ex.entries.filter((e) => ex.selected.has(e.path));
+
+    /* --------------------------------- 드롭 --------------------------------- */
+
+    /** row 를 드롭 대상(폴더)으로 만든다 */
+    function makeDropTarget(row, dirPath) {
+      row.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        row.classList.add('drop-hover');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-hover'));
+      row.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        row.classList.remove('drop-hover');
+        await handleDrop(e, dirPath);
+      });
+    }
+
+    // 빈 공간에 떨어뜨리면 현재 폴더로
+    listEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      listEl.classList.add('drop-hover');
+    });
+    listEl.addEventListener('dragleave', () => listEl.classList.remove('drop-hover'));
+    listEl.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      listEl.classList.remove('drop-hover');
+      await handleDrop(e, ex.cwd);
+    });
+
+    async function handleDrop(e, destDir) {
+      // 1) OS 에서 끌어온 파일 → 업로드
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.length) {
+        const paths = files.map((f) => api.util.pathForFile(f)).filter(Boolean);
+        if (paths.length) return uploadPaths(paths, destDir);
+      }
+      // 2) 탐색기 내부 이동
+      const src = e.dataTransfer.getData('text/armux-path');
+      if (src) return moveEntry(src, destDir);
+    }
+
+    async function uploadPaths(paths, destDir) {
+      try {
+        ex.busy = true;
+        setStatus(`업로드 중… (${paths.length}개)`, true);
+        await api.sftp.upload({ id: ex.sftpId, localPaths: paths, remoteDir: destDir });
+        setStatus(`업로드 완료 (${paths.length}개)`);
+        await refresh();
+      } catch (err) {
+        setStatus(`업로드 실패: ${cleanErr(err)}`, true);
+      } finally {
+        ex.busy = false;
+      }
+    }
+
+    async function pickAndUpload(directory) {
+      const paths = await api.sftp.pickUpload(directory);
+      if (paths && paths.length) await uploadPaths(paths, ex.cwd);
+    }
+
+    async function moveEntry(src, destDir) {
+      const name = src.split('/').pop();
+      const dest = joinRemote(destDir, name);
+      if (src === dest || destDir === src) return;
+      try {
+        await api.sftp.rename(ex.sftpId, src, dest);
+        setStatus(`${name} → ${destDir} 이동됨`);
+        await refresh();
+      } catch (err) {
+        setStatus(`이동 실패: ${cleanErr(err)}`, true);
+      }
+    }
+
+    async function dragOutToOS(entry) {
+      try {
+        setStatus(`${entry.name} 내려받는 중… (내 PC 로 꺼내기)`, true);
+        const res = await api.sftp.dragOut({ id: ex.sftpId, remote: entry.path, name: entry.name });
+        if (res && res.dragStarted) setStatus(`${entry.name} 을(를) 끌어다 놓으세요`);
+        else setStatus(`임시 폴더에 저장됨: ${res && res.path}`, true);
+      } catch (err) {
+        setStatus(`꺼내기 실패: ${cleanErr(err)}`, true);
+      }
+    }
+
+    /* -------------------------------- 파일 작업 ------------------------------- */
+
+    async function downloadEntries(entries) {
+      for (const entry of entries) {
+        try {
+          setStatus(`${entry.name} 내려받는 중…`, true);
+          const saved = await api.sftp.download({
+            id: ex.sftpId,
+            remote: entry.path,
+            name: entry.name,
+            isDir: entry.type === 'dir' || entry.linkToDir
+          });
+          setStatus(saved ? `저장됨: ${saved}` : '취소됨');
+        } catch (err) {
+          setStatus(`다운로드 실패: ${cleanErr(err)}`, true);
+        }
+      }
+    }
+
+    async function createEntry(kind) {
+      const name = await prompt(kind === 'dir' ? '새 폴더 이름' : '새 파일 이름', kind === 'dir' ? 'new-folder' : 'new-file.txt');
+      if (!name) return;
+      const target = joinRemote(ex.cwd, name);
+      try {
+        if (kind === 'dir') await api.sftp.mkdir(ex.sftpId, target);
+        else await api.sftp.createFile(ex.sftpId, target);
+        setStatus(`${name} 생성됨`);
+        await refresh();
+      } catch (err) {
+        setStatus(`생성 실패: ${cleanErr(err)}`, true);
+      }
+    }
+
+    async function renameEntry(entry) {
+      const name = await prompt('새 이름', entry.name);
+      if (!name || name === entry.name) return;
+      try {
+        await api.sftp.rename(ex.sftpId, entry.path, joinRemote(parentOf(entry.path), name));
+        setStatus(`이름 변경: ${entry.name} → ${name}`);
+        await refresh();
+      } catch (err) {
+        setStatus(`이름 변경 실패: ${cleanErr(err)}`, true);
+      }
+    }
+
+    async function removeEntries(entries) {
+      const label = entries.length === 1 ? `"${entries[0].name}"` : `${entries.length}개 항목`;
+      const ok = await api.util.confirm(`${label} 을(를) 삭제할까요?`, '폴더는 안의 내용까지 모두 삭제됩니다. 되돌릴 수 없습니다.');
+      if (!ok) return;
+      for (const entry of entries) {
+        try {
+          setStatus(`${entry.name} 삭제 중…`, true);
+          await api.sftp.remove(ex.sftpId, entry.path);
+        } catch (err) {
+          setStatus(`삭제 실패: ${cleanErr(err)}`, true);
+        }
+      }
+      setStatus('삭제 완료');
+      await refresh();
+    }
+
+    /* ------------------------------- 우클릭 메뉴 ------------------------------- */
+
+    const menu = document.createElement('div');
+    menu.className = 'ex-menu hidden';
+    document.body.appendChild(menu);
+
+    function openMenu(e, entry) {
+      e.preventDefault();
+      const targets = selectedEntries().length ? selectedEntries() : [entry];
+      const isDir = entry && (entry.type === 'dir' || entry.linkToDir);
+
+      const items = [];
+      if (entry) {
+        items.push([isDir ? '열기' : '내려받기', () => (isDir ? navigate(entry.path) : downloadEntries(targets))]);
+        if (isDir) items.push(['폴더째 내려받기', () => downloadEntries(targets)]);
+        items.push(['이름 변경', () => renameEntry(entry)]);
+        items.push(['경로 복사', () => api.util.clipboardWrite(entry.path)]);
+        items.push(['삭제', () => removeEntries(targets), 'danger']);
+        items.push(['-']);
+      }
+      items.push(['새 폴더', () => createEntry('dir')]);
+      items.push(['새 파일', () => createEntry('file')]);
+      items.push(['파일 업로드', () => pickAndUpload(false)]);
+      items.push(['폴더 업로드', () => pickAndUpload(true)]);
+      items.push(['-']);
+      items.push(['새로고침', () => refresh()]);
+
+      menu.innerHTML = '';
+      for (const item of items) {
+        if (item[0] === '-') {
+          const hr = document.createElement('div');
+          hr.className = 'ex-menu-sep';
+          menu.appendChild(hr);
+          continue;
+        }
+        const b = document.createElement('button');
+        b.textContent = item[0];
+        if (item[2]) b.classList.add(item[2]);
+        b.addEventListener('click', () => {
+          closeMenu();
+          item[1]();
+        });
+        menu.appendChild(b);
+      }
+
+      menu.classList.remove('hidden');
+      const maxX = window.innerWidth - menu.offsetWidth - 8;
+      const maxY = window.innerHeight - menu.offsetHeight - 8;
+      menu.style.left = `${Math.min(e.clientX, maxX)}px`;
+      menu.style.top = `${Math.min(e.clientY, maxY)}px`;
+    }
+
+    function closeMenu() {
+      menu.classList.add('hidden');
+    }
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('contextmenu', (e) => {
+      if (!menu.contains(e.target) && !root.contains(e.target)) closeMenu();
+    });
+
+    /* -------------------------------- 입력 대화상자 ------------------------------ */
+
+    /** 간단한 이름 입력 프롬프트 (window.prompt 는 Electron 에서 막혀 있다) */
+    function prompt(title, initial) {
+      return new Promise((resolve) => {
+        const back = document.createElement('div');
+        back.className = 'ex-prompt-back';
+        const box = document.createElement('div');
+        box.className = 'ex-prompt';
+        const h = document.createElement('div');
+        h.className = 'ex-prompt-title';
+        h.textContent = title;
+        const input = document.createElement('input');
+        input.className = 'field';
+        input.value = initial || '';
+        input.spellcheck = false;
+        const row = document.createElement('div');
+        row.className = 'ex-prompt-row';
+        const cancel = document.createElement('button');
+        cancel.className = 'btn';
+        cancel.textContent = '취소';
+        const ok = document.createElement('button');
+        ok.className = 'btn btn-primary';
+        ok.textContent = '확인';
+        row.append(cancel, ok);
+        box.append(h, input, row);
+        back.appendChild(box);
+        root.appendChild(back);
+
+        const done = (val) => {
+          back.remove();
+          resolve(val);
+        };
+        cancel.addEventListener('click', () => done(null));
+        ok.addEventListener('click', () => done(input.value.trim()));
+        back.addEventListener('mousedown', (e) => {
+          if (e.target === back) done(null);
+        });
+        input.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') done(input.value.trim());
+          if (e.key === 'Escape') done(null);
+        });
+        input.focus();
+        input.select();
+      });
+    }
+
+    /* --------------------------------- 키 입력 -------------------------------- */
+
+    root.addEventListener('keydown', (e) => {
+      if (e.key === 'F5') {
+        e.preventDefault();
+        refresh();
+      }
+      if (e.key === 'Delete' && selectedEntries().length) {
+        e.preventDefault();
+        removeEntries(selectedEntries());
+      }
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        navigate(parentOf(ex.cwd));
+      }
+    });
+
+    /* -------------------------------- 진행률 표시 ------------------------------- */
+
+    api.sftp.onProgress(({ id, name, transferred, total }) => {
+      if (id !== ex.sftpId || !total) return;
+      const pct = Math.round((transferred / total) * 100);
+      const base = String(name).split(/[\\/]/).pop();
+      setStatus(`${base} — ${pct}% (${fmtSize(transferred)} / ${fmtSize(total)})`, true);
+    });
+
+    /* ---------------------------------- 정리 --------------------------------- */
+
+    function dispose() {
+      if (ex.sftpId) api.sftp.close(ex.sftpId);
+      ex.sftpId = null;
+      menu.remove();
+      root.remove();
+    }
+
+    // 최초 진입: 홈 디렉터리
+    navigate('.');
+
+    return ex;
+  }
+
+  return { create };
+})();
