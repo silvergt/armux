@@ -101,7 +101,8 @@
       {
         "provider": "github",
         "owner": "silvergt",
-        "repo": "armux"
+        "repo": "armux",
+        "releaseType": "release"
       }
     ]
   }

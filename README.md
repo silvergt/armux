@@ -148,7 +148,7 @@ iTerm 스타일의 크로스플랫폼(Windows / macOS) SSH 터미널 클라이�
 
 자동 업데이트가 **동작하는 조건**:
 
-1. 배포본이 GitHub Releases 에 `latest.yml`(win) / `latest-mac.yml`(mac) 과 함께 올라가 있어야 한다 → 태그를 밀면 CI 가 알아서 올린다.
+1. 배포본이 GitHub Releases 에 `latest.yml`(win) / `latest-mac.yml`(mac) 과 함께 올라가 있어야 한다 → 태그를 밀면 CI 가 알아서 올린다(`releaseType: release` 라 초안이 아니라 바로 공개된다).
    ```bash
    npm version patch      # 0.4.0 → 0.4.1 (package.json 갱신 + 커밋 + 태그)
    git push && git push --tags
