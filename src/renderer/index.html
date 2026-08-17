@@ -15,9 +15,11 @@
       <!-- 상단: 메인 탭(컬럼) 스트립 -->
       <div id="topbar">
         <div id="mac-spacer"></div>
+        <button id="notes-tab" class="notes-tab" title="메모장 (Ctrl+Alt+&#96;)">📝 메모</button>
         <div id="tabstrip"></div>
         <button id="new-group-btn" class="plus-btn" title="새 SSH 탭 (Ctrl/⌘+N)">+</button>
-        <button id="help-btn" class="help-btn" title="도움말">도움 ▾</button>
+        <div id="clock" title="한국 · 홍콩 · 미국 동부 시간"></div>
+        <button id="help-btn" class="help-btn" title="도움말 (tmux 사용법 / 단축키)">도움 ▾</button>
       </div>
 
       <!-- 도움 드롭다운 -->
@@ -43,7 +45,7 @@
             <div><span>탭에 마우스 올리기</span> 아래 <b>+</b> 로 서브탭 추가</div>
             <div><span>서브탭 왼쪽 📁 파일</span> 파일 탐색기 (📌 로 왼쪽 고정)</div>
             <div><span>⌘D / Ctrl+Shift+D</span> 좌우 분할 &nbsp;·&nbsp; <span>⌘⇧D / Ctrl+Shift+E</span> 상하 분할</div>
-            <div><span>Ctrl + `</span> 파일 탐색기 켜고 끄기</div>
+            <div><span>Ctrl + `</span> 파일 탐색기 &nbsp;·&nbsp; <span>Ctrl + Alt + `</span> 메모장</div>
           </div>
         </div>
         </div>
@@ -162,6 +164,7 @@
     <script src="vendor/addon-unicode-graphemes.js"></script>
     <script src="help-content.js"></script>
     <script src="explorer.js"></script>
+    <script src="notes.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

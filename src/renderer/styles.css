@@ -1102,13 +1102,21 @@ button {
 /* 폴더 펼침 화살표 */
 .ex-row .caret {
   flex: none;
-  width: 14px;
+  width: 20px;
+  height: 18px;
+  line-height: 18px;
+  margin-right: 2px;
   text-align: center;
-  color: var(--fg-dim);
-  font-size: 9px;
+  color: #93a0b0;
+  font-size: 13px;
+  border-radius: 4px;
+}
+.ex-row .caret.has {
+  cursor: pointer;
 }
 .ex-row .caret.has:hover {
   color: #fff;
+  background: #2c3644;
 }
 .ex-row.child-empty {
   color: #5c636d;
@@ -1353,4 +1361,125 @@ button {
   font-variant-numeric: tabular-nums;
   min-width: 32px;
   text-align: right;
+}
+
+/* --------------------------------- 상단 시계 -------------------------------- */
+
+#clock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+.clock-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.clock-zone {
+  color: #6f7784;
+}
+.clock-time {
+  color: #aab3c0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------- 메모 탭 버튼 ------------------------------- */
+
+.notes-tab {
+  flex: none;
+  padding: 0 12px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+}
+.notes-tab:hover {
+  background: #1c1f25;
+  color: #fff;
+}
+.notes-tab.active {
+  background: var(--bg);
+  color: #fff;
+  box-shadow: inset 0 2px 0 #d6a75c;
+}
+
+/* --------------------------------- 메모장 ---------------------------------- */
+
+.notes {
+  position: absolute;
+  inset: 0;
+  background: #0d0f13;
+  outline: none;
+}
+.notes.hidden {
+  display: none;
+}
+.notes-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.notes-view.hidden {
+  display: none;
+}
+
+.notes-head,
+.notes .ex-row {
+  grid-template-columns: minmax(0, 1fr) 80px 150px 150px;
+}
+.notes-head span {
+  cursor: pointer;
+}
+.notes-head span:hover {
+  color: var(--fg);
+}
+.notes .c-createdAt,
+.notes .c-updatedAt,
+.notes .c-size {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+.notes .ex-row {
+  cursor: pointer;
+}
+
+.notes-name {
+  max-width: 340px;
+}
+.ex-btn.danger {
+  color: var(--danger);
+}
+.ex-btn.danger:hover {
+  background: #55232a;
+  color: #fff;
+}
+
+.notes-editor {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 14px 18px;
+  background: #0d0f13;
+  color: #dfe4ea;
+  font-family: Menlo, Consolas, "D2Coding", "Malgun Gothic", monospace;
+  font-size: 13.5px;
+  line-height: 1.7;
+  user-select: text;
+  tab-size: 4;
+}
+.notes-editor::placeholder {
+  color: #4d545e;
 }

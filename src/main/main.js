@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils } = require('electron');
@@ -7,6 +8,7 @@ const store = require('./store');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
 const claudeinfo = require('./claudeinfo');
+const notes = require('./notes');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -372,6 +374,45 @@ function dragIcon() {
   }
   return cachedDragIcon;
 }
+
+/* --------------------------------- IPC: 메모장 -------------------------------- */
+
+ipcMain.handle('notes:list', () => notes.list());
+ipcMain.handle('notes:read', (e, { name }) => notes.read(name));
+ipcMain.handle('notes:write', (e, { name, content }) => notes.write(name, content));
+ipcMain.handle('notes:create', (e, { name }) => notes.create(name));
+ipcMain.handle('notes:rename', (e, { from, to }) => notes.rename(from, to));
+ipcMain.handle('notes:remove', (e, { name }) => notes.remove(name));
+ipcMain.handle('notes:reveal', () => notes.reveal());
+ipcMain.handle('notes:dir', () => notes.dir());
+
+/* ------------------------- IPC: 세션(탭 배치) 저장/복원 ------------------------- */
+
+// 마지막으로 열려 있던 탭 구성을 <userData>/session.json 에 저장해 두고 다음 실행 때 복원한다.
+const sessionFile = () => path.join(app.getPath('userData'), 'session.json');
+
+function writeSession(snapshot) {
+  try {
+    if (!snapshot || !Array.isArray(snapshot.groups) || snapshot.groups.length === 0) {
+      fs.rmSync(sessionFile(), { force: true }); // 열린 탭이 없으면 기록도 지운다
+      return true;
+    }
+    fs.mkdirSync(path.dirname(sessionFile()), { recursive: true });
+    fs.writeFileSync(sessionFile(), JSON.stringify(snapshot, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+ipcMain.handle('session:load', () => {
+  try {
+    return JSON.parse(fs.readFileSync(sessionFile(), 'utf8'));
+  } catch (err) {
+    return null;
+  }
+});
+ipcMain.on('session:save', (e, snapshot) => writeSession(snapshot));
 
 /* ----------------------------- IPC: Claude 계정 정보 ---------------------------- */
 

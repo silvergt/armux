@@ -22,6 +22,7 @@ const api = window.armux;
 const state = {
   groups: [], // 메인탭 목록
   activeGroupId: null,
+  notesOpen: false, // 메모장 화면을 보고 있는지
   fontSize: Number(localStorage.getItem('fontSize')) || 13
 };
 
@@ -42,6 +43,8 @@ const el = {
   emptyState: document.getElementById('empty-state'),
   newGroupBtn: document.getElementById('new-group-btn'),
   helpBtn: document.getElementById('help-btn'),
+  notesTab: document.getElementById('notes-tab'),
+  clock: document.getElementById('clock'),
   helpMenu: document.getElementById('help-menu'),
   statusLeft: document.getElementById('status-left'),
   statusClaude: document.getElementById('status-claude'),
@@ -156,6 +159,8 @@ function detachLeaf(tab, leaf) {
       const sibling = node.children[1 - idx];
       if (parent === null) tab.root = sibling;
       else replaceNode(tab, node, sibling);
+      // 남은 형제가 위 단계로 올라가므로, 그 자리의 비율은 다시 균등하게 맞춘다
+      if (parent) parent.sizes = [0.5, 0.5];
       return true;
     }
     return node.children.some((c) => walk(c, node));
@@ -170,7 +175,8 @@ function detachLeaf(tab, leaf) {
  * @param {object} tab      소속 서브탭
  * @param {object} connect  { hostId, credId, profile } 접속 파라미터
  */
-function createLeaf(tab, connect) {
+function createLeaf(tab, connect, options) {
+  const opts = options || {};
   const leaf = {
     kind: 'leaf',
     id: nextId('p'),
@@ -266,7 +272,16 @@ function createLeaf(tab, connect) {
   // 페인 클릭 → 그 페인이 활성 페인이 되고 알림도 확인 처리
   pane.addEventListener('mousedown', () => focusLeaf(leaf));
 
-  startSession(leaf);
+  if (opts.mode === 'orphan') {
+    // 복원했지만 저장된 접속 정보가 없는 경우: 접속하지 않고 안내만 남긴다
+    leaf.status = 'closed';
+    leaf.term.writeln('\x1b[90m● 지난번에 열려 있던 창입니다. 저장된 접속 정보가 없어 자동 접속하지 않았습니다.\x1b[0m');
+    leaf.term.writeln('\x1b[90m  Enter 를 누르면 접속 창이 열립니다.\x1b[0m');
+  } else if (opts.mode === 'later') {
+    leaf.status = 'connecting'; // 접속은 호출한 쪽에서 순서대로 시작한다
+  } else {
+    startSession(leaf);
+  }
   return leaf;
 }
 
@@ -299,8 +314,14 @@ async function startSession(leaf) {
   }
 }
 
-/** 종료/실패한 페인을 같은 정보로 재접속 */
+/** 종료/실패한 페인을 같은 정보로 재접속 (정보가 없으면 접속 창을 연다) */
 function reconnect(leaf) {
+  const conn = leaf.connect || {};
+  if (!conn.hostId && !conn.credId && !conn.profile) {
+    const group = state.groups.find((g) => g.id === leaf.groupId);
+    if (group) openConnectDialog({ group });
+    return;
+  }
   if (leaf.sessionId) sessionToLeaf.delete(leaf.sessionId);
   leaf.sessionId = null;
   leaf.term.reset();
@@ -671,7 +692,11 @@ function focusNeighbor(direction) {
 function layoutTab(tab) {
   tab.panesWrap.innerHTML = '';
   if (!tab.root) return;
-  tab.panesWrap.appendChild(buildNode(tab, tab.root));
+  const rootEl = buildNode(tab, tab.root);
+  // 분할이 사라져 루트로 승격된 노드는 예전 비율(inline flex)이 남아 있을 수 있다.
+  // 루트는 언제나 화면을 꽉 채워야 하므로 여기서 초기화한다.
+  rootEl.style.flex = '1 1 0';
+  tab.panesWrap.appendChild(rootEl);
   requestAnimationFrame(() => fitTab(tab));
 }
 
@@ -772,6 +797,7 @@ el.dockDivider.addEventListener('mousedown', (e) => {
     document.body.classList.remove('resizing-col');
     localStorage.setItem(DOCK_KEY, String(dockWidth));
     fitTab(activeTab());
+    saveSession();
   };
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
@@ -825,7 +851,8 @@ function startDividerDrag(e, tab, node, box, a, b) {
 /* ---------------------------------- 탭 활성화 --------------------------------- */
 
 function selectGroup(groupId) {
-  if (state.activeGroupId === groupId) return;
+  if (state.activeGroupId === groupId && !state.notesOpen) return;
+  state.notesOpen = false;
   state.activeGroupId = groupId;
   const t = activeTab();
   if (t) clearAlertsInTab(t); // 열어서 확인했으므로 알림 해제
@@ -836,6 +863,7 @@ function selectGroup(groupId) {
 }
 
 function selectTab(group, tabId) {
+  state.notesOpen = false;
   group.activeTabId = tabId;
   group.explorerSelected = false; // 터미널 탭을 골랐으므로 전체화면 탐색기는 해제
   state.activeGroupId = group.id;
@@ -851,6 +879,7 @@ function selectTab(group, tabId) {
 function selectGroupByIndex(i) {
   const g = state.groups[i];
   if (!g) return;
+  state.notesOpen = false;
   g.explorerSelected = false; // 탭 이동 단축키를 쓰면 폴더뷰는 닫고 터미널로
   selectGroup(g.id);
 }
@@ -861,8 +890,209 @@ function selectTabByIndex(i) {
   if (!g) return;
   const t = g.tabs[i];
   if (!t) return;
+  state.notesOpen = false;
   g.explorerSelected = false;
   selectTab(g, t.id);
+}
+
+/* ---------------------------------- 시계 ----------------------------------- */
+
+/* 상단 오른쪽에 한국·홍콩·미국(동부) 시간을 날짜~분까지 보여준다 */
+const CLOCK_ZONES = [
+  { label: '한국', tz: 'Asia/Seoul' },
+  { label: '홍콩', tz: 'Asia/Hong_Kong' },
+  { label: '미국', tz: 'America/New_York' }
+];
+
+function renderClock() {
+  const now = new Date();
+  el.clock.innerHTML = '';
+  for (const z of CLOCK_ZONES) {
+    const fmt = new Intl.DateTimeFormat('ko-KR', {
+      timeZone: z.tz,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    // "08. 17. 18:05" 형태를 "08/17 18:05" 로 정리
+    const text = fmt.format(now).replace(/\.\s*/g, '/').replace(/\/\s*(\d{2}:)/, ' $1').replace(/\/$/, '');
+
+    const item = document.createElement('span');
+    item.className = 'clock-item';
+    const name = document.createElement('span');
+    name.className = 'clock-zone';
+    name.textContent = z.label;
+    const val = document.createElement('span');
+    val.className = 'clock-time';
+    val.textContent = text;
+    item.append(name, val);
+    item.title = `${z.label} (${z.tz})`;
+    el.clock.appendChild(item);
+  }
+}
+
+renderClock();
+setInterval(renderClock, 15000);
+
+/* --------------------------------- 메모장 ---------------------------------- */
+
+let notesPad = null; // 메모장 인스턴스 (처음 열 때 생성)
+
+function openNotes() {
+  if (!notesPad) {
+    notesPad = window.Notes.create();
+    el.stage.appendChild(notesPad.el);
+  }
+  state.notesOpen = true;
+  notesPad.refresh();
+  render();
+  notesPad.focus();
+}
+
+function closeNotes() {
+  state.notesOpen = false;
+  render();
+  const l = activeLeaf();
+  if (l) l.term.focus();
+}
+
+function toggleNotes() {
+  if (state.notesOpen) closeNotes();
+  else openNotes();
+}
+
+/* ----------------------------- 세션(탭 배치) 저장/복원 ---------------------------- */
+
+/*
+ * 앱을 끌 때의 탭 구성을 저장해 두었다가 다시 켤 때 그대로 되살린다.
+ * 저장하는 것: 메인탭(호스트)·서브탭 순서, 서브탭 이름, 분할 구조와 비율,
+ *              활성 탭, 탐색기 고정 여부, 고정 패널 폭.
+ * 비밀번호 같은 접속 정보는 저장하지 않고, 저장된 호스트(hostId)로만 자동 재접속한다.
+ */
+
+function serializeNode(node) {
+  if (!node) return null;
+  if (node.kind === 'leaf') return { kind: 'leaf' };
+  return {
+    kind: 'split',
+    dir: node.dir,
+    sizes: node.sizes.slice(),
+    children: node.children.map(serializeNode)
+  };
+}
+
+function sessionSnapshot() {
+  return {
+    v: 1,
+    dockWidth,
+    activeGroupIndex: state.groups.findIndex((g) => g.id === state.activeGroupId),
+    groups: state.groups.map((g) => ({
+      hostId: (g.connect && g.connect.hostId) || g.host.id || null,
+      host: {
+        name: g.host.name,
+        host: g.host.host,
+        port: g.host.port,
+        username: g.host.username
+      },
+      explorerPinned: Boolean(g.explorerPinned),
+      activeTabIndex: g.tabs.findIndex((t) => t.id === g.activeTabId),
+      tabs: g.tabs.map((t) => ({
+        customTitle: t.customTitle || null,
+        layout: serializeNode(t.root)
+      }))
+    }))
+  };
+}
+
+let saveTimer = null;
+/** 변경이 잦으므로 잠시 모아서 저장한다 */
+function saveSession() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => api.session.save(sessionSnapshot()), 700);
+}
+
+// 창을 닫는 순간에도 마지막 상태를 한 번 더 남긴다
+window.addEventListener('beforeunload', () => api.session.save(sessionSnapshot()));
+
+/** 저장된 배치대로 탭을 되살린다 */
+async function restoreSession() {
+  let snap = null;
+  try {
+    snap = await api.session.load();
+  } catch (e) {
+    return;
+  }
+  if (!snap || !Array.isArray(snap.groups) || snap.groups.length === 0) return;
+
+  if (snap.dockWidth) dockWidth = snap.dockWidth;
+
+  // 한꺼번에 붙지 않도록 접속을 조금씩 나눠서 시작한다
+  let order = 0;
+  const schedule = (leaf) => {
+    const wait = 120 * order++;
+    setTimeout(() => startSession(leaf), wait);
+  };
+
+  for (const gs of snap.groups) {
+   try {
+    const group = {
+      id: nextId('g'),
+      host: { id: gs.hostId || null, ...gs.host },
+      credId: null,
+      // 저장된 호스트면 그 정보로 자동 접속, 아니면 접속하지 않고 남겨둔다
+      connect: gs.hostId ? { hostId: gs.hostId, credId: null } : null,
+      tabs: [],
+      activeTabId: null,
+      explorer: null,
+      explorerPinned: Boolean(gs.explorerPinned),
+      explorerSelected: false
+    };
+    state.groups.push(group);
+    state.activeGroupId = group.id;
+
+    for (const ts of gs.tabs || []) {
+      const tab = makeTabShell(group);
+      tab.customTitle = ts.customTitle || null;
+      tab.root = rebuildLayout(tab, group, ts.layout, schedule);
+      const first = firstLeaf(tab.root);
+      tab.activeLeafId = first ? first.id : null;
+      layoutTab(tab);
+    }
+    const at = group.tabs[gs.activeTabIndex];
+    if (at) group.activeTabId = at.id;
+
+    // 왼쪽 고정 상태였다면 탐색기 인스턴스를 미리 만들어 패널을 되살린다
+    if (group.explorerPinned && group.connect) ensureExplorer(group);
+   } catch (err) {
+     console.error('세션 복원 실패:', err && err.stack ? err.stack : err);
+   }
+  }
+
+  const ag = state.groups[snap.activeGroupIndex] || state.groups[0];
+  if (ag) state.activeGroupId = ag.id;
+  render();
+  fitTab(activeTab());
+  const l = activeLeaf();
+  if (l) l.term.focus();
+}
+
+/** 저장된 분할 구조를 실제 페인 트리로 되살린다 */
+function rebuildLayout(tab, group, node, schedule) {
+  if (!node || node.kind === 'leaf') {
+    const connect = group.connect;
+    const leaf = createLeaf(tab, connect || {}, { mode: connect ? 'later' : 'orphan' });
+    if (connect) schedule(leaf);
+    return leaf;
+  }
+  return {
+    kind: 'split',
+    id: nextId('s'),
+    dir: node.dir === 'col' ? 'col' : 'row',
+    sizes: Array.isArray(node.sizes) && node.sizes.length === 2 ? node.sizes : [0.5, 0.5],
+    children: (node.children || []).map((c) => rebuildLayout(tab, group, c, schedule))
+  };
 }
 
 /* --------------------------- Claude 계정 / 사용량 표시 --------------------------- */
@@ -1050,6 +1280,7 @@ function render() {
   renderStatus();
   renderClaudeStatus();
   el.emptyState.classList.toggle('hidden', state.groups.length > 0);
+  saveSession();
 }
 
 /** 초록 느낌표 배지 */
@@ -1089,7 +1320,10 @@ function renderTabstrip() {
 
     const node = document.createElement('div');
     node.className = 'tab' + (active ? ' active' : '');
-    node.title = `${group.host.username}@${group.host.host}:${group.host.port}`;
+    node.title =
+      `${group.host.name} — ${group.host.username}@${group.host.host}:${group.host.port}\n` +
+      `${gi < 9 ? `Ctrl+Alt+${gi + 1} 로 이동 · ` : ''}끌어서 순서 변경 · 가운데 클릭: 닫기\n` +
+      `탭 아래 + : 서브탭 추가 (Ctrl/⌘+T)`;
 
     const idx = document.createElement('span');
     idx.className = 'idx';
@@ -1144,9 +1378,10 @@ function renderSubstrip() {
     'subtab subtab-explorer' +
     (group.explorerSelected && !group.explorerPinned ? ' active' : '') +
     (group.explorerPinned ? ' pinned' : '');
-  exTab.title = group.explorerPinned
-    ? '왼쪽에 고정된 파일 탐색기 (📌 를 눌러 고정 해제)'
-    : '파일 탐색기 (SFTP) · 📌 를 누르면 왼쪽에 고정';
+  exTab.title =
+    (group.explorerPinned
+      ? '왼쪽에 고정된 파일 탐색기 (📌 를 눌러 고정 해제)'
+      : '파일 탐색기 (SFTP) · 📌 를 누르면 왼쪽에 고정') + '\nCtrl+` 로 켜고 끄기';
 
   const exIcon = document.createElement('span');
   exIcon.className = 'label';
@@ -1179,6 +1414,10 @@ function renderSubstrip() {
   group.tabs.forEach((tab, ti) => {
     const node = document.createElement('div');
     node.className = 'subtab' + (tab.id === group.activeTabId ? ' active' : '');
+    node.title =
+      `${tabTitle(group, tab)}\n` +
+      `${ti < 9 ? `Ctrl+${ti + 1} 로 이동 · ` : ''}우클릭: 이름 변경 · 끌어서 순서 변경\n` +
+      `분할: ${api.platform === 'darwin' ? '⌘D / ⌘⇧D' : 'Ctrl+Shift+D / Ctrl+Shift+E'} · 닫기: Ctrl/⌘+W`;
 
     const idx = document.createElement('span');
     idx.className = 'idx';
@@ -1244,8 +1483,11 @@ function renderPanes() {
   const curLeaf = activeLeaf();
   const curGroup = activeGroup();
 
-  // 고정하지 않은 탐색기를 전체 화면으로 볼 때는 터미널 탭을 감춘다
-  const exFull = Boolean(curGroup && curGroup.explorerSelected && !curGroup.explorerPinned && curGroup.explorer);
+  // 메모장 / 전체화면 탐색기를 볼 때는 터미널 탭을 감춘다
+  if (notesPad) notesPad.el.classList.toggle('hidden', !state.notesOpen);
+  el.notesTab.classList.toggle('active', Boolean(state.notesOpen));
+  const exFull =
+    !state.notesOpen && Boolean(curGroup && curGroup.explorerSelected && !curGroup.explorerPinned && curGroup.explorer);
   for (const g of state.groups) {
     if (!g.explorer) continue;
     const showFull = g === curGroup && exFull;
@@ -1256,11 +1498,16 @@ function renderPanes() {
       g.explorer.el.classList.add('hidden');
     }
   }
-  renderDock();
+  if (state.notesOpen) {
+    el.dock.classList.add('hidden');
+    el.dockDivider.classList.add('hidden');
+  } else {
+    renderDock();
+  }
 
   for (const g of state.groups) {
     for (const t of g.tabs) {
-      const on = curTab && t.id === curTab.id && !exFull;
+      const on = curTab && t.id === curTab.id && !exFull && !state.notesOpen;
       t.container.classList.toggle('active', Boolean(on));
       for (const l of leavesOf(t.root)) {
         const isActive = Boolean(curLeaf && l.id === curLeaf.id);
@@ -1371,6 +1618,7 @@ function showContextMenu(x, y, items) {
 function hideContextMenu() {
   ctxMenu.classList.add('hidden');
 }
+window.showContextMenu = showContextMenu; // 메모장 등 다른 모듈에서도 사용
 document.addEventListener('click', hideContextMenu);
 window.addEventListener('blur', hideContextMenu);
 
@@ -1641,12 +1889,17 @@ window.addEventListener(
       }
     }
 
-    // Ctrl+` : 파일 탐색기 켜고 끄기
+    // Ctrl+Alt+` : 메모장, Ctrl+` : 파일 탐색기
     if (e.ctrlKey && !e.metaKey && e.code === 'Backquote') {
       e.preventDefault();
       e.stopPropagation();
-      const g = activeGroup();
-      if (g) toggleExplorerView(g);
+      if (e.altKey) {
+        toggleNotes();
+      } else {
+        if (state.notesOpen) closeNotes();
+        const g = activeGroup();
+        if (g) toggleExplorerView(g);
+      }
       return;
     }
 
@@ -1666,6 +1919,22 @@ window.addEventListener(
         e.preventDefault();
         e.stopPropagation();
         splitActive('col');
+        return;
+      }
+      // 새 서브탭
+      if (key === 't' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const g = activeGroup();
+        if (g) addSubTab(g);
+        else openConnectDialog({});
+        return;
+      }
+      // 새 메인탭(새 접속)
+      if (key === 'n' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        openConnectDialog({});
         return;
       }
       // 현재 분할 창 닫기
@@ -1697,6 +1966,7 @@ window.addEventListener(
 );
 
 el.newGroupBtn.addEventListener('click', () => openConnectDialog({}));
+el.notesTab.addEventListener('click', () => toggleNotes());
 
 /* --------------------------------- 도움 메뉴 -------------------------------- */
 
@@ -2018,15 +2288,36 @@ dlg.backdrop.addEventListener('mousedown', (e) => {
   if (e.target === dlg.backdrop) closeDialog();
 });
 
-/** 폼 내용으로 접속 (저장은 하지 않는다 — 저장은 "새로 등록" / "저장" 버튼) */
-function doConnect() {
+/**
+ * 폼 내용으로 접속.
+ * 저장된 목록에 없는 새 서버라면 자동으로 등록해 둔다(다음에 목록에서 바로 고를 수 있게).
+ */
+async function doConnect() {
   const profile = readForm();
   if (!profile) return;
 
-  const connect = { hostId: dlgSelectedId || null, profile };
+  let hostId = dlgSelectedId || null;
+  if (!hostId) {
+    // 호스트/포트/사용자가 같은 항목이 이미 있으면 그것을 쓰고, 없으면 새로 등록
+    const same = dlgHosts.find(
+      (h) => h.host === profile.host && Number(h.port) === Number(profile.port) && h.username === profile.username
+    );
+    if (same) {
+      hostId = same.id;
+    } else {
+      try {
+        const saved = await api.hosts.save({ ...profile, id: null });
+        hostId = saved.id;
+      } catch (e) {
+        hostId = null; // 저장에 실패해도 접속은 계속한다
+      }
+    }
+  }
+
+  const connect = { hostId, profile };
   closeDialog();
   if (dlgTargetGroup) createTab(dlgTargetGroup, connect);
-  else createGroup(profile, connect);
+  else createGroup({ ...profile, id: hostId }, connect);
 }
 
 /* --------------------------------- 시작 동작 -------------------------------- */
@@ -2037,5 +2328,6 @@ claudePollTimer = setInterval(() => {
   if (g) refreshClaudeInfo(g);
 }, 30000);
 
-// 시작 시에는 빈 검은 터미널 화면만 보여준다.
+// 시작: 지난번 탭 구성이 있으면 되살리고, 없으면 빈 검은 화면.
 render();
+restoreSession();

@@ -163,6 +163,20 @@ bind C-a send-prefix</pre>
         <tr><td><kbd>F5</kbd> / <kbd>Backspace</kbd> / <kbd>Delete</kbd></td><td>새로고침 / 상위 폴더 / 삭제</td></tr>
       </table>
 
+      <h3>메모장</h3>
+      <table>
+        <tr><th>키/동작</th><th>설명</th></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>&#96;</kbd> · 왼쪽 위 <b>📝 메모</b></td><td>메모장 열기/닫기</td></tr>
+        <tr><td>목록 열 제목 클릭</td><td>이름·크기·만든 날짜·마지막 작성 기준 정렬 (기본: 마지막 작성 최신순)</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>N</kbd></td><td>새 메모</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>S</kbd></td><td>저장 (입력을 멈추면 자동 저장도 됨)</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>편집 화면에서 목록으로</td></tr>
+      </table>
+      <p>메모는 <code>&lt;앱 데이터&gt;/notes/*.md</code> 에 마크다운 파일로 저장된다. 목록의 <b>📂 폴더 열기</b> 로 실제 폴더를 열 수 있다.</p>
+
+      <h3>세션 복원</h3>
+      <p>앱을 끌 때의 탭 구성(메인탭·서브탭 순서, 탭 이름, 분할 구조와 비율, 탐색기 고정 여부)을 저장해 두었다가 다시 켤 때 그대로 되살린다. 저장된 접속으로 등록된 서버는 자동으로 다시 연결된다.</p>
+
       <h3>알림</h3>
       <p>
         터미널에서 Claude Code 가 사용자의 응답을 기다리면 해당 탭에 <span class="alert-demo">!</span> 표시가 뜬다.

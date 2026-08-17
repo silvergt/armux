@@ -41,6 +41,24 @@ contextBridge.exposeInMainWorld('armux', {
     onProgress: (cb) => ipcRenderer.on('sftp:progress', (e, p) => cb(p))
   },
 
+  /** 메모장 (<userData>/notes/*.md) */
+  notes: {
+    list: () => ipcRenderer.invoke('notes:list'),
+    read: (name) => ipcRenderer.invoke('notes:read', { name }),
+    write: (name, content) => ipcRenderer.invoke('notes:write', { name, content }),
+    create: (name) => ipcRenderer.invoke('notes:create', { name }),
+    rename: (from, to) => ipcRenderer.invoke('notes:rename', { from, to }),
+    remove: (name) => ipcRenderer.invoke('notes:remove', { name }),
+    reveal: () => ipcRenderer.invoke('notes:reveal'),
+    dir: () => ipcRenderer.invoke('notes:dir')
+  },
+
+  /** 마지막 탭 구성 저장/복원 */
+  session: {
+    load: () => ipcRenderer.invoke('session:load'),
+    save: (snapshot) => ipcRenderer.send('session:save', snapshot)
+  },
+
   /** 원격 서버의 Claude Code 로그인/사용량 정보 */
   claude: {
     info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId })
