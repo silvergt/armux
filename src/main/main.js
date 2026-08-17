@@ -45,9 +45,13 @@ function createWindow() {
     minWidth: 640,
     minHeight: 400,
     backgroundColor: '#000000',
-    // macOS 에서는 신호등 버튼만 남기고 타이틀바를 숨겨 탭바가 상단에 붙게 한다
-    titleBarStyle: isMac ? 'hiddenInset' : 'default',
-    trafficLightPosition: isMac ? { x: 14, y: 13 } : undefined,
+    // 제목 줄을 없애고, 앱이 직접 그리는 메뉴 줄 하나로 합친다.
+    // (윈도우/리눅스는 최소화·최대화·닫기 버튼만 오버레이로 남긴다)
+    titleBarStyle: 'hidden',
+    titleBarOverlay: isMac
+      ? undefined
+      : { color: '#16181c', symbolColor: '#d5d8de', height: 34 },
+    trafficLightPosition: isMac ? { x: 12, y: 10 } : undefined,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -207,7 +211,9 @@ function buildMenu() {
       ]
     }
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  // macOS 는 화면 상단 시스템 메뉴 막대를 그대로 쓰고,
+  // 윈도우/리눅스는 앱이 직접 그리는 메뉴 줄만 쓰므로 네이티브 메뉴는 없앤다.
+  Menu.setApplicationMenu(isMac ? Menu.buildFromTemplate(template) : null);
 }
 
 /* ------------------------------ IPC: 호스트 저장소 ------------------------------ */
@@ -427,6 +433,15 @@ ipcMain.handle('update:state', () => updater.getState());
 ipcMain.on('update:openReleases', () => updater.openReleases());
 ipcMain.on('app:openExternal', (e, url) => {
   if (/^https:\/\//.test(String(url))) shell.openExternal(url);
+});
+
+/* -------------------------------- IPC: 창 제어 -------------------------------- */
+
+ipcMain.on('win:toggleFullScreen', () => {
+  if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen());
+});
+ipcMain.on('win:toggleDevTools', () => {
+  if (mainWindow) mainWindow.webContents.toggleDevTools();
 });
 
 /* ------------------------------- IPC: 웹 페인 -------------------------------- */

@@ -1163,51 +1163,210 @@ function selectTabByIndex(i) {
   selectTab(g, t.id);
 }
 
-/* ---------------------------------- 시계 ----------------------------------- */
+/* --------------------------------- 앱 메뉴 줄 -------------------------------- */
 
-/* 상단 오른쪽에 한국·홍콩·미국(동부) 시간을 날짜~분까지 보여준다 */
-const CLOCK_ZONES = [
-  { label: '🇰🇷', name: '한국', tz: 'Asia/Seoul' },
-  { label: '🇭🇰', name: '홍콩', tz: 'Asia/Hong_Kong' },
-  { label: '🇺🇸', name: '미국 동부', tz: 'America/New_York' }
+/*
+ * 제목 줄을 없애고 메뉴를 앱이 직접 그린다.
+ * (윈도우/리눅스는 최소화·최대화·닫기만 OS 오버레이로 남는다)
+ */
+const menuButtons = document.getElementById('menu-buttons');
+const menuDropdown = document.getElementById('menu-dropdown');
+
+const MOD = api.platform === 'darwin' ? '⌘' : 'Ctrl';
+const APP_MENUS = [
+  {
+    label: '탭',
+    items: [
+      ['새 SSH 탭', `${MOD}+N`, () => openConnectDialog({})],
+      ['웹페이지 열기', '', () => openConnectDialog({ mode: 'web' })],
+      ['현재 그룹에 서브탭 추가', `${MOD}+T`, () => {
+        const g = activeGroup();
+        if (g) addSubTab(g);
+        else openConnectDialog({});
+      }],
+      ['-'],
+      ['좌우로 분할', api.platform === 'darwin' ? '⌘D' : 'Ctrl+Shift+D', () => splitActive('row')],
+      ['위아래로 분할', api.platform === 'darwin' ? '⌘⇧D' : 'Ctrl+Shift+E', () => splitActive('col')],
+      ['-'],
+      ['현재 창 닫기', `${MOD}+W`, () => {
+        const l = activeLeaf();
+        if (l) closeLeaf(l);
+      }]
+    ]
+  },
+  {
+    label: '편집',
+    items: [
+      ['복사', api.platform === 'darwin' ? '⌘C' : 'Ctrl+C', () => {
+        const l = activeLeaf();
+        if (l && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
+      }],
+      ['붙여넣기', api.platform === 'darwin' ? '⌘V' : 'Ctrl+V', async () => {
+        const l = activeLeaf();
+        if (!l || l.status !== 'ready') return;
+        const text = await api.util.clipboardRead();
+        if (text) api.ssh.write(l.sessionId, text);
+      }],
+      ['-'],
+      ['찾기', `${MOD}+F`, () => openFind()]
+    ]
+  },
+  {
+    label: '보기',
+    items: [
+      ['파일 탐색기', 'Ctrl+`', () => {
+        const g = activeGroup();
+        if (g) toggleExplorerView(g);
+      }],
+      ['메모장', 'Ctrl+Alt+`', () => toggleNotes()],
+      ['-'],
+      ['글자 크게', `${MOD}+ +`, () => setFontSize(state.fontSize + 1)],
+      ['글자 작게', `${MOD}+ -`, () => setFontSize(state.fontSize - 1)],
+      ['글자 크기 초기화', `${MOD}+0`, () => setFontSize(13)],
+      ['-'],
+      ['전체 화면', 'F11', () => api.win.toggleFullScreen()],
+      ['개발자 도구', '', () => api.win.toggleDevTools()]
+    ]
+  },
+  {
+    label: '정보',
+    items: [
+      ['버전', '', () => openAbout()],
+      ['업데이트', '', () => openUpdate()]
+    ]
+  },
+  {
+    label: '도움',
+    items: [
+      ['tmux 사용법', '', () => openHelp('tmux')],
+      ['단축키 모음', '', () => openHelp('shortcuts')]
+    ]
+  }
 ];
 
-// 지역별 포맷터와 DOM 은 한 번만 만들어 두고, 갱신할 때는 글자만 바꾼다(0.5초 주기라도 부담 없음)
-const clockCells = CLOCK_ZONES.map((z) => {
-  const item = document.createElement('span');
-  item.className = 'clock-item';
-  item.title = `${z.name} (${z.tz})`;
-  const name = document.createElement('span');
-  name.className = 'clock-zone';
-  name.textContent = z.label;
-  const val = document.createElement('span');
-  val.className = 'clock-time';
-  item.append(name, val);
-  el.clock.appendChild(item);
-  return {
-    val,
-    fmt: new Intl.DateTimeFormat('ko-KR', {
-      timeZone: z.tz,
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    })
-  };
-});
+let openMenuIndex = -1;
 
-function renderClock() {
-  const now = new Date();
-  for (const cell of clockCells) {
-    // "08. 17. 18:05" → "08/17 18:05"
-    const text = cell.fmt.format(now).replace(/\.\s*/g, '/').replace(/\/\s*(\d{2}:)/, ' $1').replace(/\/$/, '');
-    if (cell.val.textContent !== text) cell.val.textContent = text; // 바뀔 때만 DOM 갱신
-  }
+function renderMenuBar() {
+  menuButtons.innerHTML = '';
+  APP_MENUS.forEach((menu, i) => {
+    const b = document.createElement('button');
+    b.className = 'menu-btn';
+    b.textContent = menu.label;
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAppMenu(i === openMenuIndex ? -1 : i, b);
+    });
+    // 메뉴가 열려 있을 때는 마우스만 올려도 그 메뉴로 바뀐다 (일반 메뉴 막대처럼)
+    b.addEventListener('mouseenter', () => {
+      if (openMenuIndex >= 0 && openMenuIndex !== i) toggleAppMenu(i, b);
+    });
+    menuButtons.appendChild(b);
+  });
 }
 
-renderClock();
-setInterval(renderClock, 500); // 분이 바뀌는 순간을 놓치지 않도록 0.5초마다 확인
+function toggleAppMenu(index, button) {
+  openMenuIndex = index;
+  for (const [i, b] of [...menuButtons.children].entries()) b.classList.toggle('active', i === index);
+
+  if (index < 0) {
+    menuDropdown.classList.add('hidden');
+    return;
+  }
+
+  menuDropdown.innerHTML = '';
+  for (const item of APP_MENUS[index].items) {
+    if (item[0] === '-') {
+      const hr = document.createElement('div');
+      hr.className = 'ex-menu-sep';
+      menuDropdown.appendChild(hr);
+      continue;
+    }
+    const [label, accel, fn] = item;
+    const b = document.createElement('button');
+    const name = document.createElement('span');
+    name.textContent = label;
+    const key = document.createElement('span');
+    key.className = 'menu-accel';
+    key.textContent = accel || '';
+    b.append(name, key);
+    b.addEventListener('click', () => {
+      toggleAppMenu(-1);
+      fn();
+    });
+    menuDropdown.appendChild(b);
+  }
+
+  const r = button.getBoundingClientRect();
+  menuDropdown.classList.remove('hidden');
+  menuDropdown.style.left = `${Math.round(r.left)}px`;
+  menuDropdown.style.top = `${Math.round(r.bottom + 2)}px`;
+  menuDropdown.style.right = 'auto';
+}
+
+document.addEventListener('click', () => toggleAppMenu(-1));
+window.addEventListener('blur', () => toggleAppMenu(-1));
+renderMenuBar();
+
+/* ---------------------------------- 시계 ----------------------------------- */
+
+/*
+ * 상단 오른쪽 시계.
+ * 한 곳만 보여 주고, 클릭하면 KR / HK / US 중에서 고를 수 있다.
+ */
+const CLOCK_ZONES = [
+  { id: 'KR', label: '🇰🇷 KR', name: '한국', tz: 'Asia/Seoul' },
+  { id: 'HK', label: '🇭🇰 HK', name: '홍콩', tz: 'Asia/Hong_Kong' },
+  { id: 'US', label: '🇺🇸 US', name: '미국 동부', tz: 'America/New_York' }
+];
+const CLOCK_KEY = 'clockZone';
+
+let clockZone = CLOCK_ZONES.find((z) => z.id === localStorage.getItem(CLOCK_KEY)) || CLOCK_ZONES[0];
+let clockFmt = null;
+
+const clockBtn = document.createElement('button');
+clockBtn.className = 'clock-item';
+const clockZoneEl = document.createElement('span');
+clockZoneEl.className = 'clock-zone';
+const clockTimeEl = document.createElement('span');
+clockTimeEl.className = 'clock-time';
+clockBtn.append(clockZoneEl, clockTimeEl);
+el.clock.appendChild(clockBtn);
+
+function setClockZone(zone) {
+  clockZone = zone;
+  localStorage.setItem(CLOCK_KEY, zone.id);
+  clockFmt = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: zone.tz,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+  clockZoneEl.textContent = zone.label;
+  clockBtn.title = `${zone.name} (${zone.tz}) · 클릭하면 지역 변경`;
+  renderClock();
+}
+
+function renderClock() {
+  if (!clockFmt) return;
+  // "08. 17. 18:05" → "08/17 18:05"
+  const text = clockFmt.format(new Date()).replace(/\.\s*/g, '/').replace(/\/\s*(\d{2}:)/, ' $1').replace(/\/$/, '');
+  if (clockTimeEl.textContent !== text) clockTimeEl.textContent = text;
+}
+
+clockBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const r = clockBtn.getBoundingClientRect();
+  showContextMenu(
+    Math.max(8, r.right - 150),
+    r.bottom + 4,
+    CLOCK_ZONES.map((z) => [`${z.label} · ${z.name}${z.id === clockZone.id ? ' ✓' : ''}`, () => setClockZone(z)])
+  );
+});
+
+setClockZone(clockZone);
+setInterval(renderClock, 500); // 분이 바뀌는 순간을 놓치지 않도록
 
 /* --------------------------------- 메모장 ---------------------------------- */
 

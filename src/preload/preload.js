@@ -55,6 +55,12 @@ contextBridge.exposeInMainWorld('armux', {
     onState: (cb) => ipcRenderer.on('update:state', (e, p) => cb(p))
   },
 
+  /** 창 제어 */
+  win: {
+    toggleFullScreen: () => ipcRenderer.send('win:toggleFullScreen'),
+    toggleDevTools: () => ipcRenderer.send('win:toggleDevTools')
+  },
+
   /** 웹 페인 (판 안의 브라우저) */
   web: {
     bookmarks: () => ipcRenderer.invoke('web:bookmarks'),

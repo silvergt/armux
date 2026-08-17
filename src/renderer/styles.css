@@ -1864,3 +1864,83 @@ button {
 .modal-body.hidden {
   display: none;
 }
+
+/* ------------------------------- 앱 메뉴 줄 -------------------------------- */
+
+#menubar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 0 8px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag; /* 이 줄을 잡고 창을 옮긴다 */
+  position: relative;
+  z-index: 60;
+}
+body.is-mac #menubar {
+  padding-left: 78px; /* 신호등 버튼 자리 */
+}
+#app-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  margin-right: 6px;
+  -webkit-app-region: no-drag;
+}
+#app-name {
+  color: var(--fg-dim);
+  font-size: 12px;
+  margin-right: 12px;
+  letter-spacing: 0.3px;
+}
+#menu-buttons {
+  display: flex;
+  gap: 1px;
+}
+.menu-btn {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+}
+.menu-btn:hover,
+.menu-btn.active {
+  background: #262b33;
+}
+.menu-btn.active {
+  color: #fff;
+}
+
+#menu-dropdown {
+  min-width: 230px;
+}
+#menu-dropdown button {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+}
+.menu-accel {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+#menu-dropdown button:hover .menu-accel {
+  color: #dbe7f7;
+}
+
+/* 시계 버튼 */
+.clock-item {
+  border: none;
+  background: transparent;
+  padding: 3px 6px;
+  border-radius: 5px;
+  -webkit-app-region: no-drag;
+}
+.clock-item:hover {
+  background: #262b33;
+}
