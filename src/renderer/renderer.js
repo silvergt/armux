@@ -205,6 +205,8 @@ function createLeaf(tab, connect, options) {
     mode: 'terminal', // 'terminal' | 'web' | 'file'
     web: null, // 웹 브라우저 화면 (웹으로 전환할 때 만든다)
     file: null, // 파일 뷰어 (파일을 열 때 만든다)
+    notes: null, // 메모장 (이 판을 메모로 전환할 때 만든다)
+    explorer: null, // 파일 탐색기 (이 판을 파일로 전환할 때 만든다)
     connect
   };
 
@@ -497,6 +499,8 @@ function disposeLeaf(leaf) {
   }
   if (leaf.file) { try { leaf.file.dispose(); } catch (e) {} leaf.file = null; }
   if (leaf.web) { try { leaf.web.dispose(); } catch (e) {} leaf.web = null; }
+  if (leaf.notes) { try { leaf.notes.dispose(); } catch (e) {} leaf.notes = null; }
+  if (leaf.explorer) { try { leaf.explorer.dispose(); } catch (e) {} leaf.explorer = null; }
   leaf.el.remove();
 }
 
@@ -507,6 +511,8 @@ function disposeLeaf(leaf) {
  * 터미널은 없애지 않고 감춰 두므로, 돌아오면 SSH 세션이 그대로 살아 있다.
  */
 function setLeafMode(leaf, mode, url) {
+  const body = leaf.el.querySelector('.pane-body');
+
   if (mode === 'web') {
     if (!leaf.web) {
       leaf.web = window.WebPane.create({
@@ -517,17 +523,45 @@ function setLeafMode(leaf, mode, url) {
         },
         onUrl: () => saveSession()
       });
-      leaf.el.querySelector('.pane-body').appendChild(leaf.web.el);
+      body.appendChild(leaf.web.el);
     } else if (url) {
       leaf.web.go(url);
     }
     leaf.mode = 'web';
+  } else if (mode === 'notes') {
+    // 메모장을 이 판 안에 띄운다. 판마다 따로 만들어 서로 다른 메모를 볼 수 있다.
+    if (!leaf.notes) {
+      leaf.notes = window.Notes.create();
+      body.appendChild(leaf.notes.el);
+    } else {
+      leaf.notes.refresh();
+    }
+    leaf.mode = 'notes';
+  } else if (mode === 'explorer') {
+    // 파일 탐색기를 이 판 안에 띄운다. 접속 정보가 있어야 SFTP 를 열 수 있다.
+    const group = state.groups.find((g) => g.id === leaf.groupId);
+    const conn = group && (group.connect || { hostId: group.host.id || null, credId: group.credId });
+    if (!conn || (!conn.hostId && !conn.credId)) {
+      el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
+      return;
+    }
+    if (!leaf.explorer) {
+      leaf.explorer = window.Explorer.create({
+        getConnect: () => group.connect || { hostId: group.host.id || null, credId: group.credId },
+        hostLabel: group.host.name,
+        getSftpId: () => leaf.explorer && leaf.explorer.sftpId,
+        // 파일을 열면 지금까지처럼 새 서브탭에 뷰어를 띄운다(이 판의 SFTP 연결을 쓴다)
+        onOpenFile: (entry) => openFileInPane(group, entry, () => leaf.explorer && leaf.explorer.sftpId)
+      });
+      body.appendChild(leaf.explorer.el);
+    }
+    leaf.mode = 'explorer';
   } else {
     leaf.mode = 'terminal';
   }
 
-  // 웹으로 전환하면 열려 있던 파일 뷰어는 정리
-  if (leaf.mode === 'web' && leaf.file) {
+  // 터미널이 아닌 화면으로 옮기면 열려 있던 파일 뷰어는 정리
+  if (leaf.mode !== 'terminal' && leaf.mode !== 'file' && leaf.file) {
     leaf.file.dispose();
     leaf.file = null;
   }
@@ -536,7 +570,10 @@ function setLeafMode(leaf, mode, url) {
   renderPaneHeader(leaf);
   render();
   if (leaf.mode === 'web') leaf.web.focus();
-  else {
+  else if (leaf.mode === 'notes') leaf.notes.focus();
+  else if (leaf.mode === 'explorer') {
+    if (leaf.explorer.focus) leaf.explorer.focus();
+  } else {
     fitLeaf(leaf);
     leaf.term.focus();
   }
@@ -1158,7 +1195,7 @@ function ensureExplorer(group) {
  * 탐색기에서 파일을 열 때: 새 서브탭을 만들어 그 안에 파일 뷰어를 띄운다.
  * (터미널 창은 그대로 두고, 파일은 별도 탭으로 열린다. 닫으면 그 탭이 사라진다.)
  */
-async function openFileInPane(group, entry) {
+async function openFileInPane(group, entry, getSftpId) {
   const tab = makeTabShell(group);
   tab.customTitle = entry.name; // 서브탭 제목을 파일명으로
   const leaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 파일 전용 판
@@ -1168,7 +1205,8 @@ async function openFileInPane(group, entry) {
 
   leaf.mode = 'file';
   leaf.file = window.FileViewer.create({
-    sftpId: () => group.explorer && group.explorer.sftpId,
+    // 파일을 연 탐색기의 SFTP 연결을 쓴다(판 안 탐색기면 그 판의 것, 아니면 그룹 것)
+    sftpId: () => (getSftpId ? getSftpId() : group.explorer && group.explorer.sftpId),
     sessionId: () => anyReadySession(group), // 원격 실행(parquet/ipynb)용 셸 세션은 그룹에서 빌려온다
     path: entry.path,
     name: entry.name,
@@ -1199,6 +1237,8 @@ function applyPaneBody(leaf) {
   if (termHost) termHost.classList.toggle('hidden', leaf.mode !== 'terminal');
   if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
   if (leaf.file) leaf.file.el.classList.toggle('hidden', leaf.mode !== 'file');
+  if (leaf.notes) leaf.notes.el.classList.toggle('hidden', leaf.mode !== 'notes');
+  if (leaf.explorer) leaf.explorer.el.classList.toggle('hidden', leaf.mode !== 'explorer');
 }
 
 /** 📁 탭 선택 (고정 상태면 왼쪽 패널에 포커스만 준다) */
@@ -1638,7 +1678,10 @@ function toggleNotes() {
 function serializeNode(node) {
   if (!node) return null;
   if (node.kind === 'leaf') {
-    return node.mode === 'web' ? { kind: 'leaf', mode: 'web', url: node.web ? node.web.url : null } : { kind: 'leaf' };
+    if (node.mode === 'web') return { kind: 'leaf', mode: 'web', url: node.web ? node.web.url : null };
+    // 메모·파일 탐색기 판도 다음 실행 때 그대로 되살린다
+    if (node.mode === 'notes' || node.mode === 'explorer') return { kind: 'leaf', mode: node.mode };
+    return { kind: 'leaf' };
   }
   return {
     kind: 'split',
@@ -1757,6 +1800,10 @@ function rebuildLayout(tab, group, node, schedule) {
     const leaf = createLeaf(tab, connect || {}, { mode: connect ? 'later' : 'orphan' });
     if (node && node.mode === 'web') {
       setLeafMode(leaf, 'web', node.url); // 웹 판으로 복원
+    } else if (node && (node.mode === 'notes' || node.mode === 'explorer')) {
+      // 셸도 함께 살려 두고(터미널로 돌아갈 수 있게) 화면만 메모/파일로 맞춘다
+      if (connect) schedule(leaf);
+      setTimeout(() => setLeafMode(leaf, node.mode), 500);
     } else if (connect) {
       schedule(leaf);
     }
@@ -2344,6 +2391,35 @@ function renderPanes() {
  * 왼쪽은 잡아끌 수 있는 손잡이 + 이름, 오른쪽은 도구 버튼들.
  * 헤더를 다른 판 위로 끌어다 놓으면 두 판의 자리가 바뀐다.
  */
+/**
+ * 판 헤더의 "⇄ 전환" 드롭다운.
+ * 이 판 하나만 웹페이지 · 메모 · 파일 탐색기로 바꾼다.
+ * 터미널은 없애지 않고 감춰 두므로 돌아오면 SSH 세션이 그대로 살아 있다.
+ */
+function openPaneModeMenu(leaf, ev) {
+  focusLeaf(leaf);
+  const items = [];
+  // 터미널이 아닐 때만 "터미널로 돌아가기" 를 맨 위에 둔다
+  if (leaf.mode !== 'terminal') {
+    items.push(['⌨  터미널', () => setLeafMode(leaf, 'terminal')]);
+    items.push(['-']);
+  }
+  const row = (label, mode) => [
+    `${leaf.mode === mode ? '✓ ' : '\u2003'}${label}`,
+    () => {
+      if (leaf.mode !== mode) setLeafMode(leaf, mode);
+    }
+  ];
+  items.push(row('🌐  웹페이지', 'web'));
+  items.push(row('📝  메모', 'notes'));
+  items.push(row('📁  파일', 'explorer'));
+
+  // 버튼 바로 아래에 펼친다
+  const r = ev && ev.currentTarget ? ev.currentTarget.getBoundingClientRect() : null;
+  if (r) showContextMenu(r.left, r.bottom + 2, items);
+  else showContextMenu(ev ? ev.clientX : 0, ev ? ev.clientY : 0, items);
+}
+
 function renderPaneHeader(leaf) {
   const header = leaf.el.querySelector('.pane-header');
   if (!header) return;
@@ -2364,7 +2440,11 @@ function renderPaneHeader(leaf) {
   title.textContent =
     leaf.mode === 'web'
       ? (leaf.web && leaf.web.title) || '웹페이지'
-      : leaf.title || (group ? group.host.name : '');
+      : leaf.mode === 'notes'
+        ? '메모'
+        : leaf.mode === 'explorer'
+          ? `파일 — ${group ? group.host.name : ''}`
+          : leaf.title || (group ? group.host.name : '');
   title.title = title.textContent;
 
   header.append(grip, mark, title);
@@ -2381,7 +2461,7 @@ function renderPaneHeader(leaf) {
     b.addEventListener('mousedown', (e) => e.stopPropagation());
     b.addEventListener('click', (e) => {
       e.stopPropagation();
-      fn();
+      fn(e);
     });
     return b;
   };
@@ -2396,11 +2476,7 @@ function renderPaneHeader(leaf) {
       focusLeaf(leaf);
       splitActive('col');
     }),
-    mk(
-      leaf.mode === 'web' ? '⌨' : '🌐',
-      leaf.mode === 'web' ? '터미널로 전환 (SSH 세션은 그대로 유지됩니다)' : '이 판을 웹페이지로 전환',
-      () => setLeafMode(leaf, leaf.mode === 'web' ? 'terminal' : 'web')
-    ),
+    mk('⇄ 전환', '이 판을 웹페이지 · 메모 · 파일로 전환', (ev) => openPaneModeMenu(leaf, ev)),
     mk('✕', `이 판 닫기 (${isMacPlatform ? '⌘W' : 'Ctrl+W'})`, () => closeLeaf(leaf), 'danger')
   );
   header.appendChild(tools);
@@ -2601,7 +2677,7 @@ function startRenameTab(group, tab, node) {
  * 컨테이너 아래로 삐져나가 상태바에 잘린다. 실제 그려진 줄 높이로 다시 확인해 한 줄 줄인다.
  */
 function fitLeaf(leaf) {
-  if (leaf.mode === 'web' || leaf.mode === 'file') return; // 웹/파일 판은 크기 계산이 필요 없다
+  if (leaf.mode !== 'terminal') return; // 웹·파일·메모·탐색기 판은 크기 계산이 필요 없다
   try {
     leaf.fit.fit();
   } catch (e) {
