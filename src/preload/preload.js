@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld('armux', {
     pickKeyFile: () => ipcRenderer.invoke('util:pickKeyFile'),
     clipboardRead: () => ipcRenderer.invoke('util:clipboardRead'),
     clipboardWrite: (text) => ipcRenderer.send('util:clipboardWrite', text),
+    openExternal: (url) => ipcRenderer.send('app:openExternal', url),
     confirm: (message, detail) => ipcRenderer.invoke('util:confirm', { message, detail }),
     /** 드롭된 File 객체의 실제 경로 (Electron 32+ 에서는 file.path 가 없어 이 API 를 써야 한다) */
     pathForFile: (file) => {

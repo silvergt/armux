@@ -490,7 +490,7 @@ ipcMain.handle('update:install', () => updater.install());
 ipcMain.handle('update:state', () => updater.getState());
 ipcMain.on('update:openReleases', () => updater.openReleases());
 ipcMain.on('app:openExternal', (e, url) => {
-  if (/^https:\/\//.test(String(url))) shell.openExternal(url);
+  if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);
 });
 
 /* -------------------------------- IPC: 창 제어 -------------------------------- */

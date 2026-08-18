@@ -147,7 +147,9 @@ bind C-a send-prefix</pre>
         <tr><th>키</th><th>동작</th></tr>
         <tr><td><kbd>Ctrl+C</kbd> / <kbd>Ctrl+V</kbd></td><td>복사 / 붙여넣기 (선택한 글자가 없으면 Ctrl+C 는 셸로 <code>^C</code> 전달)</td></tr>
         <tr><td><kbd>⌘C</kbd> / <kbd>⌘V</kbd> (mac)<br /><kbd>Ctrl+Shift+C</kbd> / <kbd>Ctrl+Shift+V</kbd></td><td>복사 / 붙여넣기</td></tr>
-        <tr><td>드래그</td><td>선택하면 자동 복사</td></tr>
+        <tr><td>드래그</td><td>선택하면 시스템 클립보드로 자동 복사</td></tr>
+        <tr><td>tmux·vim 복사</td><td>OSC 52 로 시스템 클립보드에 복사됨 (tmux 는 set-clipboard on 권장)</td></tr>
+        <tr><td>터미널 안 링크 클릭</td><td>기본 브라우저로 열림</td></tr>
         <tr><td>우클릭</td><td>붙여넣기</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>F</kbd></td><td>화면 내 검색</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd></td><td>글자 크기 확대 / 축소 / 초기화</td></tr>

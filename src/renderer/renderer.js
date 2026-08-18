@@ -246,10 +246,35 @@ function createLeaf(tab, connect, options) {
     /* 애드온 실패해도 기본 동작은 유지 */
   }
   try {
-    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    // 터미널 안의 링크 클릭 → 기본 브라우저로 연다
+    term.loadAddon(
+      new WebLinksAddon.WebLinksAddon((event, uri) => {
+        api.util.openExternal(uri);
+      })
+    );
   } catch (e) {
     /* noop */
   }
+
+  // OSC 52: tmux·vim 등이 시스템 클립보드로 복사할 때 쓰는 시퀀스를 받아 실제로 클립보드에 쓴다.
+  // (이게 없으면 tmux 복사가 tmux 자체 버퍼에만 들어가 앱 밖에서 붙여넣기가 안 된다)
+  try {
+    term.parser.registerOscHandler(52, (data) => {
+      const semi = data.indexOf(';');
+      const payload = semi >= 0 ? data.slice(semi + 1) : data;
+      if (payload === '?') return true; // 읽기 요청은 무시(보안)
+      try {
+        const text = decodeURIComponent(escape(atob(payload))); // base64 → UTF-8
+        if (text) api.util.clipboardWrite(text);
+      } catch (err) {
+        /* 잘못된 페이로드는 무시 */
+      }
+      return true;
+    });
+  } catch (e) {
+    /* noop */
+  }
+
   term.open(termHost);
 
   // 터미널 커서 이동/삭제 단축키를 표준 시퀀스로 변환해 셸로 보낸다.
