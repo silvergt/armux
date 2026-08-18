@@ -286,6 +286,26 @@ function createLeaf(tab, connect, options) {
     /* noop */
   }
 
+  // OSC 9(iTerm2) / OSC 777(rxvt) : 표준 "터미널 알림" 시퀀스.
+  // Claude Code 외의 도구(다른 AI 에이전트, notify-send 계열)가 완료를 알릴 때 쓰므로
+  // 우리 훅과 별개로 받아서 똑같이 초록 느낌표를 띄운다. (cmux 도 같은 방식)
+  try {
+    term.parser.registerOscHandler(9, () => {
+      raiseAlert(leaf); // 보고 있는 판이면 raiseAlert 가 알아서 무시한다
+      scheduleRender();
+      return true;
+    });
+    term.parser.registerOscHandler(777, (data) => {
+      if (String(data).startsWith('notify')) {
+        raiseAlert(leaf);
+        scheduleRender();
+      }
+      return true;
+    });
+  } catch (e) {
+    /* noop */
+  }
+
   // OSC 52: tmux·vim 등이 시스템 클립보드로 복사할 때 쓰는 시퀀스를 받아 실제로 클립보드에 쓴다.
   // (이게 없으면 tmux 복사가 tmux 자체 버퍼에만 들어가 앱 밖에서 붙여넣기가 안 된다)
   try {
@@ -718,12 +738,14 @@ function evaluateActivity() {
           continue;
         }
 
-        // (폴백) 훅이 아직 없는 세션: 화면 맨 아래 "작업 중 상태줄" 을 본다.
+        // (폴백) 훅이 아직 없는 세션: 화면 아래쪽의 "작업 중 상태줄" 을 본다.
+        // 스피너 줄 아래에 입력 박스(3줄)·단축키 힌트·tmux 상태줄이 깔리므로
+        // 3줄로는 부족하다 — 아래에서 12줄까지 살핀다.
         // 대화 본문에 "esc to interrupt" 라는 말이 있어도 줄 맨 앞 스피너 글리프가 없어 걸러진다.
         const seen =
           leaf.mode === 'terminal' &&
           leaf.status === 'ready' &&
-          bottomNonEmptyLines(leaf, 3).some(isClaudeWorkingLine);
+          bottomNonEmptyLines(leaf, 12).some(isClaudeWorkingLine);
 
         // 히스테리시스(시간 기반): 보이면 곧바로 thinking, 마지막으로 본 지 0.8초 안이면 유지.
         // → 다시 그리는 순간 한 프레임 놓쳐도 깜빡이지 않고(기본 원 안 뜸),
@@ -2599,8 +2621,14 @@ api.ssh.onReady(({ id }) => {
   if (grp && !grp.hooksInstalled) {
     grp.hooksInstalled = true;
     setTimeout(() => {
-      api.claude.installHooks(id).catch(() => {
+      api.claude.installHooks(id).then((ok) => {
+        if (!ok) {
+          grp.hooksInstalled = false; // 실패하면 다음 세션에서 다시 시도
+          console.warn('[armux] Claude 상태 훅 설치 실패 (node 미발견 또는 병합 실패) — 화면 감지 폴백 사용');
+        }
+      }).catch((e) => {
         grp.hooksInstalled = false; // 실패하면 다음 세션에서 다시 시도
+        console.warn('[armux] Claude 상태 훅 설치 오류:', e && e.message);
       });
     }, 1200);
   }

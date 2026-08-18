@@ -2086,7 +2086,14 @@ body.is-mac #mac-spacer {
   font-size: 12.5px; line-height: 1.5; padding: 8px 10px; overflow: hidden; user-select: text;
 }
 .nb-src:focus { outline: none; border-color: var(--accent); }
-.nb-md { border: 1px solid transparent; border-radius: 6px; padding: 2px 4px; }
+/* 노트북 안의 마크다운 셀: .fv-md 의 전체화면 absolute 배치를 해제해
+   셀들이 겹치지 않고 문서 흐름대로 차례로 쌓이게 한다 (VSCode 미리보기와 동일) */
+.nb-md {
+  position: static; inset: auto; overflow: visible; padding: 2px 8px;
+  border: 1px solid transparent; border-radius: 6px; line-height: 1.6;
+}
+.nb-md > :first-child { margin-top: 2px; }
+.nb-md > :last-child { margin-bottom: 2px; }
 .nb-md:hover { border-color: #21252c; }
 .nb-out { margin-top: 4px; border-left: 2px solid #2a2e37; padding: 4px 10px; font-family: Menlo,Consolas,monospace; font-size: 12px; overflow-x: auto; }
 .nb-out-text { color: #c9ced6; white-space: pre-wrap; }
