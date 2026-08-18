@@ -682,6 +682,47 @@ ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
   return res.response === 1;
 });
 
+/* ---------------------------------- AI 질문 ---------------------------------- */
+
+/**
+ * 판에서 Ctrl/⌘+K 로 여는 AI 질문. 원격 서버에 로그인된 Claude 계정으로
+ * `claude -p` 를 실행해 답을 받아온다(API 키 불필요, 사용량은 그 계정 기준).
+ * 이어지는 질문은 --resume <세션id> 로 맥락을 유지한다.
+ * 프롬프트는 따옴표 문제를 피하려고 base64 → stdin 으로 넘긴다.
+ */
+ipcMain.handle('ai:ask', async (e, { sessionId, prompt, resumeId }) => {
+  const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
+  const resume = resumeId ? `--resume ${String(resumeId).replace(/[^0-9a-f-]/gi, '')} ` : '';
+  const script = `
+CLAUDE="$(command -v claude 2>/dev/null)"
+if [ -z "$CLAUDE" ]; then
+  for c in "$HOME"/.local/bin/claude "$HOME"/.claude/local/claude /usr/local/bin/claude /opt/homebrew/bin/claude; do
+    [ -x "$c" ] && CLAUDE="$c" && break
+  done
+fi
+if [ -z "$CLAUDE" ]; then echo 'ARMUX_AI:no-claude'; exit 0; fi
+cd "$HOME" 2>/dev/null
+printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p ${resume}--output-format json 2>/dev/null
+`.trim();
+  const sb64 = Buffer.from(script, 'utf8').toString('base64');
+  const remote = `S=${sb64}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`;
+  const { stdout } = await ssh.exec(sessionId, remote, 180000); // 답변이 길면 오래 걸린다
+  const text = String(stdout);
+  if (text.includes('ARMUX_AI:no-claude')) {
+    return { error: '이 서버에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치되어 있어야 합니다.' };
+  }
+  const a = text.indexOf('{');
+  const b = text.lastIndexOf('}');
+  if (a < 0 || b <= a) return { error: '응답이 비어 있습니다. (로그인 상태를 확인해 보세요)' };
+  try {
+    const j = JSON.parse(text.slice(a, b + 1));
+    if (j.is_error) return { error: String(j.result || '오류가 났습니다.') };
+    return { result: String(j.result || ''), sessionId: j.session_id || null };
+  } catch (err) {
+    return { error: '응답을 해석하지 못했습니다.' };
+  }
+});
+
 /* ------------------------------------ 웹 판 ------------------------------------ */
 
 // 주소창 자동완성용: 이 PC 크롬 방문 기록에서 후보를 뽑는다(읽기 전용).

@@ -65,6 +65,11 @@ contextBridge.exposeInMainWorld('armux', {
     toggleDevTools: () => ipcRenderer.send('win:toggleDevTools')
   },
 
+  /** AI 질문 (원격 claude -p) */
+  ai: {
+    ask: (sessionId, prompt, resumeId) => ipcRenderer.invoke('ai:ask', { sessionId, prompt, resumeId })
+  },
+
   /** 웹 페인 (판 안의 브라우저) */
   web: {
     chromeInfo: () => ipcRenderer.invoke('web:chromeInfo'),

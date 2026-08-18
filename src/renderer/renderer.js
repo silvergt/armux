@@ -504,6 +504,7 @@ function disposeLeaf(leaf) {
   if (leaf.file) { try { leaf.file.dispose(); } catch (e) {} leaf.file = null; }
   if (leaf.web) { try { leaf.web.dispose(); } catch (e) {} leaf.web = null; }
   if (leaf.notes) { try { leaf.notes.dispose(); } catch (e) {} leaf.notes = null; }
+  if (leaf.ai) { try { leaf.ai.box.remove(); } catch (e) {} leaf.ai = null; }
   if (leaf.explorer) { try { leaf.explorer.dispose(); } catch (e) {} leaf.explorer = null; }
   leaf.el.remove();
 }
@@ -2427,6 +2428,141 @@ function renderPanes() {
  * 왼쪽은 잡아끌 수 있는 손잡이 + 이름, 오른쪽은 도구 버튼들.
  * 헤더를 다른 판 위로 끌어다 놓으면 두 판의 자리가 바뀐다.
  */
+/* --------------------------------- AI 질문 패널 --------------------------------- */
+
+/**
+ * Ctrl/⌘+K 로 여는 판 하단의 AI 질문 서랍.
+ * 원격 서버에 로그인된 Claude 계정으로 `claude -p` 를 실행해 답을 받는다.
+ * 첫 질문에는 지금 화면(또는 드래그로 선택한 글자)을 컨텍스트로 붙이고,
+ * 이어지는 질문은 --resume 으로 같은 대화를 계속한다.
+ */
+function openAiPanel(leaf) {
+  if (!leaf.sessionId || leaf.status !== 'ready') {
+    el.statusLeft.textContent = '접속된 터미널에서만 AI 질문을 쓸 수 있습니다.';
+    return;
+  }
+  if (!leaf.ai) {
+    const box = document.createElement('div');
+    box.className = 'ai-panel';
+
+    const head = document.createElement('div');
+    head.className = 'ai-head';
+    const title = document.createElement('span');
+    title.className = 'ai-title';
+    title.textContent = '✳ AI 에게 질문';
+    const ctxBadge = document.createElement('span');
+    ctxBadge.className = 'ai-ctx';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'ai-close';
+    closeBtn.textContent = '✕';
+    closeBtn.title = '닫기 (Esc)';
+    closeBtn.addEventListener('click', () => closeAiPanel(leaf));
+    head.append(title, ctxBadge, closeBtn);
+
+    const log = document.createElement('div');
+    log.className = 'ai-log';
+
+    const row = document.createElement('div');
+    row.className = 'ai-row';
+    const input = document.createElement('textarea');
+    input.className = 'ai-input';
+    input.rows = 1;
+    input.spellcheck = false;
+    input.placeholder = '화면 내용에 대해 물어보세요 (Enter 전송 · Shift+Enter 줄바꿈 · Esc 닫기)';
+    const sendBtn = document.createElement('button');
+    sendBtn.className = 'ai-send';
+    sendBtn.textContent = '전송';
+    row.append(input, sendBtn);
+
+    box.append(head, log, row);
+    leaf.el.querySelector('.pane-body').appendChild(box);
+
+    const st = { box, log, input, sendBtn, ctxBadge, resumeId: null, busy: false };
+    leaf.ai = st;
+
+    const addMsg = (who, text) => {
+      const m = document.createElement('div');
+      m.className = `ai-msg ai-${who}`;
+      m.textContent = text;
+      log.appendChild(m);
+      log.scrollTop = log.scrollHeight;
+      return m;
+    };
+
+    const send = async () => {
+      const q = input.value.trim();
+      if (!q || st.busy) return;
+      input.value = '';
+      autosize();
+      addMsg('user', q);
+
+      // 첫 질문에만 화면/선택 컨텍스트를 붙인다 (이후는 --resume 이 맥락을 기억)
+      let prompt = q;
+      if (!st.resumeId) {
+        const sel = leaf.term.hasSelection() ? leaf.term.getSelection() : '';
+        const ctx = (sel || readScreenTail(leaf) || '').slice(-8000); // 너무 길면 뒤쪽만
+        ctxBadge.textContent = sel ? '선택한 글자 포함됨' : '화면 내용 포함됨';
+        prompt =
+          `다음은 SSH 터미널 ${sel ? '에서 사용자가 선택한 내용' : '화면에 지금 보이는 내용'}입니다.\n` +
+          '이 내용을 참고해 아래 질문에 한국어로 간결하게 답하세요.\n' +
+          '```\n' + ctx + '\n```\n\n질문: ' + q;
+      }
+
+      st.busy = true;
+      sendBtn.disabled = true;
+      const wait = addMsg('wait', '생각 중…');
+      try {
+        const res = await api.ai.ask(leaf.sessionId, prompt, st.resumeId);
+        wait.remove();
+        if (res.error) {
+          addMsg('err', res.error);
+        } else {
+          st.resumeId = res.sessionId || st.resumeId; // 다음 질문부터 이어서
+          addMsg('ai', res.result || '(빈 응답)');
+        }
+      } catch (err) {
+        wait.remove();
+        addMsg('err', `실패: ${String((err && err.message) || err).replace(/^Error:\s*/, '')}`);
+      } finally {
+        st.busy = false;
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    };
+
+    const autosize = () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(96, input.scrollHeight) + 'px';
+    };
+    input.addEventListener('input', autosize);
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeAiPanel(leaf);
+      }
+    });
+    sendBtn.addEventListener('click', send);
+  }
+
+  leaf.ai.box.classList.remove('hidden');
+  // 컨텍스트 배지 미리 보여 주기 (아직 안 보냈으면)
+  if (!leaf.ai.resumeId) {
+    leaf.ai.ctxBadge.textContent = leaf.term.hasSelection()
+      ? '선택한 글자를 함께 보냅니다'
+      : '지금 화면 내용을 함께 보냅니다';
+  }
+  leaf.ai.input.focus();
+}
+
+function closeAiPanel(leaf) {
+  if (leaf.ai) leaf.ai.box.classList.add('hidden');
+  if (leaf.term) leaf.term.focus();
+}
+
 /**
  * 판 헤더 버튼 아이콘.
  * 선 두께를 굵게 잡아 22px 버튼 안에서도 형태가 또렷하게 보이도록 했다.
@@ -3127,6 +3263,17 @@ window.addEventListener(
         e.preventDefault();
         e.stopPropagation();
         api.util.clipboardRead().then((text) => text && api.ssh.write(leaf.sessionId, text));
+        return;
+      }
+    }
+
+    // AI 질문: Ctrl/⌘+K — 지금 판의 화면(또는 선택한 글자)을 컨텍스트로 묻는다
+    if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      const l = activeLeaf();
+      if (l && l.mode === 'terminal') {
+        e.preventDefault();
+        e.stopPropagation();
+        openAiPanel(l);
         return;
       }
     }
