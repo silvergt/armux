@@ -68,6 +68,9 @@ contextBridge.exposeInMainWorld('armux', {
   /** 웹 페인 (판 안의 브라우저) */
   web: {
     chromeInfo: () => ipcRenderer.invoke('web:chromeInfo'),
+    favList: () => ipcRenderer.invoke('web:favList'),
+    favAdd: (item) => ipcRenderer.invoke('web:favAdd', item),
+    favRemove: (url) => ipcRenderer.invoke('web:favRemove', { url }),
     historySuggest: (query) => ipcRenderer.invoke('web:historySuggest', { query }),
     openExternal: (url) => ipcRenderer.send('web:openExternal', url),
     /** 크롬처럼 보이게 할 User-Agent (Electron 표시를 뺀다) */

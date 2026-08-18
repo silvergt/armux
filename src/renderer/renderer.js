@@ -479,7 +479,7 @@ function setLeafMode(leaf, mode, url) {
   if (mode === 'web') {
     if (!leaf.web) {
       leaf.web = window.WebPane.create({
-        url: url || 'https://www.google.com',
+        url: url || null, // url 없으면 시작 화면(주소 입력 + 즐겨찾기)
         onTitle: (title) => {
           leaf.title = title || leaf.title;
           scheduleRender();
@@ -2321,14 +2321,6 @@ function renderPaneHeader(leaf) {
 
   tools.append(
     mk('⇱', '이 판을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
-    mk('⤒', '맨 위로 (tmux 안에서도 동작)', () => {
-      focusLeaf(leaf);
-      scrollPane(leaf, 'top');
-    }),
-    mk('⤓', '맨 아래로 (tmux 안에서도 동작)', () => {
-      focusLeaf(leaf);
-      scrollPane(leaf, 'bottom');
-    }),
     mk('▯|▯', `좌우로 분할 (${isMacPlatform ? '⌘D' : 'Ctrl+Shift+D'})`, () => {
       focusLeaf(leaf);
       splitActive('row');
@@ -3046,6 +3038,7 @@ const dlg = {
   webForm: document.getElementById('web-form'),
   webUrl: document.getElementById('web-url-input'),
   webChromeInfo: document.getElementById('web-chrome-info'),
+  webFavList: document.getElementById('web-fav-list'),
   openWebBtn: document.getElementById('modal-open-web'),
   body: document.querySelector('#modal .modal-body'),
   saveBtn: document.getElementById('host-save'),
@@ -3083,6 +3076,7 @@ async function setDialogMode(mode) {
     } catch (e) {
       dlg.webChromeInfo.textContent = '';
     }
+    renderDialogFavorites();
   }
 }
 
@@ -3311,6 +3305,48 @@ function openWebPage() {
     return tab;
   }
   return createWebGroup(url);
+}
+
+// 새 웹페이지 열기 다이얼로그에 즐겨찾기 목록을 그린다.
+async function renderDialogFavorites() {
+  if (!dlg.webFavList) return;
+  const favs = await api.web.favList();
+  dlg.webFavList.innerHTML = '';
+  if (!favs.length) {
+    const hint = document.createElement('div');
+    hint.className = 'web-fav-empty';
+    hint.textContent = '아직 즐겨찾기가 없습니다. 웹페이지를 연 뒤 상단 "★ 추가" 로 등록하세요.';
+    dlg.webFavList.appendChild(hint);
+    return;
+  }
+  for (const f of favs) {
+    const card = document.createElement('div');
+    card.className = 'web-fav';
+    const name = document.createElement('div'); // 즐겨찾기 이름
+    name.className = 'web-fav-name';
+    name.textContent = f.name || f.url;
+    const url = document.createElement('div'); // 즐겨찾기 주소
+    url.className = 'web-fav-url';
+    url.textContent = f.url;
+    const del = document.createElement('button'); // 삭제 버튼
+    del.className = 'web-fav-del';
+    del.textContent = '✕';
+    del.title = '즐겨찾기에서 삭제';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await api.web.favRemove(f.url);
+      renderDialogFavorites();
+    });
+    card.append(name, url, del);
+    // 카드를 누르면 해당 즐겨찾기로 새 웹 탭(또는 서브탭)을 연다.
+    card.addEventListener('click', () => {
+      const target = dlgTargetGroup;
+      closeDialog();
+      if (target) createWebTab(target, f.url);
+      else createWebGroup(f.url);
+    });
+    dlg.webFavList.appendChild(card);
+  }
 }
 
 /**

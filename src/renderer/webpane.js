@@ -28,7 +28,7 @@ window.WebPane = (function () {
    * @param {object} opts { url, onTitle(title), onUrl(url) }
    */
   function create(opts) {
-    const state = { url: opts.url || 'https://www.google.com', title: '' };
+    const state = { url: opts.url || null, title: '' };
 
     const root = document.createElement('div');
     root.className = 'webpane';
@@ -50,7 +50,12 @@ window.WebPane = (function () {
     const backBtn = mk('←', '뒤로', () => view.canGoBack() && view.goBack());
     const fwdBtn = mk('→', '앞으로', () => view.canGoForward() && view.goForward());
     const reloadBtn = mk('⟳', '새로고침', () => view.reload());
-    const homeBtn = mk('⌂', '홈 (google.com)', () => go('https://www.google.com'));
+    const homeBtn = mk('☆ 즐겨찾기', '시작 화면(주소 입력 + 즐겨찾기)', () => showStart());
+    const favBtn = mk('★ 추가', '이 페이지를 즐겨찾기에 추가', async () => {
+      await api.web.favAdd({ name: state.title || state.url, url: state.url });
+      favBtn.textContent = '★ 추가됨';
+      setTimeout(() => (favBtn.textContent = '★ 추가'), 1500);
+    });
 
     const urlWrap = document.createElement('div');
     urlWrap.className = 'web-url-wrap';
@@ -160,22 +165,92 @@ window.WebPane = (function () {
     );
     chromeBtn.classList.add('web-btn-wide');
 
-    bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, urlWrap, chromeBtn);
+    bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, favBtn, urlWrap, chromeBtn);
 
     /* -------------------------------- 웹 화면 -------------------------------- */
 
     const view = document.createElement('webview');
     view.className = 'web-view';
-    view.setAttribute('src', state.url);
+    view.setAttribute('src', 'about:blank');
     view.setAttribute('allowpopups', '');
     // 로그인 세션이 유지되도록 영구 파티션을 쓴다
     view.setAttribute('partition', 'persist:armux-web');
     view.setAttribute('useragent', api.web.userAgent());
 
+    // 시작 화면(주소 입력 + 즐겨찾기). URL 이 아직 없을 때 보인다.
+    const start = document.createElement('div');
+    start.className = 'web-start';
+    const startInner = document.createElement('div');
+    startInner.className = 'web-start-inner';
+    const startTitle = document.createElement('div');
+    startTitle.className = 'web-start-title';
+    startTitle.textContent = '웹페이지 열기';
+    const startInput = document.createElement('input');
+    startInput.className = 'web-start-url';
+    startInput.spellcheck = false;
+    startInput.placeholder = '주소를 입력하거나 검색어를 입력하고 Enter';
+    startInput.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && startInput.value.trim()) go(startInput.value.trim());
+    });
+    const favTitle = document.createElement('div');
+    favTitle.className = 'web-start-subtitle';
+    favTitle.textContent = '즐겨찾기';
+    const favGrid = document.createElement('div');
+    favGrid.className = 'web-fav-grid';
+    startInner.append(startTitle, startInput, favTitle, favGrid);
+    start.appendChild(startInner);
+
+    async function renderFavs() {
+      const favs = await api.web.favList();
+      favGrid.innerHTML = '';
+      if (!favs.length) {
+        const hint = document.createElement('div');
+        hint.className = 'web-fav-empty';
+        hint.textContent = '아직 즐겨찾기가 없습니다. 페이지를 연 뒤 상단 "★ 추가" 로 등록하세요.';
+        favGrid.appendChild(hint);
+        return;
+      }
+      for (const f of favs) {
+        const card = document.createElement('div');
+        card.className = 'web-fav';
+        const name = document.createElement('div');
+        name.className = 'web-fav-name';
+        name.textContent = f.name || f.url;
+        const url = document.createElement('div');
+        url.className = 'web-fav-url';
+        url.textContent = f.url;
+        const del = document.createElement('button');
+        del.className = 'web-fav-del';
+        del.textContent = '✕';
+        del.title = '즐겨찾기에서 삭제';
+        del.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await api.web.favRemove(f.url);
+          renderFavs();
+        });
+        card.append(name, url, del);
+        card.addEventListener('click', () => go(f.url));
+        favGrid.appendChild(card);
+      }
+    }
+
     const status = document.createElement('div');
     status.className = 'web-status';
 
-    root.append(bar, view, status);
+    root.append(bar, start, view, status);
+
+    function showStart() {
+      start.classList.remove('hidden');
+      view.classList.add('hidden');
+      urlInput.value = '';
+      renderFavs();
+      startInput.focus();
+    }
+    function showBrowser() {
+      start.classList.add('hidden');
+      view.classList.remove('hidden');
+    }
 
     /* --------------------------------- 동작 --------------------------------- */
 
@@ -184,6 +259,7 @@ window.WebPane = (function () {
       if (!url) return;
       state.url = url;
       urlInput.value = url;
+      showBrowser();
       view.loadURL(url).catch(() => {});
     }
 
@@ -229,7 +305,13 @@ window.WebPane = (function () {
       go(e.url);
     });
 
-    urlInput.value = state.url;
+    if (state.url) {
+      view.setAttribute('src', state.url);
+      urlInput.value = state.url;
+      showBrowser();
+    } else {
+      showStart();
+    }
 
     return {
       el: root,
@@ -240,7 +322,7 @@ window.WebPane = (function () {
         return state.title;
       },
       go,
-      focus: () => urlInput.focus(),
+      focus: () => (start.classList.contains('hidden') ? urlInput.focus() : startInput.focus()),
       dispose: () => root.remove()
     };
   }

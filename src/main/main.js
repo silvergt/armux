@@ -11,6 +11,7 @@ const claudeinfo = require('./claudeinfo');
 const notes = require('./notes');
 const updater = require('./updater');
 const chromehistory = require('./chromehistory');
+const webfav = require('./webfav');
 const claudehooks = require('./claudehooks');
 
 const isMac = process.platform === 'darwin';
@@ -521,6 +522,23 @@ ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
   });
   return res.response === 1;
 });
+
+/* ------------------------------------ 웹 판 ------------------------------------ */
+
+// 주소창 자동완성용: 이 PC 크롬 방문 기록에서 후보를 뽑는다(읽기 전용).
+ipcMain.handle('web:chromeInfo', () => ({
+  historyAvailable: chromehistory.available(),
+  chromiumVersion: process.versions.chrome
+}));
+ipcMain.handle('web:historySuggest', (e, { query }) => chromehistory.suggest(query));
+// 진짜 크롬(기본 브라우저)으로 열기
+ipcMain.on('web:openExternal', (e, url) => {
+  if (url) shell.openExternal(url);
+});
+// 즐겨찾기 저장소
+ipcMain.handle('web:favList', () => webfav.list());
+ipcMain.handle('web:favAdd', (e, item) => webfav.add(item));
+ipcMain.handle('web:favRemove', (e, { url }) => webfav.remove(url));
 
 /* ---------------------------------- 앱 수명주기 ---------------------------------- */
 

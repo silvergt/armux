@@ -11,6 +11,7 @@
   --accent-dim: #2d5f96;
   --danger: #ff6b6b;
   --ok: #4ec9a8;
+  --sidebtn-w: 104px; /* 좌측 상단 "메모"·"파일" 버튼 공통 너비 */
 }
 
 * {
@@ -1318,6 +1319,9 @@ button {
 /* 파일 탐색기 서브탭 */
 .subtab-explorer {
   gap: 6px;
+  width: var(--sidebtn-w); /* 상단 "메모" 버튼과 너비 일치 */
+  flex: none;
+  justify-content: space-between; /* 📁 파일 은 왼쪽, 📌 는 오른쪽 */
 }
 .subtab-explorer.pinned {
   background: #1d2a3a;
@@ -1426,12 +1430,14 @@ button {
 
 .notes-tab {
   flex: none;
-  padding: 0 12px;
+  width: var(--sidebtn-w); /* 아래 "파일" 버튼과 너비 일치 */
+  padding: 0 10px;
   border: none;
   border-right: 1px solid var(--border);
   background: transparent;
   color: var(--fg-dim);
   font-size: 12px;
+  text-align: left;
   -webkit-app-region: no-drag;
 }
 .notes-tab:hover {
@@ -2152,3 +2158,33 @@ body.is-mac #mac-spacer {
 #statusbar { position: relative; }
 #status-left { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #status-rspace { flex: 1 1 0; }
+
+/* 웹 판 시작 화면(주소 입력 + 즐겨찾기) */
+.web-view.hidden { display: none; }
+.web-start {
+  position: absolute; inset: 0; overflow: auto;
+  background: #16181c; color: #d5d8de;
+  display: flex; justify-content: center;
+}
+.web-start.hidden { display: none; }
+.web-start-inner { width: 100%; max-width: 720px; padding: 48px 24px; }
+.web-start-title { font-size: 20px; color: #fff; margin-bottom: 14px; letter-spacing: 0.5px; }
+.web-start-url {
+  width: 100%; height: 40px; padding: 0 14px; box-sizing: border-box;
+  border: 1px solid #3c4043; border-radius: 20px; background: #0f1115; color: #e8eaed;
+  font-size: 14px; outline: none;
+}
+.web-start-url:focus { border-color: #8ab4f8; }
+.web-start-subtitle { margin: 26px 0 10px; color: var(--fg-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+.web-fav-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.web-fav {
+  position: relative; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: #1a1e25; cursor: pointer;
+}
+.web-fav:hover { background: #222831; border-color: var(--accent-dim); }
+.web-fav-name { color: #cfe3fa; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.web-fav-url { color: var(--fg-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+.web-fav-del { position: absolute; top: 6px; right: 6px; border: none; background: transparent; color: #6f7784; font-size: 11px; opacity: 0; }
+.web-fav:hover .web-fav-del { opacity: 1; }
+.web-fav-del:hover { color: #ff6b6b; }
+.web-fav-empty { color: var(--fg-dim); font-size: 12px; grid-column: 1/-1; }
