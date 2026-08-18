@@ -272,16 +272,20 @@ function createLeaf(tab, connect, options) {
       if (sig === 'busy') {
         clearAlert(leaf);
         leaf.hookBusy = true;
-        // 화면에 작업줄이 그려지기 전이라도 곧바로 스피너가 돌도록 시각을 채워 둔다
-        // (이 값이 오래되면 화면 쪽 판정으로 넘어간다 — HOOK_SCREEN_GRACE_MS)
-        leaf.claudeSeenAt = Date.now();
+        // 작업줄이 그려지기 전 공백을 메우는 브리지의 기준 시각
+        leaf.hookBusyAt = Date.now();
       } else if (sig === 'idle') {
         leaf.hookBusy = false;
+        // 히스테리시스를 기다리지 않고 즉시 스피너를 끈다
+        leaf.wasThinking = false;
+        leaf.thinkSeenAt = 0;
         const cur = activeLeaf();
         const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
         if (!looking) raiseAlert(leaf); // 끝났는데 안 보고 있으면 알림
       } else if (sig === 'alert') {
         leaf.hookBusy = false;
+        leaf.wasThinking = false;
+        leaf.thinkSeenAt = 0;
         raiseAlert(leaf, true); // 입력/권한 대기 — 보고 있어도 표시
       }
       scheduleRender();
@@ -619,11 +623,17 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
  * 또는 "ctrl+t" 힌트를 같은 줄에 달고 있다.
  * 대화 본문에 그냥 "(esc to interrupt)" 라는 말이 들어 있어도 이런 동반 표시가 없어 걸러진다.
  */
-// 훅 신호를 이 시간 안에 받았으면 훅 상태를 믿는다. 지나면 화면 감지로 되돌아간다.
-const HOOK_TRUST_MS = 1800000; // 30분
-// 훅은 "작업 중" 이라는데 그 판 화면에 Claude 가 이만큼 안 보이면 화면 쪽을 믿는다.
-// (tmux 에서 빠져나오는 등 다른 화면으로 옮겨도 스피너가 계속 돌던 문제를 막는다)
-const HOOK_SCREEN_GRACE_MS = 8000;
+/*
+ * busy 훅 직후 작업줄이 화면에 그려지기 전까지만 스피너를 미리 돌려 주는 시간.
+ * 이 시간이 지나면 화면에 작업줄이 실제로 보여야만 스피너가 유지된다.
+ *
+ * 왜 훅을 오래 믿으면 안 되나: 사용자가 ESC 로 중단하면 Claude Code 는 Stop
+ * 훅을 실행하지 않는다(문서화된 동작). 그때 훅의 busy 를 계속 믿으면 놀고 있는
+ * Claude 앞에서 스피너가 영원히 돈다. 그래서 "지속적인 작업 중" 판정은 화면
+ * (작업줄)이 전담하고, 훅은 시작/끝의 순간 이벤트로만 쓴다. (cmux 도 지속
+ * 상태 표시 없이 완료/주의 이벤트만 쓰는 구조다)
+ */
+const HOOK_BUSY_BRIDGE_MS = 15000;
 
 const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
 function isClaudeWorkingLine(line) {
@@ -632,19 +642,6 @@ function isClaudeWorkingLine(line) {
   const first = line.trimStart()[0];
   return Boolean(first) && SPINNER_GLYPHS.includes(first);
 }
-/*
- * "이 판에 Claude 화면이 떠 있는가" 를 느슨하게 본다.
- * 작업 상태줄(isClaudeWorkingLine)은 화면이 짧거나(판을 여러 개로 쪼갠 경우)
- * 출력이 밀리면 검사 범위 밖으로 나갈 수 있다. 그때 훅이 "작업 중" 이라고 해도
- * 화면을 못 찾아 스피너를 꺼 버리면 안 되므로, 입력 상자·단축키 힌트 같은
- * Claude UI 흔적이 남아 있는지까지 폭넓게 본다.
- * (tmux 에서 빠져나오면 이런 흔적이 통째로 사라지므로 그때는 제대로 꺼진다)
- */
-const CLAUDE_UI_RE = /esc to interrupt|for shortcuts|bypass permissions|⏵⏵|╭─{3,}|╰─{3,}|│\s*>/i;
-function looksLikeClaudeScreen(leaf) {
-  return bottomNonEmptyLines(leaf, 20).some((l) => CLAUDE_UI_RE.test(l));
-}
-
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
 /** 마지막 비어 있지 않은 줄 */
@@ -801,43 +798,29 @@ function evaluateActivity() {
         const now = Date.now();
         const live = leaf.mode === 'terminal' && leaf.status === 'ready';
 
-        // 훅 신호를 최근에 받았다면 그 상태를 믿는다(가장 정확).
-        // 다만 한참 소식이 없으면(다른 셸로 옮겨갔거나 훅 없는 Claude 를 새로 띄운 경우)
-        // 다시 화면 감지로 돌아간다 — 예전에는 한 번 훅을 받으면 영원히 화면을
-        // 안 봐서, 훅이 안 오는 상황에서 아이콘이 전혀 안 바뀌었다.
-        const hookFresh = leaf.hooksActive && now - (leaf.hookAt || 0) < HOOK_TRUST_MS;
-
-        // 화면 아래쪽의 "작업 중 상태줄" 감지.
-        // 스피너 줄 아래에 입력 박스(3줄)·단축키 힌트·tmux 상태줄이 깔리므로
-        // 아래에서 12줄까지 살핀다. 대화 본문에 "esc to interrupt" 라는 말이 있어도
-        // 줄 맨 앞 스피너 글리프가 없어 걸러진다.
-        const seen = live && bottomNonEmptyLines(leaf, 12).some(isClaudeWorkingLine);
-
-        // 화면에 Claude 흔적(작업줄이든 입력 상자든)이 보인 마지막 시각을 기록한다.
-        // 작업줄만 보면 판이 짧을 때 놓치므로 UI 흔적까지 넓게 인정한다.
-        if (seen || (live && leaf.hookBusy && looksLikeClaudeScreen(leaf))) leaf.claudeSeenAt = now;
-
         /*
-         * 작업 중 판정.
-         *  - 화면에 작업줄이 보이면 무조건 작업 중 (훅이 없는 Claude 도 잡힌다)
-         *  - 훅이 "작업 중" 이라고 해도, 그 화면이 실제로 이 판에 보여야 인정한다.
-         *    tmux 에서 detach 하거나 다른 프로그램으로 옮기면 Claude 화면이
-         *    사라지는데, 예전에는 훅 상태만 보고 스피너를 계속 돌렸다.
-         *    화면에서 사라진 지 5초가 지나면 화면 쪽을 믿고 스피너를 끈다.
+         * 작업 중 판정 — "지속" 은 화면이 전담한다.
+         * 화면 아래쪽에 Claude 의 작업 상태줄(맨 앞 스피너 글리프 + "esc to
+         * interrupt")이 보일 때만 작업 중이다. 상태줄은 항상 입력 상자 바로 위,
+         * 화면 맨 아래 몇 줄 안에 있으므로 아래에서 15줄만 보면 충분하다.
+         *
+         * 훅의 busy 는 "방금 시작해서 아직 상태줄이 안 그려진" 짧은 공백을
+         * 메우는 브리지로만 쓴다. 오래 믿으면 ESC 중단(Stop 훅이 안 옴)처럼
+         * 끝 신호가 유실됐을 때 놀고 있는 Claude 앞에서 스피너가 영원히 돈다.
          */
-        const hookSaysBusy =
-          hookFresh && leaf.hookBusy && now - (leaf.claudeSeenAt || 0) < HOOK_SCREEN_GRACE_MS;
-        const busyNow = seen || hookSaysBusy;
+        const seen = live && bottomNonEmptyLines(leaf, 15).some(isClaudeWorkingLine);
+        const bridging =
+          live && leaf.hookBusy && now - (leaf.hookBusyAt || 0) < HOOK_BUSY_BRIDGE_MS;
+        const busyNow = seen || bridging;
 
-        // 히스테리시스(시간 기반): 보이면 곧바로 thinking, 마지막으로 본 지 0.8초 안이면 유지.
-        // → 다시 그리는 순간 한 프레임 놓쳐도 깜빡이지 않고,
-        //   툴 실행으로 출력이 잠깐 멎어도 계속 작업 중으로 본다(성급한 초록 느낌표 방지).
+        // 히스테리시스: 마지막으로 본 지 2.5초 안이면 유지.
+        // 툴 실행 전환 순간 등에 상태줄이 한두 프레임 사라져도 깜빡이지 않게 한다.
         if (busyNow) leaf.thinkSeenAt = now;
-        const thinking = busyNow || (leaf.wasThinking && now - (leaf.thinkSeenAt || 0) < 800);
+        const thinking = busyNow || (leaf.wasThinking && now - (leaf.thinkSeenAt || 0) < 2500);
 
         // 작업이 끝났는데 그 창을 보고 있지 않으면 알림(초록 느낌표).
-        // 훅이 신선하면 Stop 훅이 이미 처리하므로 여기서는 화면 감지 몫만 담당한다.
-        if (leaf.wasThinking && !thinking && live && !hookFresh) {
+        // Stop 훅이 오는 경우엔 그쪽에서도 올리지만 raiseAlert 는 중복에 안전하다.
+        if (leaf.wasThinking && !thinking && live) {
           const cur = activeLeaf();
           const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
           if (!looking) raiseAlert(leaf);
