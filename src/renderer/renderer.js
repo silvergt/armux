@@ -2428,6 +2428,14 @@ function paneIcon(name) {
  * 터미널은 없애지 않고 감춰 두므로 돌아오면 SSH 세션이 그대로 살아 있다.
  */
 function openPaneModeMenu(leaf, ev) {
+  // 버튼 위치를 "먼저" 재어 둔다.
+  // focusLeaf() 가 render() 를 부르면서 헤더를 다시 그리면 이 버튼은 DOM 에서
+  // 떨어져 나가고, 그 뒤에 재면 좌표가 전부 0 이라 메뉴가 창 왼쪽 위에 떴다.
+  const btn = ev && (ev.currentTarget || ev.target);
+  const r = btn && btn.getBoundingClientRect ? btn.getBoundingClientRect() : null;
+  // 버튼은 헤더 오른쪽 끝에 있으므로 메뉴의 오른쪽을 버튼 오른쪽에 맞춘다
+  const anchor = r && r.width ? { x: r.right, y: r.bottom + 4 } : null;
+
   focusLeaf(leaf);
   const items = [];
   // 터미널이 아닐 때만 "터미널로 돌아가기" 를 맨 위에 둔다
@@ -2445,9 +2453,8 @@ function openPaneModeMenu(leaf, ev) {
   items.push(row('📝  메모', 'notes'));
   items.push(row('📁  파일', 'explorer'));
 
-  // 버튼 바로 아래에 펼친다
-  const r = ev && ev.currentTarget ? ev.currentTarget.getBoundingClientRect() : null;
-  if (r) showContextMenu(r.left, r.bottom + 2, items);
+  // 버튼 바로 아래에 펼친다 (위치를 못 재었으면 마우스 자리에)
+  if (anchor) showContextMenu(anchor.x, anchor.y, items, { alignRight: true });
   else showContextMenu(ev ? ev.clientX : 0, ev ? ev.clientY : 0, items);
 }
 
@@ -2632,7 +2639,7 @@ ctxMenu.className = 'ex-menu hidden';
 document.body.appendChild(ctxMenu);
 
 /** items = [[라벨, 실행함수, 'danger'?] | ['-']] */
-function showContextMenu(x, y, items) {
+function showContextMenu(x, y, items, opts) {
   ctxMenu.innerHTML = '';
   for (const item of items) {
     if (item[0] === '-') {
@@ -2650,8 +2657,12 @@ function showContextMenu(x, y, items) {
     });
     ctxMenu.appendChild(b);
   }
-  ctxMenu.classList.remove('hidden');
-  ctxMenu.style.left = `${Math.min(x, window.innerWidth - ctxMenu.offsetWidth - 8)}px`;
+  ctxMenu.classList.remove('hidden'); // 크기를 재려면 먼저 보이게 해야 한다
+  // alignRight 면 x 를 "오른쪽 끝" 으로 보고 왼쪽으로 펼친다.
+  // (헤더 오른쪽 끝 버튼의 드롭다운은 이렇게 해야 버튼에 딱 붙는다)
+  let left = opts && opts.alignRight ? x - ctxMenu.offsetWidth : x;
+  left = Math.max(6, Math.min(left, window.innerWidth - ctxMenu.offsetWidth - 8));
+  ctxMenu.style.left = `${left}px`;
   ctxMenu.style.top = `${Math.min(y, window.innerHeight - ctxMenu.offsetHeight - 8)}px`;
 }
 
