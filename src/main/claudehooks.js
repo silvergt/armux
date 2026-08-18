@@ -4,9 +4,15 @@
  * Claude 상태를 화면 추측이 아니라 "Claude Code 훅"으로 정확히 받아온다.
  *
  * 원격 서버의 ~/.claude/settings.json 에 훅을 심어(비파괴적 병합),
- * Claude 가 작업을 시작/끝내거나 입력을 기다릴 때 제어 터미널(/dev/tty)로
- * 우리만 아는 OSC 시퀀스를 쏘게 한다. 그 시퀀스는 PTY 를 통해 우리 xterm 으로
- * 흘러 들어오고, 앱이 그것을 받아 스피너/느낌표 상태를 정확히 정한다.
+ * Claude 가 작업을 시작/끝내거나 입력을 기다릴 때 터미널로 우리만 아는 OSC
+ * 시퀀스를 쏘게 한다. 그 시퀀스는 PTY 를 통해 우리 xterm 으로 흘러 들어오고,
+ * 앱이 그것을 받아 스피너/느낌표 상태를 정확히 정한다.
+ *
+ * 중요: Claude Code 는 훅을 "제어 터미널이 없는" 자식 프로세스로 실행한다.
+ * (stdin=소켓, stdout=파이프, `tty` → not a tty) 그래서 예전처럼 /dev/tty 로
+ * 쓰면 조용히 실패해서 아이콘이 전혀 바뀌지 않았다. 대신 조상 프로세스를 거슬러
+ * 올라가 Claude 본체의 터미널 장치(/dev/pts/N 등)를 찾아 그리로 직접 쓴다.
+ * 그 로직은 원격에 설치하는 ~/.armux/notify.sh 안에 들어 있다.
  *
  * - UserPromptSubmit → busy  (작업 시작)
  * - Stop             → idle  (응답 완료)
@@ -22,25 +28,83 @@ const ssh = require('./ssh');
 const MARKER = 'armux-status'; // 우리 훅을 식별하는 표시
 const OSC = 6789; // 우리 전용 OSC 번호
 
-/** 원격에서 실행할 병합 스크립트 (node 소스). settings.json 을 안전하게 병합한다. */
+const NOTIFY_PATH = '$HOME/.armux/notify.sh'; // 원격에 설치할 알림 스크립트
+
+/**
+ * 원격에 설치할 알림 스크립트(POSIX sh).
+ *
+ * 훅 프로세스에는 제어 터미널이 없어 /dev/tty 가 열리지 않는다. 그래서 부모부터
+ * 조상 쪽으로 거슬러 올라가며 실제 터미널 장치를 찾아 그리로 OSC 를 쓴다.
+ *   - 리눅스: /proc/<pid>/fd/1 이 가리키는 /dev/pts/N
+ *   - 그 외(맥 등): ps -o tty= 결과를 /dev/... 경로로 바꿔 쓴다 (맥은 s012 → /dev/ttys012)
+ * tmux 안이면 tmux 가 모르는 OSC 를 삼키므로 passthrough(ESC Ptmux; …)로 감싼다.
+ */
+function notifyScript() {
+  return `#!/bin/sh
+# Armux 상태 알림 — Claude Code 훅이 호출한다. (자동 생성 파일)
+S="$1"
+[ -n "$S" ] || exit 0
+
+find_tty() {
+  P="$PPID"
+  i=0
+  while [ -n "$P" ] && [ "$i" -lt 8 ]; do
+    if [ -r "/proc/$P/fd/1" ] || [ -e "/proc/$P/fd/1" ]; then
+      D=$(readlink "/proc/$P/fd/1" 2>/dev/null)
+      case "$D" in
+        /dev/pts/*|/dev/tty*) echo "$D"; return 0 ;;
+      esac
+    fi
+    T=$(ps -o tty= -p "$P" 2>/dev/null | tr -d ' ')
+    case "$T" in
+      ''|'?'|'??')      ;;
+      /dev/*)   echo "$T";        return 0 ;;
+      pts/*)    echo "/dev/$T";   return 0 ;;
+      tty*)     echo "/dev/$T";   return 0 ;;
+      s[0-9]*)  echo "/dev/tty$T"; return 0 ;;
+    esac
+    P=$(ps -o ppid= -p "$P" 2>/dev/null | tr -d ' ')
+    i=$((i + 1))
+  done
+  return 1
+}
+
+T=$(find_tty 2>/dev/null) || T=""
+[ -n "$T" ] && [ -w "$T" ] || T=/dev/tty
+
+if [ -n "$TMUX" ]; then
+  # tmux 3.3+ 는 passthrough 가 기본 off 라 켜 준다("all" 이면 안 보이는 창에서도 통과)
+  tmux set -p allow-passthrough all >/dev/null 2>&1 ||
+    tmux set -p allow-passthrough on >/dev/null 2>&1
+  # 래핑 안에서는 ESC 를 두 번 써야 tmux 가 한 번 벗겨서 바깥으로 내보낸다
+  printf '\\033Ptmux;\\033\\033]${OSC};${MARKER};%s\\007\\033\\\\' "$S" > "$T" 2>/dev/null
+else
+  printf '\\033]${OSC};${MARKER};%s\\007' "$S" > "$T" 2>/dev/null
+fi
+exit 0
+`;
+}
+
+/** 원격에서 실행할 설치 스크립트 (node 소스). 알림 스크립트를 쓰고 settings.json 을 병합한다. */
 function buildMergeScript() {
-  // 훅 명령: /dev/tty 로 OSC 를 쏜다. printf 의 8진 이스케이프 사용.
-  //
-  // tmux 안에서 실행되면 tmux 가 모르는 OSC 를 그냥 삼켜 버려 바깥(우리 xterm)에
-  // 도달하지 못한다. 그래서 tmux 일 때는 passthrough 래핑(ESC Ptmux; … ESC \)으로
-  // 감싸서 바깥 터미널로 직접 내보낸다. tmux 3.3+ 은 allow-passthrough 가 기본
-  // off 라 켜 준다("all" 이면 안 보이는 창에서도 통과 — 백그라운드 Claude 알림용).
-  // 래핑 안에서는 ESC 를 두 번(\\033\\033) 써야 tmux 가 한 번 벗겨 준다.
-  const cmd = (state) =>
-    `if [ -n "$TMUX" ]; then ` +
-    `tmux set -p allow-passthrough all >/dev/null 2>&1 || tmux set -p allow-passthrough on >/dev/null 2>&1; ` +
-    `printf '\\033Ptmux;\\033\\033]${OSC};${MARKER};${state}\\007\\033\\\\' >/dev/tty 2>/dev/null; ` +
-    `else printf '\\033]${OSC};${MARKER};${state}\\007' >/dev/tty 2>/dev/null; fi; exit 0`;
+  // 훅은 알림 스크립트만 부른다(설정 파일을 짧고 읽기 쉽게 유지).
+  const cmd = (state) => `sh ${NOTIFY_PATH} ${state}`;
 
   return `
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+// 1) 알림 스크립트 설치
+const adir = path.join(os.homedir(), '.armux');
+fs.mkdirSync(adir, { recursive: true });
+const notify = path.join(adir, 'notify.sh');
+fs.writeFileSync(notify, Buffer.from(${JSON.stringify(
+    Buffer.from(notifyScript(), 'utf8').toString('base64')
+  )}, 'base64').toString('utf8'));
+try { fs.chmodSync(notify, 0o755); } catch (e) {}
+
+// 2) settings.json 에 훅 병합
 const dir = path.join(os.homedir(), '.claude');
 fs.mkdirSync(dir, { recursive: true });
 const file = path.join(dir, 'settings.json');
@@ -64,8 +128,11 @@ const entries = {
 };
 for (const ev of Object.keys(entries)) {
   const list = Array.isArray(s.hooks[ev]) ? s.hooks[ev] : [];
-  // 우리가 예전에 넣은 것만 제거(사용자 훅은 보존)
-  const kept = list.filter((g) => JSON.stringify(g).indexOf(MARK) === -1);
+  // 우리가 예전에 넣은 것만 제거(사용자 훅은 보존). 옛 버전은 /dev/tty 를 직접 썼다.
+  const kept = list.filter((g) => {
+    const t = JSON.stringify(g);
+    return t.indexOf(MARK) === -1 && t.indexOf('armux/notify.sh') === -1;
+  });
   kept.push({ matcher: '', hooks: [{ type: 'command', command: entries[ev] }] });
   s.hooks[ev] = kept;
 }
@@ -113,9 +180,13 @@ let s={}; try{ s=JSON.parse(fs.readFileSync(file,'utf8')); }catch(e){ process.ex
 if(!s.hooks){ process.exit(0); }
 const MARK=${JSON.stringify(MARKER)};
 for(const ev of Object.keys(s.hooks)){
-  if(Array.isArray(s.hooks[ev])) s.hooks[ev]=s.hooks[ev].filter(g=>JSON.stringify(g).indexOf(MARK)===-1);
+  if(Array.isArray(s.hooks[ev])) s.hooks[ev]=s.hooks[ev].filter(g=>{
+    const t=JSON.stringify(g);
+    return t.indexOf(MARK)===-1 && t.indexOf('armux/notify.sh')===-1;
+  });
   if(!s.hooks[ev].length) delete s.hooks[ev];
 }
+try{ fs.unlinkSync(path.join(os.homedir(),'.armux','notify.sh')); }catch(e){}
 fs.writeFileSync(file, JSON.stringify(s,null,2));
 console.log('ARMUX_HOOKS:removed');
 `.trim();
