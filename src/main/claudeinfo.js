@@ -36,8 +36,11 @@ function normalize(raw) {
   const account = profile.account || {};
   const org = profile.organization || {};
   const usage = raw.usage || {};
-  // 사용량 엔드포인트는 호출이 잦으면 429 를 준다. 그때는 값을 지우지 말고 알려만 준다.
-  const rateLimited = Boolean(usage && usage.error) || !raw.usage;
+  // 사용량 엔드포인트는 호출이 잦으면 429(rate_limit_error)를 준다.
+  // "제한에 걸림" 과 "그 밖의 이유로 못 받아옴" 은 대처가 다르므로 구분해서 알린다.
+  const errType = usage && usage.error ? String(usage.error.type || '') : '';
+  const rateLimited = errType.includes('rate_limit');
+  const usageFailed = Boolean(usage && usage.error) || !raw.usage;
 
   const pick = (bucket) =>
     bucket && typeof bucket.utilization === 'number'
@@ -52,6 +55,8 @@ function normalize(raw) {
   return {
     loggedIn: true,
     rateLimited,
+    usageFailed,
+    usageError: usage && usage.error ? usage.error.message || '' : '',
     email: account.email || raw.email || '',
     name: account.display_name || account.full_name || '',
     plan,

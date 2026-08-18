@@ -1779,9 +1779,23 @@ function rebuildLayout(tab, group, node, schedule) {
  * 조회는 그 서버에서 실행되고(토큰은 서버 밖으로 나가지 않는다) 결과만 받아온다.
  */
 
-const CLAUDE_POLL_MS = 60000; // 60초마다 갱신
-const CLAUDE_BACKOFF_MS = 180000; // 호출 제한(429)에 걸리면 3분 쉬었다 다시
+/*
+ * 사용량 조회 주기.
+ * 사용량 창은 5시간·7일 단위라 분 단위로 새로 받아 봐야 값이 거의 그대로다.
+ * 반면 Anthropic 사용량 API 는 호출이 잦으면 rate_limit 을 돌려주므로,
+ * 예전의 60초 폴링은 스스로 제한을 만들어 내고 있었다. 10분으로 늦춘다.
+ */
+const CLAUDE_POLL_MS = 600000; // 10분마다 갱신
+const CLAUDE_BACKOFF_MIN_MS = 600000; // 제한에 걸리면 최소 10분 대기
+const CLAUDE_BACKOFF_MAX_MS = 3600000; // 계속 걸리면 최대 1시간까지 늘린다
+const CLAUDE_FORCE_FLOOR_MS = 15000; // 새로고침을 눌러도 15초 안에는 다시 안 부른다
 let claudePollTimer = null;
+/*
+ * 제한은 "계정" 단위로 걸리므로 그룹마다 따로 세면 소용이 없다.
+ * (탭을 여러 개 열면 각 그룹이 번갈아 호출해 제한을 계속 갱신한다)
+ * 그래서 대기 시각과 마지막 호출 시각은 앱 전체에서 하나로 공유한다.
+ */
+const claudeGate = { backoffUntil: 0, backoffMs: 0, lastCallAt: 0 };
 
 /** 그룹의 살아 있는 세션 하나를 고른다 (조회용 exec 채널을 열 연결) */
 function anyReadySession(group) {
@@ -1797,11 +1811,15 @@ async function refreshClaudeInfo(group, force) {
   if (!group) return;
   const sessionId = anyReadySession(group);
   if (!sessionId) return;
-  if (group.claudeBackoffUntil && Date.now() < group.claudeBackoffUntil && !force) return;
-  if (!force && group.claudeFetchedAt && Date.now() - group.claudeFetchedAt < CLAUDE_POLL_MS) return;
+  const now = Date.now();
+  // 제한 대기 중에는 새로고침(force)이라도 부르지 않는다. 부르면 제한만 계속 갱신된다.
+  if (claudeGate.backoffUntil && now < claudeGate.backoffUntil) return;
+  if (now - claudeGate.lastCallAt < CLAUDE_FORCE_FLOOR_MS) return; // 연타/동시 접속 방지
+  if (!force && group.claudeFetchedAt && now - group.claudeFetchedAt < CLAUDE_POLL_MS) return;
   if (group.claudeFetching) return;
 
   group.claudeFetching = true;
+  claudeGate.lastCallAt = now;
   try {
     const info = await api.claude.info(sessionId);
     // 사용량 조회가 한 번 실패해도 화면이 깜빡이지 않도록 직전 값을 유지한다
@@ -1810,14 +1828,28 @@ async function refreshClaudeInfo(group, force) {
       info.session = prev.session;
       info.week = prev.week;
       info.stale = true;
+      info.staleAt = prev.staleAt || group.claudeFetchedAt || Date.now();
     }
-    if (info && info.rateLimited) group.claudeBackoffUntil = Date.now() + CLAUDE_BACKOFF_MS;
-    else group.claudeBackoffUntil = 0;
+    // 제한에 걸리면 대기 시간을 두 배씩 늘린다(10분 → 20 → 40 → 최대 1시간).
+    // 성공하면 원래대로 되돌린다.
+    if (info && info.rateLimited) {
+      claudeGate.backoffMs = Math.min(
+        CLAUDE_BACKOFF_MAX_MS,
+        claudeGate.backoffMs ? claudeGate.backoffMs * 2 : CLAUDE_BACKOFF_MIN_MS
+      );
+      claudeGate.backoffUntil = Date.now() + claudeGate.backoffMs;
+    } else if (info && info.usageFailed) {
+      claudeGate.backoffUntil = Date.now() + CLAUDE_BACKOFF_MIN_MS; // 다른 실패도 잠시 쉰다
+    } else {
+      claudeGate.backoffMs = 0;
+      claudeGate.backoffUntil = 0;
+    }
     group.claudeInfo = info;
     group.claudeFetchedAt = Date.now();
     if (activeGroup() === group) renderClaudeStatus();
   } catch (e) {
-    group.claudeInfo = { loggedIn: false };
+    // 조회 자체가 실패해도 이미 받아 둔 계정 정보는 지우지 않는다
+    if (!group.claudeInfo) group.claudeInfo = { loggedIn: false };
   } finally {
     group.claudeFetching = false;
   }
@@ -1906,10 +1938,22 @@ function renderClaudeStatus() {
   } else {
     const note = document.createElement('span');
     note.className = 'usage-label';
-    note.textContent = info.rateLimited ? '사용량 조회 잠시 제한됨' : '사용량 조회 불가';
-    note.title = info.rateLimited
-      ? 'Anthropic 사용량 API 호출 제한에 걸렸습니다. 잠시 뒤 자동으로 다시 시도합니다.'
-      : '';
+    // 언제 다시 시도하는지까지 보여 준다("잠시" 만으로는 기다려야 할지 알 수 없다)
+    const waitMin = claudeGate.backoffUntil
+      ? Math.max(1, Math.ceil((claudeGate.backoffUntil - Date.now()) / 60000))
+      : 0;
+    if (info.rateLimited) {
+      note.textContent = waitMin ? `사용량 조회 제한 (${waitMin}분 뒤 재시도)` : '사용량 조회 제한됨';
+      note.title =
+        'Anthropic 사용량 API 가 호출 제한을 걸었습니다.\n' +
+        '계정 사용량이 아니라 조회 API 만 막힌 것이라 Claude 사용에는 영향이 없습니다.\n' +
+        '대기가 끝나면 자동으로 다시 받아옵니다.';
+    } else {
+      note.textContent = '사용량 조회 불가';
+      note.title = info.usageError
+        ? `사용량을 받아오지 못했습니다: ${info.usageError}`
+        : '사용량을 받아오지 못했습니다. 서버에서 api.anthropic.com 에 접속되는지 확인해 보세요.';
+    }
     box.appendChild(note);
   }
 }

@@ -461,7 +461,135 @@ ipcMain.handle('sftp:runNotebook', async (e, { sessionId, path: p, timeout }) =>
   return String(stdout);
 });
 
-/* --------------------------------- IPC: 메모장 -------------------------------- *//* --------------------------------- IPC: 메모장 -------------------------------- */
+/** 전송 진행률을 렌더러로 (100ms 간격으로만) */
+function progressReporter(id) {
+  let last = 0;
+  return (name, transferred, total) => {
+    const now = Date.now();
+    if (now - last < 100 && transferred !== total) return;
+    last = now;
+    send('sftp:progress', { id, name, transferred, total });
+  };
+}
+
+/** 원격 → 로컬. localPath 를 안 주면 저장 위치를 물어본다. */
+ipcMain.handle('sftp:download', async (e, { id, remote, name, isDir, localPath }) => {
+  let target = localPath;
+  if (!target) {
+    if (isDir) {
+      const res = await dialog.showOpenDialog(mainWindow, {
+        title: '폴더를 내려받을 위치 선택',
+        properties: ['openDirectory', 'createDirectory']
+      });
+      if (res.canceled || !res.filePaths.length) return null;
+      target = path.join(res.filePaths[0], name);
+    } else {
+      const res = await dialog.showSaveDialog(mainWindow, {
+        title: '다른 이름으로 저장',
+        defaultPath: path.join(app.getPath('downloads'), name)
+      });
+      if (res.canceled || !res.filePath) return null;
+      target = res.filePath;
+    }
+  }
+  await sftp.download(id, remote, target, progressReporter(id));
+  return target;
+});
+
+/** 로컬 → 원격 업로드 */
+ipcMain.handle('sftp:upload', async (e, { id, localPaths, remoteDir }) => {
+  const done = [];
+  for (const local of localPaths) {
+    const base = path.basename(local);
+    await sftp.upload(id, local, sftp.joinRemote(remoteDir, base), progressReporter(id));
+    done.push(base);
+  }
+  return done;
+});
+
+/** 로컬에서 업로드할 파일 고르기 */
+ipcMain.handle('sftp:pickUpload', async (e, { directory }) => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: directory ? '업로드할 폴더 선택' : '업로드할 파일 선택',
+    properties: directory ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections']
+  });
+  if (res.canceled) return [];
+  return res.filePaths;
+});
+
+/**
+ * 탐색기에서 바탕화면 등으로 파일을 끌어다 놓기 위한 처리.
+ * 원격 파일을 임시 폴더로 내려받은 뒤 OS 드래그를 시작한다.
+ */
+ipcMain.handle('sftp:dragOut', async (e, { id, remote, name }) => {
+  const dir = path.join(app.getPath('temp'), 'armux-drag', String(Date.now()));
+  const local = path.join(dir, name);
+  await sftp.download(id, remote, local, progressReporter(id));
+  try {
+    e.sender.startDrag({ file: local, icon: dragIcon() });
+  } catch (err) {
+    return { path: local, dragStarted: false };
+  }
+  return { path: local, dragStarted: true };
+});
+
+/** startDrag 는 아이콘이 필수라 1x1 투명 이미지를 만들어 쓴다 */
+let cachedDragIcon = null;
+function dragIcon() {
+  if (!cachedDragIcon) {
+    const iconPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
+    const img = nativeImage.createFromPath(iconPath);
+    cachedDragIcon = img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 64, height: 64 });
+  }
+  return cachedDragIcon;
+}
+
+/* --------------------------- IPC: 앱 정보 / 업데이트 --------------------------- */
+
+/** 빌드 시점 정보 (scripts/write-buildinfo.js 가 만든다) */
+function buildInfo() {
+  try {
+    return require('../buildinfo.json');
+  } catch (err) {
+    return { version: app.getVersion(), builtAt: null, commit: '' };
+  }
+}
+
+ipcMain.handle('app:info', () => {
+  const info = buildInfo();
+  return {
+    name: 'Armux Terminal',
+    version: info.version || app.getVersion(),
+    builtAt: info.builtAt,
+    commit: info.commit || '',
+    developer: 'Jun Yeol Yang',
+    repoUrl: `https://github.com/${updater.REPO.owner}/${updater.REPO.repo}`,
+    releasesUrl: updater.RELEASES_URL,
+    electron: process.versions.electron,
+    node: process.versions.node,
+    packaged: app.isPackaged
+  };
+});
+
+ipcMain.handle('update:check', () => updater.check());
+ipcMain.handle('update:download', () => updater.download());
+ipcMain.handle('update:install', () => updater.install());
+ipcMain.handle('update:state', () => updater.getState());
+ipcMain.on('update:openReleases', () => updater.openReleases());
+ipcMain.on('app:openExternal', (e, url) => {
+  if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);
+});
+
+/* -------------------------------- IPC: 창 제어 -------------------------------- */
+
+ipcMain.on('win:toggleFullScreen', () => {
+  if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen());
+});
+ipcMain.on('win:toggleDevTools', () => {
+  if (mainWindow) mainWindow.webContents.toggleDevTools();
+});
+
+/* --------------------------------- IPC: 메모장 -------------------------------- */
 
 ipcMain.handle('notes:list', () => notes.list());
 ipcMain.handle('notes:read', (e, { name }) => notes.read(name));
