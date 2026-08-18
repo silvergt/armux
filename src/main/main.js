@@ -88,6 +88,16 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // 판 안 브라우저(webview)의 새 창(target=_blank)은 그 판의 "새 탭" 으로.
+  // 최신 Electron 은 webview 의 new-window 이벤트를 없앴기 때문에,
+  // 여기서 게스트 webContents 에 핸들러를 달아 렌더러로 알려 줘야 한다.
+  mainWindow.webContents.on('did-attach-webview', (e2, guest) => {
+    guest.setWindowOpenHandler(({ url }) => {
+      send('web:openInNewTab', { viewId: guest.id, url });
+      return { action: 'deny' };
+    });
+  });
+
   // 렌더러(화면 프로세스)가 죽어도 앱이 통째로 꺼지지 않게 자동 복구한다.
   // 새로고침하면 지난 세션 복원 기능이 탭 구성을 되살린다.
   // 1분에 4번 이상 반복해서 죽으면 루프 방지를 위해 안내만 하고 멈춘다.

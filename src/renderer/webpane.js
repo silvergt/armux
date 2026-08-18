@@ -1,14 +1,15 @@
 'use strict';
 
 /**
- * 판(페인) 안에 뜨는 웹 브라우저.
+ * 판(페인) 안에 뜨는 웹 브라우저 — 크롬처럼 탭을 여러 개 가진다.
  *
- * 주소창 · 뒤로/앞으로 · 새로고침을 갖춘 단순한 브라우저다.
- * 주소창에는 이 PC 크롬의 방문 기록을 읽어와 자동완성 후보를 띄운다(읽기 전용).
+ * 구조(위에서 아래로): [탭 바] [주소창 툴바] [내용(webview 들 / 시작 화면 / 오류 화면)]
+ *  - 탭마다 webview 를 하나씩 만들고, 활성 탭의 것만 보여 준다.
+ *  - 링크의 새 창(target=_blank)은 크롬처럼 새 탭으로 연다.
+ *  - 주소가 없는 탭은 시작 화면(주소 입력 + 즐겨찾기)을 보여 준다.
  *
  * 크롬의 로그인 세션(쿠키)까지 가져올 수는 없다. 크롬이 프로필을 암호화해
- * 잠가 두기 때문이다. 그래서 로그인은 이 창에서 따로 하거나,
- * 주소창 오른쪽의 "크롬에서 열기" 로 진짜 크롬에 넘겨서 열면 된다.
+ * 잠가 두기 때문이다. 로그인은 이 창에서 따로 하거나 "크롬에서 열기" 를 쓴다.
  */
 
 window.WebPane = (function () {
@@ -24,14 +25,70 @@ window.WebPane = (function () {
     return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
   }
 
+  let nextTabId = 1;
+
+  // webview 의 webContents id → 그 탭을 소유한 판의 newTab().
+  // 본 프로세스가 "새 창 요청" 을 보내면 여기서 알맞은 판을 찾아 새 탭으로 연다.
+  const wcRegistry = new Map();
+  if (api.web.onOpenInNewTab) {
+    api.web.onOpenInNewTab(({ viewId, url }) => {
+      const open = wcRegistry.get(viewId);
+      if (open) open(url);
+    });
+  }
+
   /**
-   * @param {object} opts { url, onTitle(title), onUrl(url) }
+   * @param {object} opts { url, urls, active, onTitle(title), onUrl(url) }
    */
   function create(opts) {
-    const state = { url: opts.url || null, title: '', faved: false };
+    const state = { tabs: [], active: -1 };
 
     const root = document.createElement('div');
     root.className = 'webpane';
+
+    /* --------------------------------- 탭 바 --------------------------------- */
+
+    const tabbar = document.createElement('div');
+    tabbar.className = 'wt-bar';
+    const tabsEl = document.createElement('div');
+    tabsEl.className = 'wt-tabs';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'wt-add';
+    addBtn.textContent = '+';
+    addBtn.title = '새 탭';
+    addBtn.addEventListener('click', () => newTab(null));
+    tabbar.append(tabsEl, addBtn);
+
+    const cur = () => state.tabs[state.active] || null;
+
+    function renderTabs() {
+      tabsEl.innerHTML = '';
+      state.tabs.forEach((t, i) => {
+        const el = document.createElement('div');
+        el.className = 'wt-tab' + (i === state.active ? ' active' : '');
+        const label = document.createElement('span');
+        label.className = 'wt-label';
+        label.textContent = t.title || (t.url ? t.url.replace(/^https?:\/\//, '') : '새 탭');
+        el.title = t.url || '새 탭';
+        const close = document.createElement('span');
+        close.className = 'wt-close';
+        close.textContent = '✕';
+        close.title = '탭 닫기';
+        close.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeTab(i);
+        });
+        el.append(label, close);
+        el.addEventListener('mousedown', (e) => {
+          if (e.button === 1) return; // 휠 클릭은 아래 auxclick 에서 닫기로
+          activateTab(i);
+        });
+        el.addEventListener('auxclick', (e) => {
+          if (e.button === 1) closeTab(i); // 휠 클릭으로 닫기 (크롬과 동일)
+        });
+        tabsEl.appendChild(el);
+      });
+    }
 
     /* --------------------------------- 툴바 --------------------------------- */
 
@@ -47,33 +104,45 @@ window.WebPane = (function () {
       return b;
     };
 
-    const backBtn = mk('←', '뒤로', () => view.canGoBack() && view.goBack());
-    const fwdBtn = mk('→', '앞으로', () => view.canGoForward() && view.goForward());
-    const reloadBtn = mk('⟳', '새로고침', () => view.reload());
+    const backBtn = mk('←', '뒤로', () => {
+      const t = cur();
+      if (t && t.view.canGoBack()) t.view.goBack();
+    });
+    const fwdBtn = mk('→', '앞으로', () => {
+      const t = cur();
+      if (t && t.view.canGoForward()) t.view.goForward();
+    });
+    const reloadBtn = mk('⟳', '새로고침', () => {
+      const t = cur();
+      if (t) t.view.reload();
+    });
     const homeBtn = mk('⌂ 홈', '시작 화면(주소 입력 + 즐겨찾기)', () => showStart());
 
     // 즐겨찾기 토글. 지금 페이지가 목록에 있으면 꽉 찬 별(★), 없으면 빈 별(☆).
     const favBtn = mk('☆', '이 페이지를 즐겨찾기에 추가', async () => {
-      if (!state.url) return;
-      if (state.faved) await api.web.favRemove(state.url);
-      else await api.web.favAdd({ name: state.title || state.url, url: state.url });
+      const t = cur();
+      if (!t || !t.url) return;
+      if (t.faved) await api.web.favRemove(t.url);
+      else await api.web.favAdd({ name: t.title || t.url, url: t.url });
       await syncFav();
       renderFavs(); // 시작 화면 목록도 같이 갱신
     });
 
     /** 지금 주소가 즐겨찾기에 들어 있는지 확인해 별 모양을 맞춘다 */
     async function syncFav() {
+      const t = cur();
       let list = [];
       try {
         list = (await api.web.favList()) || [];
       } catch (e) {
         list = [];
       }
-      state.faved = Boolean(state.url && list.some((f) => f.url === state.url));
-      favBtn.textContent = state.faved ? '★' : '☆';
-      favBtn.title = state.faved ? '즐겨찾기에서 빼기' : '이 페이지를 즐겨찾기에 추가';
-      favBtn.classList.toggle('on', state.faved);
-      favBtn.disabled = !state.url;
+      const faved = Boolean(t && t.url && list.some((f) => f.url === t.url));
+      if (t) t.faved = faved;
+      favBtn.textContent = faved ? '★' : '☆';
+      favBtn.title = faved ? '즐겨찾기에서 빼기' : '이 페이지를 즐겨찾기에 추가';
+      favBtn.classList.toggle('on', faved);
+      favBtn.disabled = !(t && t.url);
     }
 
     const urlWrap = document.createElement('div');
@@ -171,7 +240,7 @@ window.WebPane = (function () {
       }
       if (e.key === 'Escape') {
         if (open) hideSuggest();
-        else urlInput.value = state.url;
+        else urlInput.value = (cur() && cur().url) || '';
       }
     });
     urlInput.addEventListener('focus', () => urlInput.select());
@@ -179,24 +248,20 @@ window.WebPane = (function () {
 
     urlWrap.append(urlInput, sugg);
 
-    const chromeBtn = mk('크롬에서 열기', '이 PC 의 기본 브라우저(크롬)로 열기 — 크롬 로그인/설정 그대로', () =>
-      api.web.openExternal(state.url)
-    );
+    const chromeBtn = mk('크롬에서 열기', '이 PC 의 기본 브라우저(크롬)로 열기 — 크롬 로그인/설정 그대로', () => {
+      const t = cur();
+      if (t && t.url) api.web.openExternal(t.url);
+    });
     chromeBtn.classList.add('web-btn-wide');
 
     bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, favBtn, urlWrap, chromeBtn);
 
-    /* -------------------------------- 웹 화면 -------------------------------- */
+    /* -------------------------------- 내용 영역 -------------------------------- */
 
-    const view = document.createElement('webview');
-    view.className = 'web-view';
-    view.setAttribute('src', 'about:blank');
-    view.setAttribute('allowpopups', '');
-    // 로그인 세션이 유지되도록 영구 파티션을 쓴다
-    view.setAttribute('partition', 'persist:armux-web');
-    view.setAttribute('useragent', api.web.userAgent());
+    const content = document.createElement('div');
+    content.className = 'web-content';
 
-    // 시작 화면(주소 입력 + 즐겨찾기). URL 이 아직 없을 때 보인다.
+    // 시작 화면(주소 입력 + 즐겨찾기). 주소가 없는 탭에서 보인다.
     const start = document.createElement('div');
     start.className = 'web-start';
     const startInner = document.createElement('div');
@@ -221,7 +286,12 @@ window.WebPane = (function () {
     start.appendChild(startInner);
 
     async function renderFavs() {
-      const favs = await api.web.favList();
+      let favs = [];
+      try {
+        favs = (await api.web.favList()) || [];
+      } catch (e) {
+        favs = [];
+      }
       favGrid.innerHTML = '';
       if (!favs.length) {
         const hint = document.createElement('div');
@@ -247,6 +317,7 @@ window.WebPane = (function () {
           e.stopPropagation();
           await api.web.favRemove(f.url);
           renderFavs();
+          syncFav();
         });
         card.append(name, url, del);
         card.addEventListener('click', () => go(f.url));
@@ -267,11 +338,17 @@ window.WebPane = (function () {
     const retryBtn = document.createElement('button');
     retryBtn.className = 'web-btn';
     retryBtn.textContent = '다시 시도';
-    retryBtn.addEventListener('click', () => state.url && go(state.url));
+    retryBtn.addEventListener('click', () => {
+      const t = cur();
+      if (t && t.url) go(t.url);
+    });
     const extBtn = document.createElement('button');
     extBtn.className = 'web-btn';
     extBtn.textContent = '크롬에서 열기';
-    extBtn.addEventListener('click', () => state.url && api.web.openExternal(state.url));
+    extBtn.addEventListener('click', () => {
+      const t = cur();
+      if (t && t.url) api.web.openExternal(t.url);
+    });
     errActions.append(retryBtn, extBtn);
     errBox.append(errTitle, errMsg, errActions);
 
@@ -285,109 +362,223 @@ window.WebPane = (function () {
     const status = document.createElement('div');
     status.className = 'web-status';
 
-    root.append(bar, start, view, errBox, status);
+    content.append(start, errBox);
+    root.append(tabbar, bar, content, status);
 
-    function showStart() {
-      hideError();
-      start.classList.remove('hidden');
-      view.classList.add('hidden');
-      urlInput.value = '';
-      syncFav();
-      renderFavs();
-      startInput.focus();
+    /* --------------------------------- 탭 관리 -------------------------------- */
+
+    function newTab(url, background) {
+      const t = { id: nextTabId++, url: url || null, title: '', faved: false, view: null };
+
+      const view = document.createElement('webview');
+      view.className = 'web-view hidden';
+      view.setAttribute('src', url || 'about:blank');
+      view.setAttribute('allowpopups', '');
+      // 로그인 세션이 유지되도록 영구 파티션을 쓴다 (모든 탭이 공유 — 크롬과 동일)
+      view.setAttribute('partition', 'persist:armux-web');
+      view.setAttribute('useragent', api.web.userAgent());
+      t.view = view;
+
+      view.addEventListener('did-start-loading', () => {
+        if (t === cur()) {
+          hideError();
+          status.textContent = '불러오는 중…';
+          reloadBtn.textContent = '✕';
+          reloadBtn.title = '중지';
+        }
+      });
+      view.addEventListener('did-stop-loading', () => {
+        if (t === cur()) {
+          status.textContent = '';
+          reloadBtn.textContent = '⟳';
+          reloadBtn.title = '새로고침';
+          syncNav();
+        }
+      });
+      view.addEventListener('did-navigate', (e) => {
+        if (e.url === 'about:blank') return; // 빈 탭의 초기 로드는 주소로 치지 않는다
+        t.url = e.url;
+        if (t === cur()) {
+          hideError();
+          urlInput.value = e.url;
+          syncNav();
+          syncFav();
+          refresh();
+          if (opts.onUrl) opts.onUrl(e.url);
+        } else {
+          renderTabs();
+        }
+      });
+      view.addEventListener('did-navigate-in-page', (e) => {
+        if (!e.isMainFrame || e.url === 'about:blank') return;
+        t.url = e.url;
+        if (t === cur()) {
+          urlInput.value = e.url;
+          syncFav();
+          if (opts.onUrl) opts.onUrl(e.url);
+        }
+      });
+      view.addEventListener('page-title-updated', (e) => {
+        t.title = e.title;
+        renderTabs();
+        if (t === cur() && opts.onTitle) opts.onTitle(e.title);
+      });
+      view.addEventListener('did-fail-load', (e) => {
+        if (e.errorCode === -3) return; // 사용자가 중단한 경우
+        if (e.isMainFrame === false) return; // 페이지 안의 부속 요청 실패는 무시
+        if (t !== cur()) return;
+        status.textContent = '';
+        const desc = e.errorDescription || `오류 ${e.errorCode}`;
+        // 인증서 계열(-200 대)은 본 프로세스가 확인 창을 띄우므로 그에 맞춰 안내한다
+        const certish = e.errorCode <= -200 && e.errorCode > -300;
+        showError(
+          certish ? '이 사이트의 인증서를 확인할 수 없습니다' : '페이지를 열지 못했습니다',
+          certish
+            ? `${desc}\n확인 창에서 "위험을 감수하고 열기" 를 고르면 이 사이트를 열 수 있습니다.`
+            : `${desc}\n${t.url || ''}`
+        );
+      });
+      // 새 창(target=_blank)은 크롬처럼 새 탭으로 연다.
+      // (최신 Electron 은 new-window 이벤트가 없어 본 프로세스가 신호를 보내 준다)
+      // did-attach 가 환경에 따라 안 오는 경우가 있어 dom-ready 에서도 등록한다.
+      const registerWc = () => {
+        if (t.wcId) return;
+        try {
+          t.wcId = view.getWebContentsId();
+          wcRegistry.set(t.wcId, (url) => newTab(url));
+        } catch (e) {
+          /* 아직 attach 전이면 다음 기회에 */
+        }
+      };
+      view.addEventListener('did-attach', registerWc);
+      view.addEventListener('dom-ready', registerWc);
+
+      content.appendChild(view);
+      state.tabs.push(t);
+      if (!background) activateTab(state.tabs.length - 1);
+      else renderTabs();
+      return t;
     }
-    function showBrowser() {
-      start.classList.add('hidden');
-      view.classList.remove('hidden');
+
+    function activateTab(i) {
+      if (i < 0 || i >= state.tabs.length) return;
+      state.active = i;
+      const t = state.tabs[i];
+      for (const other of state.tabs) other.view.classList.toggle('hidden', other !== t);
+      hideError();
+      // 주소 없는 탭이면 시작 화면
+      start.classList.toggle('hidden', Boolean(t.url));
+      urlInput.value = t.url || '';
+      renderTabs();
+      syncNav();
+      syncFav();
+      if (!t.url) {
+        renderFavs();
+        startInput.value = '';
+        startInput.focus();
+      }
+      if (opts.onTitle) opts.onTitle(t.title || '웹페이지');
+      if (opts.onUrl) opts.onUrl(t.url);
+    }
+
+    function closeTab(i) {
+      const t = state.tabs[i];
+      if (!t) return;
+      if (t.wcId) wcRegistry.delete(t.wcId);
+      try {
+        t.view.remove();
+      } catch (e) {
+        /* noop */
+      }
+      state.tabs.splice(i, 1);
+      if (!state.tabs.length) {
+        // 마지막 탭을 닫으면 빈 탭 하나를 새로 연다 (판 자체는 유지)
+        newTab(null);
+        return;
+      }
+      activateTab(Math.min(i, state.tabs.length - 1));
+    }
+
+    /** 탭바만 다시 그리기 + 세션 저장 신호 */
+    function refresh() {
+      renderTabs();
     }
 
     /* --------------------------------- 동작 --------------------------------- */
 
+    function showStart() {
+      hideError();
+      start.classList.remove('hidden');
+      urlInput.value = '';
+      renderFavs();
+      startInput.value = '';
+      startInput.focus();
+      syncFav();
+    }
+
     function go(input) {
       const url = toUrl(input);
       if (!url) return;
-      state.url = url;
+      let t = cur();
+      if (!t) t = newTab(null);
+      t.url = url;
       urlInput.value = url;
-      showBrowser();
+      start.classList.add('hidden');
+      hideError();
       syncFav();
-      view.loadURL(url).catch(() => {});
+      t.view.loadURL(url).catch(() => {});
+      renderTabs();
     }
 
     function syncNav() {
-      backBtn.disabled = !view.canGoBack();
-      fwdBtn.disabled = !view.canGoForward();
+      const t = cur();
+      backBtn.disabled = !(t && t.view.canGoBack && safeCanGoBack(t.view));
+      fwdBtn.disabled = !(t && t.view.canGoForward && safeCanGoForward(t.view));
     }
+    // webview 가 아직 attach 되기 전에 부르면 예외가 나므로 감싼다
+    const safeCanGoBack = (v) => {
+      try {
+        return v.canGoBack();
+      } catch (e) {
+        return false;
+      }
+    };
+    const safeCanGoForward = (v) => {
+      try {
+        return v.canGoForward();
+      } catch (e) {
+        return false;
+      }
+    };
 
-    view.addEventListener('did-start-loading', () => {
-      hideError();
-      status.textContent = '불러오는 중…';
-      reloadBtn.textContent = '✕';
-      reloadBtn.title = '중지';
-    });
-    view.addEventListener('did-stop-loading', () => {
-      status.textContent = '';
-      reloadBtn.textContent = '⟳';
-      reloadBtn.title = '새로고침';
-      syncNav();
-    });
-    view.addEventListener('did-navigate', (e) => {
-      hideError();
-      state.url = e.url;
-      urlInput.value = e.url;
-      syncNav();
-      syncFav(); // 주소가 바뀌었으니 별 모양을 다시 맞춘다
-      if (opts.onUrl) opts.onUrl(e.url);
-    });
-    view.addEventListener('did-navigate-in-page', (e) => {
-      if (!e.isMainFrame) return;
-      state.url = e.url;
-      urlInput.value = e.url;
-      syncFav();
-      if (opts.onUrl) opts.onUrl(e.url);
-    });
-    view.addEventListener('page-title-updated', (e) => {
-      state.title = e.title;
-      if (opts.onTitle) opts.onTitle(e.title);
-    });
-    view.addEventListener('did-fail-load', (e) => {
-      if (e.errorCode === -3) return; // 사용자가 중단한 경우
-      if (e.isMainFrame === false) return; // 페이지 안의 부속 요청 실패는 무시
-      status.textContent = '';
-      const desc = e.errorDescription || `오류 ${e.errorCode}`;
-      // 인증서 계열(-200 대)은 본 프로세스가 확인 창을 띄우므로 그에 맞춰 안내한다
-      const certish = e.errorCode <= -200 && e.errorCode > -300;
-      showError(
-        certish ? '이 사이트의 인증서를 확인할 수 없습니다' : '페이지를 열지 못했습니다',
-        certish
-          ? `${desc}\n확인 창에서 "위험을 감수하고 열기" 를 고르면 이 사이트를 열 수 있습니다.`
-          : `${desc}\n${state.url || ''}`
-      );
-    });
-    // 새 창(target=_blank)은 같은 판에서 연다
-    view.addEventListener('new-window', (e) => {
-      e.preventDefault();
-      go(e.url);
-    });
+    /* --------------------------------- 초기 탭 -------------------------------- */
 
-    if (state.url) {
-      view.setAttribute('src', state.url);
-      urlInput.value = state.url;
-      showBrowser();
-    } else {
-      showStart();
-    }
+    // 복원(urls) > 단일 url > 빈 탭
+    const initUrls = Array.isArray(opts.urls) && opts.urls.length ? opts.urls : opts.url ? [opts.url] : [null];
+    for (const u of initUrls) newTab(u, true);
+    activateTab(Math.min(Math.max(0, opts.active || 0), state.tabs.length - 1));
 
     return {
       el: root,
       get url() {
-        return state.url;
+        const t = cur();
+        return t ? t.url : null;
       },
       get title() {
-        return state.title;
+        const t = cur();
+        return t ? t.title : '';
+      },
+      /** 세션 저장용: 모든 탭의 주소와 활성 탭 번호 */
+      get tabsInfo() {
+        return { urls: state.tabs.map((t) => t.url), active: state.active };
       },
       go,
+      newTab: (url) => newTab(url),
       focus: () => (start.classList.contains('hidden') ? urlInput.focus() : startInput.focus()),
-      dispose: () => root.remove()
+      dispose: () => {
+        for (const t of state.tabs) if (t.wcId) wcRegistry.delete(t.wcId);
+        root.remove();
+      }
     };
   }
 

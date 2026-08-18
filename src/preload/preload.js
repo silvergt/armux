@@ -72,6 +72,8 @@ contextBridge.exposeInMainWorld('armux', {
     favAdd: (item) => ipcRenderer.invoke('web:favAdd', item),
     favRemove: (url) => ipcRenderer.invoke('web:favRemove', { url }),
     historySuggest: (query) => ipcRenderer.invoke('web:historySuggest', { query }),
+    /** webview 가 새 창을 요청하면(target=_blank) 새 탭으로 열라는 신호 */
+    onOpenInNewTab: (cb) => ipcRenderer.on('web:openInNewTab', (e, p) => cb(p)),
     openExternal: (url) => ipcRenderer.send('web:openExternal', url),
     /** 크롬처럼 보이게 할 User-Agent (Electron 표시를 뺀다) */
     userAgent: () =>

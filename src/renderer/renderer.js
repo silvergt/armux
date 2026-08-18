@@ -514,13 +514,15 @@ function disposeLeaf(leaf) {
  * 판을 터미널 ↔ 웹 브라우저로 전환한다.
  * 터미널은 없애지 않고 감춰 두므로, 돌아오면 SSH 세션이 그대로 살아 있다.
  */
-function setLeafMode(leaf, mode, url) {
+function setLeafMode(leaf, mode, url, webExtra) {
   const body = leaf.el.querySelector('.pane-body');
 
   if (mode === 'web') {
     if (!leaf.web) {
       leaf.web = window.WebPane.create({
         url: url || null, // url 없으면 시작 화면(주소 입력 + 즐겨찾기)
+        urls: webExtra && webExtra.urls, // 세션 복원: 탭 여러 개
+        active: webExtra && webExtra.active,
         onTitle: (title) => {
           leaf.title = title || leaf.title;
           scheduleRender();
@@ -1712,7 +1714,16 @@ function toggleNotes() {
 function serializeNode(node) {
   if (!node) return null;
   if (node.kind === 'leaf') {
-    if (node.mode === 'web') return { kind: 'leaf', mode: 'web', url: node.web ? node.web.url : null };
+    if (node.mode === 'web') {
+      const ti = node.web && node.web.tabsInfo ? node.web.tabsInfo : null;
+      return {
+        kind: 'leaf',
+        mode: 'web',
+        url: node.web ? node.web.url : null, // 예전 버전과의 호환용
+        urls: ti ? ti.urls : undefined, // 웹 탭 전체
+        at: ti ? ti.active : undefined
+      };
+    }
     // 메모·파일 탐색기 판도 다음 실행 때 그대로 되살린다
     if (node.mode === 'notes' || node.mode === 'explorer') return { kind: 'leaf', mode: node.mode };
     return { kind: 'leaf' };
@@ -1833,7 +1844,7 @@ function rebuildLayout(tab, group, node, schedule) {
     const connect = group.connect;
     const leaf = createLeaf(tab, connect || {}, { mode: connect ? 'later' : 'orphan' });
     if (node && node.mode === 'web') {
-      setLeafMode(leaf, 'web', node.url); // 웹 판으로 복원
+      setLeafMode(leaf, 'web', node.url, { urls: node.urls, active: node.at }); // 웹 판(탭 포함) 복원
     } else if (node && (node.mode === 'notes' || node.mode === 'explorer')) {
       // 셸도 함께 살려 두고(터미널로 돌아갈 수 있게) 화면만 메모/파일로 맞춘다
       if (connect) schedule(leaf);
