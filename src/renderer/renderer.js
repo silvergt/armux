@@ -3660,7 +3660,7 @@ async function renderDialogFavorites() {
   if (!favs.length) {
     const hint = document.createElement('div');
     hint.className = 'web-fav-empty';
-    hint.textContent = '아직 즐겨찾기가 없습니다. 웹페이지를 연 뒤 상단 "★ 추가" 로 등록하세요.';
+    hint.textContent = '아직 즐겨찾기가 없습니다. 웹페이지를 연 뒤 주소창 옆 ☆ 을 눌러 등록하세요.';
     dlg.webFavList.appendChild(hint);
     return;
   }

@@ -53,7 +53,7 @@ window.WebPane = (function () {
     const homeBtn = mk('⌂ 홈', '시작 화면(주소 입력 + 즐겨찾기)', () => showStart());
 
     // 즐겨찾기 토글. 지금 페이지가 목록에 있으면 꽉 찬 별(★), 없으면 빈 별(☆).
-    const favBtn = mk('☆ 즐겨찾기', '이 페이지를 즐겨찾기에 추가', async () => {
+    const favBtn = mk('☆', '이 페이지를 즐겨찾기에 추가', async () => {
       if (!state.url) return;
       if (state.faved) await api.web.favRemove(state.url);
       else await api.web.favAdd({ name: state.title || state.url, url: state.url });
@@ -70,7 +70,7 @@ window.WebPane = (function () {
         list = [];
       }
       state.faved = Boolean(state.url && list.some((f) => f.url === state.url));
-      favBtn.textContent = state.faved ? '★ 즐겨찾기' : '☆ 즐겨찾기';
+      favBtn.textContent = state.faved ? '★' : '☆';
       favBtn.title = state.faved ? '즐겨찾기에서 빼기' : '이 페이지를 즐겨찾기에 추가';
       favBtn.classList.toggle('on', state.faved);
       favBtn.disabled = !state.url;
@@ -226,7 +226,7 @@ window.WebPane = (function () {
       if (!favs.length) {
         const hint = document.createElement('div');
         hint.className = 'web-fav-empty';
-        hint.textContent = '아직 즐겨찾기가 없습니다. 페이지를 연 뒤 상단 "★ 추가" 로 등록하세요.';
+        hint.textContent = '아직 즐겨찾기가 없습니다. 페이지를 연 뒤 주소창 옆 ☆ 을 눌러 등록하세요.';
         favGrid.appendChild(hint);
         return;
       }
