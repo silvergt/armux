@@ -202,8 +202,9 @@ function createLeaf(tab, connect, options) {
     spin: null, // 'busy' = Claude 가 생각하는 중
     wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지
     lastOutputAt: 0,
-    mode: 'terminal', // 'terminal' | 'web'
+    mode: 'terminal', // 'terminal' | 'web' | 'file'
     web: null, // 웹 브라우저 화면 (웹으로 전환할 때 만든다)
+    file: null, // 파일 뷰어 (파일을 열 때 만든다)
     connect
   };
 
@@ -463,6 +464,8 @@ function disposeLeaf(leaf) {
   } catch (e) {
     /* noop */
   }
+  if (leaf.file) { try { leaf.file.dispose(); } catch (e) {} leaf.file = null; }
+  if (leaf.web) { try { leaf.web.dispose(); } catch (e) {} leaf.web = null; }
   leaf.el.remove();
 }
 
@@ -492,9 +495,12 @@ function setLeafMode(leaf, mode, url) {
     leaf.mode = 'terminal';
   }
 
-  const termHost = leaf.el.querySelector('.pane-term');
-  if (termHost) termHost.classList.toggle('hidden', leaf.mode === 'web');
-  if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
+  // 웹으로 전환하면 열려 있던 파일 뷰어는 정리
+  if (leaf.mode === 'web' && leaf.file) {
+    leaf.file.dispose();
+    leaf.file = null;
+  }
+  applyPaneBody(leaf);
 
   renderPaneHeader(leaf);
   render();
@@ -702,7 +708,8 @@ function evaluateActivity() {
         // 훅 신호를 한 번이라도 받은 판은 훅 상태를 그대로 따른다(가장 정확).
         // 알림 전환은 OSC 핸들러에서 이미 처리하므로 여기서는 스피너만 반영한다.
         if (leaf.hooksActive) {
-          const kindH = leaf.mode !== 'web' && leaf.status === 'ready' && leaf.hookBusy ? 'busy' : null;
+          const kindH =
+            leaf.mode === 'terminal' && leaf.status === 'ready' && leaf.hookBusy ? 'busy' : null;
           if (leaf.spin !== kindH) {
             leaf.spin = kindH;
             changed = true;
@@ -714,7 +721,7 @@ function evaluateActivity() {
         // (폴백) 훅이 아직 없는 세션: 화면 맨 아래 "작업 중 상태줄" 을 본다.
         // 대화 본문에 "esc to interrupt" 라는 말이 있어도 줄 맨 앞 스피너 글리프가 없어 걸러진다.
         const seen =
-          leaf.mode !== 'web' &&
+          leaf.mode === 'terminal' &&
           leaf.status === 'ready' &&
           bottomNonEmptyLines(leaf, 3).some(isClaudeWorkingLine);
 
@@ -1108,9 +1115,64 @@ function ensureExplorer(group) {
   group.explorer = window.Explorer.create({
     // 재연결 때마다 최신 자격증명을 쓰도록 함수로 넘긴다
     getConnect: () => group.connect || { hostId: group.host.id || null, credId: group.credId },
-    hostLabel: group.host.name
+    hostLabel: group.host.name,
+    getSftpId: () => group.explorer && group.explorer.sftpId,
+    onOpenFile: (entry) => openFileInPane(group, entry)
   });
   return group.explorer;
+}
+
+/**
+ * 탐색기에서 파일을 열 때: 새 서브탭을 만들어 그 안에 파일 뷰어를 띄운다.
+ * (터미널 창은 그대로 두고, 파일은 별도 탭으로 열린다. 닫으면 그 탭이 사라진다.)
+ */
+async function openFileInPane(group, entry) {
+  const ok = await api.util.confirm(
+    `"${entry.name}" 을(를) 새 탭으로 열까요?`,
+    '터미널은 그대로 두고 새 탭에 파일이 열립니다.',
+    '열기'
+  );
+  if (!ok) return;
+
+  const tab = makeTabShell(group);
+  const leaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 파일 전용 판
+  tab.root = leaf;
+  tab.activeLeafId = leaf.id;
+  layoutTab(tab);
+
+  leaf.mode = 'file';
+  leaf.file = window.FileViewer.create({
+    sftpId: () => group.explorer && group.explorer.sftpId,
+    sessionId: () => anyReadySession(group), // 원격 실행(parquet/ipynb)용 셸 세션은 그룹에서 빌려온다
+    path: entry.path,
+    name: entry.name,
+    onClose: () => closeFileTab(group, tab)
+  });
+  leaf.el.querySelector('.pane-body').appendChild(leaf.file.el);
+  applyPaneBody(leaf);
+
+  group.explorerSelected = false; // 전체화면 탐색기였다면 나온다
+  state.notesOpen = false;
+  render();
+  leaf.file.focus();
+}
+
+/** 파일 전용 탭을 닫는다(그 탭 제거) */
+async function closeFileTab(group, tab) {
+  const leaf = firstLeaf(tab.root);
+  if (leaf && leaf.file && leaf.file.isDirty && leaf.file.isDirty()) {
+    const ok = await api.util.confirm('저장하지 않은 변경이 있습니다. 그래도 닫을까요?', '', '닫기');
+    if (!ok) return;
+  }
+  closeTab(group, tab); // 확인 없이 바로 닫음(파일 탭은 셸 세션이 없다)
+}
+
+/** 판 본문에서 터미널/웹/파일 중 무엇을 보일지 반영 */
+function applyPaneBody(leaf) {
+  const termHost = leaf.el.querySelector('.pane-term');
+  if (termHost) termHost.classList.toggle('hidden', leaf.mode !== 'terminal');
+  if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
+  if (leaf.file) leaf.file.el.classList.toggle('hidden', leaf.mode !== 'file');
 }
 
 /** 📁 탭 선택 (고정 상태면 왼쪽 패널에 포커스만 준다) */
@@ -2153,6 +2215,7 @@ function renderPanes() {
         l.el.classList.toggle('focused', isActive);
         // 분할이 하나뿐이면 포커스 테두리를 굳이 그리지 않는다
         l.el.classList.toggle('solo', leavesOf(t.root).length === 1);
+        applyPaneBody(l);
         renderPaneHeader(l);
       }
     }
@@ -2429,7 +2492,7 @@ function startRenameTab(group, tab, node) {
  * 컨테이너 아래로 삐져나가 상태바에 잘린다. 실제 그려진 줄 높이로 다시 확인해 한 줄 줄인다.
  */
 function fitLeaf(leaf) {
-  if (leaf.mode === 'web') return; // 웹 판은 크기 계산이 필요 없다
+  if (leaf.mode === 'web' || leaf.mode === 'file') return; // 웹/파일 판은 크기 계산이 필요 없다
   try {
     leaf.fit.fit();
   } catch (e) {

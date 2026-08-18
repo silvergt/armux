@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('armux', {
     createFile: (id, path) => ipcRenderer.invoke('sftp:createFile', { id, path }),
     rename: (id, from, to) => ipcRenderer.invoke('sftp:rename', { id, from, to }),
     remove: (id, path) => ipcRenderer.invoke('sftp:remove', { id, path }),
+    readFile: (id, path) => ipcRenderer.invoke('sftp:readFile', { id, path }),
+    writeFile: (id, path, base64) => ipcRenderer.invoke('sftp:writeFile', { id, path, base64 }),
+    parquetPreview: (payload) => ipcRenderer.invoke('sftp:parquetPreview', payload),
+    runNotebook: (payload) => ipcRenderer.invoke('sftp:runNotebook', payload),
     download: (payload) => ipcRenderer.invoke('sftp:download', payload),
     upload: (payload) => ipcRenderer.invoke('sftp:upload', payload),
     pickUpload: (directory) => ipcRenderer.invoke('sftp:pickUpload', { directory }),
@@ -106,7 +110,7 @@ contextBridge.exposeInMainWorld('armux', {
     clipboardRead: () => ipcRenderer.invoke('util:clipboardRead'),
     clipboardWrite: (text) => ipcRenderer.send('util:clipboardWrite', text),
     openExternal: (url) => ipcRenderer.send('app:openExternal', url),
-    confirm: (message, detail) => ipcRenderer.invoke('util:confirm', { message, detail }),
+    confirm: (message, detail, okLabel) => ipcRenderer.invoke('util:confirm', { message, detail, okLabel }),
     /** 드롭된 File 객체의 실제 경로 (Electron 32+ 에서는 file.path 가 없어 이 API 를 써야 한다) */
     pathForFile: (file) => {
       try {

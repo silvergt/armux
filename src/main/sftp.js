@@ -218,6 +218,32 @@ async function upload(id, local, remote, onProgress) {
   return remote;
 }
 
+/** 파일 내용을 읽어 base64 로 돌려준다. 너무 큰 파일은 거부(에디터 렉 방지) */
+function readFile(id, p, maxBytes = 20 * 1024 * 1024) {
+  const sftp = get(id);
+  return new Promise((resolve, reject) => {
+    sftp.stat(p, (err, attrs) => {
+      if (err) return reject(err);
+      if (attrs.size > maxBytes) {
+        return reject(new Error(`파일이 너무 큽니다 (${Math.round(attrs.size / 1048576)}MB). 20MB 이하만 열 수 있습니다.`));
+      }
+      sftp.readFile(p, (e2, buf) => {
+        if (e2) return reject(e2);
+        resolve({ base64: buf.toString('base64'), size: buf.length });
+      });
+    });
+  });
+}
+
+/** base64 내용을 파일에 쓴다 */
+function writeFile(id, p, base64) {
+  const sftp = get(id);
+  const buf = Buffer.from(base64 || '', 'base64');
+  return new Promise((resolve, reject) => {
+    sftp.writeFile(p, buf, (err) => (err ? reject(err) : resolve(true)));
+  });
+}
+
 function close(id) {
   const s = sessions.get(id);
   if (!s) return;
@@ -242,6 +268,8 @@ module.exports = {
   createFile,
   rename,
   remove,
+  readFile,
+  writeFile,
   download,
   upload,
   close,

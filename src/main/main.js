@@ -374,6 +374,53 @@ ipcMain.handle('sftp:createFile', (e, { id, path: p }) => sftp.createFile(id, p)
 ipcMain.handle('sftp:rename', (e, { id, from, to }) => sftp.rename(id, from, to));
 ipcMain.handle('sftp:remove', (e, { id, path: p }) => sftp.remove(id, p));
 ipcMain.on('sftp:close', (e, { id }) => sftp.close(id));
+ipcMain.handle('sftp:readFile', (e, { id, path: p }) => sftp.readFile(id, p));
+ipcMain.handle('sftp:writeFile', (e, { id, path: p, base64 }) => sftp.writeFile(id, p, base64));
+
+// 원격 도구로 처리하는 것들 (해당 도구가 서버에 있어야 동작)
+// parquet 미리보기: duckdb 또는 python(pandas) 로 앞부분을 CSV 로 뽑는다
+// 원격 명령을 로그인 셸로 감싼다(venv/conda 등 PATH 확보). base64 로 넘겨 따옴표 문제 회피.
+function wrapLogin(script) {
+  const b64 = Buffer.from(script, 'utf8').toString('base64');
+  return `printf %s ${b64} | base64 -d | bash -l 2>/dev/null || printf %s ${b64} | base64 --decode | bash -l`;
+}
+
+ipcMain.handle('sftp:parquetPreview', async (e, { sessionId, path: p, limit }) => {
+  const n = Number(limit) || 200;
+  const q = p.replace(/'/g, `'\\''`);
+  const script =
+    `command -v duckdb >/dev/null 2>&1 && duckdb -csv -c "SELECT * FROM read_parquet('${q}') LIMIT ${n}" 2>/dev/null` +
+    ` || python3 - <<'PYEOF' 2>/dev/null
+` +
+    `import sys
+try:
+ import pandas as pd
+ df=pd.read_parquet('${q}')
+ print("ARMUX_SHAPE:%d,%d"%(df.shape[0],df.shape[1]))
+ print(df.head(${n}).to_csv(index=False),end="")
+except Exception as ex:
+ print("ARMUX_ERR:"+str(ex))
+PYEOF
+`;
+  const { stdout } = await ssh.exec(sessionId, wrapLogin(script), 30000);
+  return String(stdout);
+});
+
+// ipynb 실행: 서버의 jupyter 로 노트북 전체를 실행하고 결과를 파일에 덮어쓴다
+ipcMain.handle('sftp:runNotebook', async (e, { sessionId, path: p, timeout }) => {
+  const q = p.replace(/'/g, `'\\''`);
+  const to = Number(timeout) || 300;
+  // nbconvert 를 여러 방법으로 시도(설치 형태가 제각각이므로). 없으면 명확히 알린다.
+  const script =
+    `TO=${to}; F='${q}'; ` +
+    `run(){ "$@" --to notebook --execute --inplace --ExecutePreprocessor.timeout=$TO "$F"; }; ` +
+    `if command -v jupyter-nbconvert >/dev/null 2>&1; then run jupyter-nbconvert 2>&1 | tail -6; echo ARMUX_DONE; ` +
+    `elif command -v jupyter >/dev/null 2>&1 && jupyter nbconvert --version >/dev/null 2>&1; then run jupyter nbconvert 2>&1 | tail -6; echo ARMUX_DONE; ` +
+    `elif command -v python3 >/dev/null 2>&1 && python3 -c 'import nbconvert' 2>/dev/null; then run python3 -m nbconvert 2>&1 | tail -6; echo ARMUX_DONE; ` +
+    `else echo ARMUX_NONBCONVERT; fi`;
+  const { stdout } = await ssh.exec(sessionId, wrapLogin(script), (to + 30) * 1000);
+  return String(stdout);
+});
 
 /** 전송 진행률을 렌더러로 (100ms 간격으로만) */
 function progressReporter(id) {
@@ -592,10 +639,10 @@ ipcMain.handle('util:pickKeyFile', async () => {
 
 ipcMain.handle('util:clipboardRead', () => clipboard.readText());
 ipcMain.on('util:clipboardWrite', (e, text) => clipboard.writeText(text));
-ipcMain.handle('util:confirm', async (e, { message, detail }) => {
+ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
   const res = await dialog.showMessageBox(mainWindow, {
     type: 'question',
-    buttons: ['취소', '확인'],
+    buttons: ['취소', okLabel || '확인'],
     defaultId: 1,
     cancelId: 0,
     message,

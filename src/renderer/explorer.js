@@ -420,6 +420,7 @@ window.Explorer = (function () {
       row.addEventListener('click', (e) => selectRow(entry, row, e));
       row.addEventListener('dblclick', () => {
         if (isDir) toggleExpand(entry); // 들어가지 않고 그 자리에서 펼친다
+        else if (typeof opts.onOpenFile === 'function') opts.onOpenFile(entry); // 현재 창에 파일 열기
         else downloadEntries([entry]);
       });
       row.addEventListener('contextmenu', (e) => {
@@ -642,6 +643,7 @@ window.Explorer = (function () {
           items.push(['이 폴더를 최상위로', () => navigate(entry.path)]);
           items.push(['폴더째 내려받기', () => downloadEntries(targets)]);
         } else {
+          if (typeof opts.onOpenFile === 'function') items.push(['현재 창에 열기', () => opts.onOpenFile(entry)]);
           items.push(['내려받기', () => downloadEntries(targets)]);
         }
         items.push(['이름 변경', () => renameEntry(entry)]);
