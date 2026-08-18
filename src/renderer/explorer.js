@@ -469,15 +469,25 @@ window.Explorer = (function () {
 
     /* --------------------------------- 드롭 --------------------------------- */
 
+    /**
+     * 판(pane) 헤더를 끄는 중인지. 그 드래그는 파일 이동이 아니라 판 분할/자리
+     * 바꾸기이므로 탐색기가 손대면 안 된다 — preventDefault 도 하지 말고 그대로
+     * 흘려보내야 바깥 판의 드롭 처리(가장자리 분할·교환)가 동작한다.
+     */
+    const isPaneDrag = (e) =>
+      e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.includes('armux/pane');
+
     /** row 를 드롭 대상(폴더)으로 만든다 */
     function makeDropTarget(row, dirPath) {
       row.addEventListener('dragover', (e) => {
+        if (isPaneDrag(e)) return; // 판 드래그는 판 쪽에서 처리
         e.preventDefault();
         e.stopPropagation();
         row.classList.add('drop-hover');
       });
       row.addEventListener('dragleave', () => row.classList.remove('drop-hover'));
       row.addEventListener('drop', async (e) => {
+        if (isPaneDrag(e)) return;
         e.preventDefault();
         e.stopPropagation();
         row.classList.remove('drop-hover');
@@ -487,11 +497,13 @@ window.Explorer = (function () {
 
     // 빈 공간에 떨어뜨리면 현재 폴더로
     listEl.addEventListener('dragover', (e) => {
+      if (isPaneDrag(e)) return;
       e.preventDefault();
       listEl.classList.add('drop-hover');
     });
     listEl.addEventListener('dragleave', () => listEl.classList.remove('drop-hover'));
     listEl.addEventListener('drop', async (e) => {
+      if (isPaneDrag(e)) return;
       e.preventDefault();
       listEl.classList.remove('drop-hover');
       await handleDrop(e, ex.cwd);
