@@ -572,6 +572,17 @@ window.WebPane = (function () {
       get tabsInfo() {
         return { urls: state.tabs.map((t) => t.url), active: state.active };
       },
+      /** AI 컨텍스트용: 활성 탭 페이지의 본문 글자를 뽑아온다 */
+      pageText: async () => {
+        const t = cur();
+        if (!t || !t.url) return '';
+        try {
+          const txt = await t.view.executeJavaScript('document.body ? document.body.innerText : ""');
+          return String(txt || '').slice(0, 12000);
+        } catch (e) {
+          return '';
+        }
+      },
       go,
       newTab: (url) => newTab(url),
       focus: () => (start.classList.contains('hidden') ? urlInput.focus() : startInput.focus()),

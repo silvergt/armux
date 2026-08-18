@@ -205,6 +205,7 @@ function createLeaf(tab, connect, options) {
     web: null, // 웹 브라우저 화면 (웹으로 전환할 때 만든다)
     file: null, // 파일 뷰어 (파일을 열 때 만든다)
     notes: null, // 메모장 (이 판을 메모로 전환할 때 만든다)
+    aichat: null, // AI 채팅 (이 판을 AI 채팅으로 전환할 때 만든다)
     explorer: null, // 파일 탐색기 (이 판을 파일로 전환할 때 만든다)
     connect
   };
@@ -521,6 +522,7 @@ function disposeLeaf(leaf) {
   if (leaf.file) { try { leaf.file.dispose(); } catch (e) {} leaf.file = null; }
   if (leaf.web) { try { leaf.web.dispose(); } catch (e) {} leaf.web = null; }
   if (leaf.notes) { try { leaf.notes.dispose(); } catch (e) {} leaf.notes = null; }
+  if (leaf.aichat) { try { leaf.aichat.dispose(); } catch (e) {} leaf.aichat = null; }
   if (leaf.explorer) { try { leaf.explorer.dispose(); } catch (e) {} leaf.explorer = null; }
   leaf.el.remove();
 }
@@ -560,6 +562,35 @@ function setLeafMode(leaf, mode, url, webExtra) {
       leaf.notes.refresh();
     }
     leaf.mode = 'notes';
+  } else if (mode === 'ai') {
+    // AI 채팅을 이 판 안에 띄운다. 실행 세션은 그룹에서 살아 있는 것을 빌려 쓴다.
+    const grp = state.groups.find((g) => g.id === leaf.groupId);
+    if (!leaf.aichat) {
+      leaf.aichat = window.AiChat.create({
+        hostLabel: grp ? grp.host.name : '',
+        getSessionId: () => leaf.sessionId || (grp ? anyReadySession(grp) : null),
+        // 같은 서브탭의 다른 판들을 첨부 후보로 (터미널 화면 / 웹페이지 본문)
+        getContextSources: () => {
+          const tab = grp && grp.tabs.find((t) => t.id === leaf.tabId);
+          if (!tab) return [];
+          const out = [];
+          for (const l of leavesOf(tab.root)) {
+            if (l === leaf) continue;
+            if (l.mode === 'terminal' && l.status === 'ready') {
+              out.push({ label: `터미널 — ${l.title || (grp ? grp.host.name : '')}`, get: async () => (readScreenTail(l) || '').slice(-8000) });
+            } else if (l.mode === 'web' && l.web) {
+              out.push({ label: `웹 — ${(l.web.title || l.web.url || '페이지').slice(0, 40)}`, get: async () => {
+                const txt = await l.web.pageText();
+                return txt ? `제목: ${l.web.title || ''}\n주소: ${l.web.url || ''}\n\n${txt}` : '';
+              } });
+            }
+          }
+          return out;
+        }
+      });
+      body.appendChild(leaf.aichat.el);
+    }
+    leaf.mode = 'ai';
   } else if (mode === 'explorer') {
     // 파일 탐색기를 이 판 안에 띄운다. 접속 정보가 있어야 SFTP 를 열 수 있다.
     const group = state.groups.find((g) => g.id === leaf.groupId);
@@ -595,6 +626,7 @@ function setLeafMode(leaf, mode, url, webExtra) {
   renderPaneHeader(leaf);
   render();
   if (leaf.mode === 'web') leaf.web.focus();
+  else if (leaf.mode === 'ai') leaf.aichat.focus();
   else if (leaf.mode === 'notes') leaf.notes.focus();
   else if (leaf.mode === 'explorer') {
     if (leaf.explorer.focus) leaf.explorer.focus();
@@ -1309,6 +1341,7 @@ function applyPaneBody(leaf) {
   if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
   if (leaf.file) leaf.file.el.classList.toggle('hidden', leaf.mode !== 'file');
   if (leaf.notes) leaf.notes.el.classList.toggle('hidden', leaf.mode !== 'notes');
+  if (leaf.aichat) leaf.aichat.el.classList.toggle('hidden', leaf.mode !== 'ai');
   if (leaf.explorer) leaf.explorer.el.classList.toggle('hidden', leaf.mode !== 'explorer');
 }
 
@@ -1763,7 +1796,7 @@ function serializeNode(node) {
       };
     }
     // 메모·파일 탐색기 판도 다음 실행 때 그대로 되살린다
-    if (node.mode === 'notes' || node.mode === 'explorer') return { kind: 'leaf', mode: node.mode };
+    if (node.mode === 'notes' || node.mode === 'explorer' || node.mode === 'ai') return { kind: 'leaf', mode: node.mode };
     return { kind: 'leaf' };
   }
   return {
@@ -1886,7 +1919,7 @@ function rebuildLayout(tab, group, node, schedule) {
     const leaf = createLeaf(tab, connect || {}, { mode: connect ? 'later' : 'orphan' });
     if (node && node.mode === 'web') {
       setLeafMode(leaf, 'web', node.url, { urls: node.urls, active: node.at }); // 웹 판(탭 포함) 복원
-    } else if (node && (node.mode === 'notes' || node.mode === 'explorer')) {
+    } else if (node && (node.mode === 'notes' || node.mode === 'explorer' || node.mode === 'ai')) {
       // 셸도 함께 살려 두고(터미널로 돌아갈 수 있게) 화면만 메모/파일로 맞춘다
       if (connect) schedule(leaf);
       setTimeout(() => setLeafMode(leaf, node.mode), 500);
@@ -2478,19 +2511,39 @@ function renderPanes() {
  * 별도 윈도우라 터미널 화면을 전혀 가리지 않고, 다른 모니터로 옮기거나
  * 항상 위에 고정할 수 있다. 질문은 그 판의 SSH 연결로 원격 claude -p 를 돌린다.
  */
-function openAiPanel(leaf) {
-  if (!leaf || !leaf.sessionId || leaf.status !== 'ready') {
-    el.statusLeft.textContent = '접속된 터미널에서만 AI 질문을 쓸 수 있습니다.';
+async function openAiPanel(leaf) {
+  if (!leaf) {
+    el.statusLeft.textContent = '터미널이나 웹 판에서 AI 질문을 쓸 수 있습니다.';
     return;
   }
   const group = state.groups.find((g) => g.id === leaf.groupId);
-  const sel = leaf.term.hasSelection() ? leaf.term.getSelection() : '';
-  const ctx = (sel || readScreenTail(leaf) || '').slice(-8000); // 너무 길면 뒤쪽만
+  // 실행 세션: 이 판의 것, 없으면(웹 전용 그룹 등) 그룹에서 살아 있는 것을 빌린다
+  const sessionId =
+    (leaf.sessionId && leaf.status === 'ready' && leaf.sessionId) || (group ? anyReadySession(group) : null);
+  if (!sessionId) {
+    el.statusLeft.textContent = '접속된 세션이 있어야 AI 질문을 쓸 수 있습니다.';
+    return;
+  }
+
+  let ctx = '';
+  let contextLabel = '';
+  if (leaf.mode === 'web' && leaf.web) {
+    // 웹 판: 지금 보고 있는 페이지의 본문을 컨텍스트로
+    const txt = await leaf.web.pageText();
+    ctx = txt
+      ? `제목: ${leaf.web.title || ''}\n주소: ${leaf.web.url || ''}\n\n${txt}`.slice(0, 12000)
+      : '';
+    contextLabel = ctx ? `웹페이지 포함 (${(leaf.web.title || leaf.web.url || '').slice(0, 30)})` : '컨텍스트 없음';
+  } else {
+    const sel = leaf.term && leaf.term.hasSelection() ? leaf.term.getSelection() : '';
+    ctx = (sel || readScreenTail(leaf) || '').slice(-8000); // 너무 길면 뒤쪽만
+    contextLabel = sel ? '선택한 글자 포함' : '화면 내용 포함';
+  }
   api.ai.openWindow({
-    sshSessionId: leaf.sessionId,
+    sshSessionId: sessionId,
     hostLabel: group ? group.host.name : '',
     context: ctx,
-    contextLabel: sel ? '선택한 글자 포함' : '화면 내용 포함'
+    contextLabel
   });
 }
 
@@ -2555,6 +2608,7 @@ function openPaneModeMenu(leaf, ev) {
   ];
   const grp = state.groups.find((g) => g.id === leaf.groupId);
   items.push(row('🌐  웹페이지', 'web'));
+  items.push(row('✳  AI 채팅', 'ai'));
   items.push(row('📝  메모', 'notes'));
   if (!grp || !grp.isLocal) items.push(row('📁  파일', 'explorer')); // 로컬은 SFTP 없음
 
@@ -2583,8 +2637,10 @@ function renderPaneHeader(leaf) {
   title.textContent =
     leaf.mode === 'web'
       ? (leaf.web && leaf.web.title) || '웹페이지'
-      : leaf.mode === 'notes'
-        ? '메모'
+      : leaf.mode === 'ai'
+        ? '✳ AI 채팅'
+        : leaf.mode === 'notes'
+          ? '메모'
         : leaf.mode === 'explorer'
           ? `파일 — ${group ? group.host.name : ''}`
           : leaf.title || (group ? group.host.name : '');
@@ -3203,10 +3259,10 @@ window.addEventListener(
       }
     }
 
-    // AI 질문: Ctrl/⌘+K — 지금 판의 화면(또는 선택한 글자)을 컨텍스트로 묻는다
+    // AI 질문: Ctrl/⌘+K — 터미널 화면(선택 글자) 또는 웹페이지 본문을 컨텍스트로 묻는다
     if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
       const l = activeLeaf();
-      if (l && l.mode === 'terminal') {
+      if (l && (l.mode === 'terminal' || l.mode === 'web')) {
         e.preventDefault();
         e.stopPropagation();
         openAiPanel(l);

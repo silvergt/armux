@@ -774,9 +774,23 @@ if [ -z "$CLAUDE" ]; then echo 'ARMUX_AI:no-claude'; exit 0; fi
 cd "$HOME" 2>/dev/null
 printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p ${resume}--output-format json 2>/dev/null
 `.trim();
-  const sb64 = Buffer.from(script, 'utf8').toString('base64');
-  const remote = `S=${sb64}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`;
-  const { stdout } = await ssh.exec(sessionId, remote, 180000); // 답변이 길면 오래 걸린다
+
+  let stdout = '';
+  if (ssh.isLocal(sessionId)) {
+    // 로컬 터미널 그룹: 이 PC 의 claude 를 직접 실행한다 (win 은 아직 미지원)
+    if (process.platform === 'win32') {
+      return { error: '로컬 터미널의 AI 질문은 아직 macOS/리눅스에서만 지원합니다.' };
+    }
+    stdout = await new Promise((resolve) => {
+      const { execFile } = require('child_process');
+      execFile('bash', ['-lc', script], { timeout: 180000, maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
+        resolve(String(out || ''));
+      });
+    });
+  } else {
+    const res = await ssh.exec(sessionId, `S=${Buffer.from(script, 'utf8').toString('base64')}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`, 180000);
+    stdout = res.stdout; // 답변이 길면 오래 걸린다
+  }
   const text = String(stdout);
   if (text.includes('ARMUX_AI:no-claude')) {
     return { error: '이 서버에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치되어 있어야 합니다.' };

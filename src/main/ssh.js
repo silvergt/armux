@@ -206,6 +206,12 @@ function close(sessionId) {
   sessions.delete(sessionId);
 }
 
+/** 이 세션이 로컬 PTY 인지 (AI 질문을 로컬에서 실행할지 판단용) */
+function isLocal(sessionId) {
+  const s = sessions.get(sessionId);
+  return Boolean(s && s.local);
+}
+
 /** 현재 열려 있는 터미널 세션 수 */
 function count() {
   return sessions.size;
@@ -215,4 +221,4 @@ function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
-module.exports = { open, openLocal, exec, write, resize, close, closeAll, count };
+module.exports = { open, openLocal, exec, write, resize, close, closeAll, count, isLocal };
