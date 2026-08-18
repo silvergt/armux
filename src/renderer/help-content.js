@@ -200,7 +200,7 @@ bind C-a send-prefix</pre>
       <h3>탭 표시</h3>
       <table>
         <tr><th>표시</th><th>뜻</th></tr>
-        <tr><td>스피너</td><td>Claude 가 생각하는 중</td></tr>
+        
         <tr><td><span class="alert-demo">!</span> 초록 느낌표</td><td>Claude 가 생각을 끝냄 (그 창을 보고 있지 않을 때). 탭을 열거나 입력하면 사라진다</td></tr>
         <tr><td>점</td><td>그 밖의 모든 경우 — 연결 상태 (초록: 연결됨 / 회색: 종료 / 빨강: 실패)</td></tr>
       </table>

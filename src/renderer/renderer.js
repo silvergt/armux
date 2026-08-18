@@ -199,8 +199,7 @@ function createLeaf(tab, connect, options) {
     alert: false, // Claude Code 등이 사용자 응답을 기다리는 중인지
     tail: '', // 알림 감지를 위한 최근 출력 버퍼(ANSI 제거본)
     lastInputAt: 0, // 마지막으로 사용자가 키를 누른 시각
-    spin: null, // 'busy' = Claude 가 생각하는 중
-    wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지
+    wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지 (완료 알림 판정용)
     lastOutputAt: 0,
     mode: 'terminal', // 'terminal' | 'web' | 'file'
     web: null, // 웹 브라우저 화면 (웹으로 전환할 때 만든다)
@@ -270,20 +269,17 @@ function createLeaf(tab, connect, options) {
       leaf.hooksActive = true;
       leaf.hookAt = Date.now();
       if (sig === 'busy') {
+        // 새 턴이 시작됐다 = 사용자가 방금 프롬프트를 보냈다 → 이전 알림은 해제
         clearAlert(leaf);
-        leaf.hookBusy = true;
-        // 작업줄이 그려지기 전 공백을 메우는 브리지의 기준 시각
-        leaf.hookBusyAt = Date.now();
+        leaf.wasThinking = true; // 화면 감지가 "끝남" 전환을 잡을 수 있게 시작점을 기록
+        leaf.thinkSeenAt = Date.now();
       } else if (sig === 'idle') {
-        leaf.hookBusy = false;
-        // 히스테리시스를 기다리지 않고 즉시 스피너를 끈다
         leaf.wasThinking = false;
         leaf.thinkSeenAt = 0;
         const cur = activeLeaf();
         const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
         if (!looking) raiseAlert(leaf); // 끝났는데 안 보고 있으면 알림
       } else if (sig === 'alert') {
-        leaf.hookBusy = false;
         leaf.wasThinking = false;
         leaf.thinkSeenAt = 0;
         raiseAlert(leaf, true); // 입력/권한 대기 — 보고 있어도 표시
@@ -610,11 +606,12 @@ const ALERT_PATTERNS = [
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g;
 
 /*
- * 탭에 붙는 표시는 세 가지뿐이다.
- *   1) Claude 가 생각하는 중            → 스피너   (화면에 "esc to interrupt" 가 보임)
- *   2) Claude 가 생각을 끝낸 직후        → 초록 느낌표 (그 창을 보고 있지 않을 때)
- *   3) 그 밖의 모든 경우                 → 연결 상태 점
- * 일반 명령 실행이나 전체화면 앱은 따로 표시하지 않는다.
+ * 탭에 붙는 표시는 두 가지뿐이다. (이벤트 방식 — cmux 와 같은 구조)
+ *   1) Claude 가 확인을 기다림  → 초록 느낌표 (작업 완료를 안 보고 있었거나, 입력/권한 대기)
+ *   2) 그 밖의 모든 경우        → 연결 상태 점
+ * "작업 중" 스피너는 일부러 두지 않는다. 원격 터미널 너머의 프로세스 상태를
+ * 지속적으로 정확히 아는 방법이 없어(끝 신호 유실 시 영원히 도는 버그가 반복됨),
+ * 순간 이벤트(완료/주의)만 표시하는 쪽이 훨씬 견고하다.
  */
 // Claude Code 가 "작업 중"일 때만 화면 하단에 나타나는 문구들
 /**
@@ -623,17 +620,6 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
  * 또는 "ctrl+t" 힌트를 같은 줄에 달고 있다.
  * 대화 본문에 그냥 "(esc to interrupt)" 라는 말이 들어 있어도 이런 동반 표시가 없어 걸러진다.
  */
-/*
- * busy 훅 직후 작업줄이 화면에 그려지기 전까지만 스피너를 미리 돌려 주는 시간.
- * 이 시간이 지나면 화면에 작업줄이 실제로 보여야만 스피너가 유지된다.
- *
- * 왜 훅을 오래 믿으면 안 되나: 사용자가 ESC 로 중단하면 Claude Code 는 Stop
- * 훅을 실행하지 않는다(문서화된 동작). 그때 훅의 busy 를 계속 믿으면 놀고 있는
- * Claude 앞에서 스피너가 영원히 돈다. 그래서 "지속적인 작업 중" 판정은 화면
- * (작업줄)이 전담하고, 훅은 시작/끝의 순간 이벤트로만 쓴다. (cmux 도 지속
- * 상태 표시 없이 완료/주의 이벤트만 쓰는 구조다)
- */
-const HOOK_BUSY_BRIDGE_MS = 15000;
 
 const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
 function isClaudeWorkingLine(line) {
@@ -784,8 +770,13 @@ function sendTmuxCommand(leaf, cmdline) {
 let activityTick = 0;
 
 /** 모든 판을 살펴 Claude 작업 여부를 갱신한다 */
+/**
+ * 모든 판을 살펴 "작업이 끝났는데 안 보고 있는" 순간을 잡아 알림을 올린다.
+ * 화면에 아무것도 그리지 않는다(스피너 없음) — 알림 이벤트 감지 전용.
+ * Stop 훅이 오는 경우엔 그쪽이 먼저 처리하지만, 훅이 없거나 유실된 세션
+ * (ESC 중단, 훅 미설치 Claude 등)을 위해 화면 전환도 함께 본다.
+ */
 function evaluateActivity() {
-  let changed = false;
   activityTick += 1;
   const curTab = activeTab();
   // 보이는 탭은 매번, 나머지는 다섯 번에 한 번만 (느려지지 않게)
@@ -798,44 +789,25 @@ function evaluateActivity() {
         const now = Date.now();
         const live = leaf.mode === 'terminal' && leaf.status === 'ready';
 
-        /*
-         * 작업 중 판정 — "지속" 은 화면이 전담한다.
-         * 화면 아래쪽에 Claude 의 작업 상태줄(맨 앞 스피너 글리프 + "esc to
-         * interrupt")이 보일 때만 작업 중이다. 상태줄은 항상 입력 상자 바로 위,
-         * 화면 맨 아래 몇 줄 안에 있으므로 아래에서 15줄만 보면 충분하다.
-         *
-         * 훅의 busy 는 "방금 시작해서 아직 상태줄이 안 그려진" 짧은 공백을
-         * 메우는 브리지로만 쓴다. 오래 믿으면 ESC 중단(Stop 훅이 안 옴)처럼
-         * 끝 신호가 유실됐을 때 놀고 있는 Claude 앞에서 스피너가 영원히 돈다.
-         */
+        // Claude 의 작업 상태줄(맨 앞 스피너 글리프 + "esc to interrupt")이
+        // 화면 아래 15줄 안에 보이는가. 상태줄은 항상 입력 상자 바로 위에 있다.
         const seen = live && bottomNonEmptyLines(leaf, 15).some(isClaudeWorkingLine);
-        const bridging =
-          live && leaf.hookBusy && now - (leaf.hookBusyAt || 0) < HOOK_BUSY_BRIDGE_MS;
-        const busyNow = seen || bridging;
 
-        // 히스테리시스: 마지막으로 본 지 2.5초 안이면 유지.
-        // 툴 실행 전환 순간 등에 상태줄이 한두 프레임 사라져도 깜빡이지 않게 한다.
-        if (busyNow) leaf.thinkSeenAt = now;
-        const thinking = busyNow || (leaf.wasThinking && now - (leaf.thinkSeenAt || 0) < 2500);
+        // 히스테리시스: 마지막으로 본 지 2.5초 안이면 아직 작업 중으로 본다.
+        // (툴 전환 순간 상태줄이 한두 프레임 사라져도 완료로 오인하지 않게)
+        if (seen) leaf.thinkSeenAt = now;
+        const thinking = seen || (leaf.wasThinking && now - (leaf.thinkSeenAt || 0) < 2500);
 
-        // 작업이 끝났는데 그 창을 보고 있지 않으면 알림(초록 느낌표).
-        // Stop 훅이 오는 경우엔 그쪽에서도 올리지만 raiseAlert 는 중복에 안전하다.
+        // 작업 중 → 끝남 전환: 그 창을 보고 있지 않으면 초록 느낌표
         if (leaf.wasThinking && !thinking && live) {
           const cur = activeLeaf();
           const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
           if (!looking) raiseAlert(leaf);
         }
         leaf.wasThinking = thinking;
-
-        const kind = thinking && live ? 'busy' : null;
-        if (leaf.spin !== kind) {
-          leaf.spin = kind;
-          changed = true;
-        }
       }
     }
   }
-  if (changed) scheduleRender();
 }
 
 setInterval(evaluateActivity, 250);
@@ -851,9 +823,7 @@ function checkActivitySoon() {
   activitySoonTimers = [80, 500, 1500].map((ms) => setTimeout(evaluateActivity, ms));
 }
 
-/** 탭 안에 Claude 가 작업 중인 판이 있는지 */
-const tabSpin = (tab) => (leavesOf(tab.root).some((l) => l.spin === 'busy') ? 'busy' : null);
-const groupSpin = (group) => (group.tabs.some((t) => tabSpin(t)) ? 'busy' : null);
+
 
 /* --------------------------------- 탭 / 그룹 --------------------------------- */
 
@@ -2206,21 +2176,12 @@ function statusDot(status) {
   return dot;
 }
 
-/** Claude 가 생각하는 중임을 알리는 원형 스피너 */
-function spinner() {
-  const el2 = document.createElement('span');
-  el2.className = 'spin-busy';
-  el2.title = 'Claude 가 생각하는 중';
-  return el2;
-}
-
 /**
  * 탭 앞에 붙는 표시 하나를 고른다.
- * 우선순위: 초록 느낌표(응답 대기) > Claude 작업 중 > 명령 실행 중 > 연결 상태 점
+ * 우선순위: 초록 느낌표(확인 필요) > 연결 상태 점
  */
-function statusMark(status, spin, alerted) {
+function statusMark(status, alerted) {
   if (alerted) return alertBadge();
-  if (spin) return spinner();
   return statusDot(status);
 }
 
@@ -2265,7 +2226,7 @@ function renderTabstrip() {
     });
 
     // 서브탭 중 하나라도 응답 대기면 메인탭도 초록 느낌표
-    node.append(statusMark(cur ? tabStatus(cur) : 'closed', groupSpin(group), groupHasAlert(group)), idx, label);
+    node.append(statusMark(cur ? tabStatus(cur) : 'closed', groupHasAlert(group)), idx, label);
     node.appendChild(close);
 
     // 끌어서 메인탭 순서 바꾸기
@@ -2360,7 +2321,7 @@ function renderSubstrip() {
       confirmCloseTab(group, tab);
     });
 
-    node.append(statusMark(tabStatus(tab), tabSpin(tab), tabHasAlert(tab)), idx, label);
+    node.append(statusMark(tabStatus(tab), tabHasAlert(tab)), idx, label);
     node.appendChild(close);
 
     // 끌어서 서브탭 순서 바꾸기
@@ -2533,7 +2494,7 @@ function renderPaneHeader(leaf) {
   grip.textContent = '⠿';
   grip.title = '끌어서 다른 판과 자리 바꾸기';
 
-  const mark = statusMark(leaf.status, leaf.spin, leaf.alert);
+  const mark = statusMark(leaf.status, leaf.alert);
   mark.classList.add('pane-mark');
 
   const title = document.createElement('span');
