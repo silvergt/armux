@@ -69,6 +69,10 @@ contextBridge.exposeInMainWorld('armux', {
   /** AI 질문 (원격 claude -p, 독립 창) */
   ai: {
     ask: (sessionId, prompt, resumeId) => ipcRenderer.invoke('ai:ask', { sessionId, prompt, resumeId }),
+    /** 스트리밍판: onDelta 로 사고 과정/답변 조각이 온다 */
+    askStream: (reqId, sessionId, prompt, resumeId) =>
+      ipcRenderer.invoke('ai:askStream', { reqId, sessionId, prompt, resumeId }),
+    onDelta: (cb) => ipcRenderer.on('ai:delta', (e, p) => cb(p)),
     openWindow: (payload) => ipcRenderer.send('ai:openWindow', payload),
     onContext: (cb) => ipcRenderer.on('ai:context', (e, p) => cb(p)),
     togglePin: () => ipcRenderer.invoke('ai:togglePin')

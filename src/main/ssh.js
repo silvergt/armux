@@ -206,6 +206,30 @@ function close(sessionId) {
   sessions.delete(sessionId);
 }
 
+/**
+ * exec 를 스트리밍으로 실행한다. 출력 조각이 올 때마다 onData(chunk) 를 부른다.
+ * AI 응답을 실시간으로 흘려보내는 용도.
+ */
+function execStream(sessionId, command, timeoutMs, onData, onClose) {
+  const s = sessions.get(sessionId);
+  if (!s) return onClose(new Error('세션이 없습니다.'));
+  if (s.local) return onClose(new Error('로컬 세션은 별도 경로로 실행합니다.'));
+  let done = false;
+  const finish = (err) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    onClose(err || null);
+  };
+  const timer = setTimeout(() => finish(new Error('실행 시간 초과')), timeoutMs || 300000);
+  s.client.exec(command, (err, stream) => {
+    if (err) return finish(err);
+    stream.on('data', (d) => onData(d.toString('utf8')));
+    stream.stderr.on('data', () => {});
+    stream.on('close', () => finish(null));
+  });
+}
+
 /** 이 세션이 로컬 PTY 인지 (AI 질문을 로컬에서 실행할지 판단용) */
 function isLocal(sessionId) {
   const s = sessions.get(sessionId);
@@ -221,4 +245,4 @@ function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
-module.exports = { open, openLocal, exec, write, resize, close, closeAll, count, isLocal };
+module.exports = { open, openLocal, exec, execStream, write, resize, close, closeAll, count, isLocal };

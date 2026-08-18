@@ -807,6 +807,107 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
   }
 });
 
+/**
+ * AI 질문 스트리밍판. stream-json 을 줄 단위로 파싱해
+ * 사고 과정(thinking)·도구 사용·답변 텍스트를 조각조각 렌더러로 흘려보낸다.
+ *   ai:delta → { reqId, kind: 'thinking'|'text'|'step', text }
+ * invoke 자체는 끝났을 때 { result, sessionId } 또는 { error } 로 완결된다.
+ */
+ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId }) => {
+  const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
+  const resume = resumeId ? `--resume ${String(resumeId).replace(/[^0-9a-f-]/gi, '')} ` : '';
+  const script = `
+CLAUDE="$(command -v claude 2>/dev/null)"
+if [ -z "$CLAUDE" ]; then
+  for c in "$HOME"/.local/bin/claude "$HOME"/.claude/local/claude /usr/local/bin/claude /opt/homebrew/bin/claude; do
+    [ -x "$c" ] && CLAUDE="$c" && break
+  done
+fi
+if [ -z "$CLAUDE" ]; then echo 'ARMUX_AI:no-claude'; exit 0; fi
+cd "$HOME" 2>/dev/null
+printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p ${resume}--output-format stream-json --include-partial-messages --verbose 2>/dev/null
+`.trim();
+
+  // 델타는 "요청을 보낸 창" 으로 직접 보낸다.
+  // (send() 는 메인 창 전용이라 독립 AI 질문 창은 델타를 못 받았다)
+  const sender = e.sender;
+  return await new Promise((resolve) => {
+    let buf = '';
+    let final = null;
+    let sawNoClaude = false;
+    const emit = (kind, text) => {
+      if (!sender.isDestroyed()) sender.send('ai:delta', { reqId, kind, text });
+    };
+
+    const feed = (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        if (line.includes('ARMUX_AI:no-claude')) {
+          sawNoClaude = true;
+          continue;
+        }
+        let o = null;
+        try {
+          o = JSON.parse(line);
+        } catch (err) {
+          continue; // JSON 이 아닌 줄(셸 잡음)은 무시
+        }
+        if (o.type === 'stream_event' && o.event) {
+          const ev = o.event;
+          if (ev.type === 'content_block_delta' && ev.delta) {
+            if (ev.delta.type === 'thinking_delta') emit('thinking', ev.delta.thinking || '');
+            else if (ev.delta.type === 'text_delta') emit('text', ev.delta.text || '');
+          } else if (ev.type === 'content_block_start' && ev.content_block) {
+            if (ev.content_block.type === 'tool_use') {
+              emit('step', `도구 실행: ${ev.content_block.name || '?'}`);
+            }
+          }
+        } else if (o.type === 'result') {
+          final = o;
+        }
+      }
+    };
+
+    const done = (err) => {
+      if (sawNoClaude) {
+        return resolve({ error: '이 서버에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치되어 있어야 합니다.' });
+      }
+      if (final) {
+        if (final.is_error) return resolve({ error: String(final.result || '오류가 났습니다.') });
+        return resolve({ result: String(final.result || ''), sessionId: final.session_id || null });
+      }
+      resolve({ error: err ? String(err.message || err) : '응답이 비어 있습니다. (로그인 상태를 확인해 보세요)' });
+    };
+
+    if (ssh.isLocal(sessionId)) {
+      if (process.platform === 'win32') {
+        return resolve({ error: '로컬 터미널의 AI 질문은 아직 macOS/리눅스에서만 지원합니다.' });
+      }
+      const { spawn } = require('child_process');
+      const child = spawn('bash', ['-lc', script]);
+      const killer = setTimeout(() => child.kill('SIGKILL'), 300000);
+      child.stdout.on('data', (d) => feed(d.toString('utf8')));
+      child.on('close', () => {
+        clearTimeout(killer);
+        done(null);
+      });
+      child.on('error', (err) => {
+        clearTimeout(killer);
+        done(err);
+      });
+      return;
+    }
+
+    const sb64 = Buffer.from(script, 'utf8').toString('base64');
+    const remote = `S=${sb64}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`;
+    ssh.execStream(sessionId, remote, 300000, feed, (err) => done(err));
+  });
+});
+
 /* ------------------------------------ 웹 판 ------------------------------------ */
 
 // 주소창 자동완성용: 이 PC 크롬 방문 기록에서 후보를 뽑는다(읽기 전용).

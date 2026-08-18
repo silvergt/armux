@@ -50,6 +50,21 @@
     color: #5b6673; font-size: 11px; margin: 6px 0;
   }
   .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #262c36; }
+  /* 사고 과정(접이식) */
+  details.think {
+    align-self: stretch; max-width: 100%;
+    border: 1px solid #262c36; border-radius: 8px; background: #14171d;
+  }
+  details.think summary {
+    padding: 5px 10px; color: #7b8594; font-size: 11.5px; cursor: pointer; user-select: none;
+  }
+  details.think[open] summary { border-bottom: 1px solid #21262e; }
+  .think-body {
+    padding: 8px 10px; color: #8b94a3; font-size: 11.5px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto;
+    font-style: italic;
+  }
+  .think-step { font-style: normal; color: #6f9fd8; margin: 2px 0; }
 
   #row {
     flex: none; display: flex; gap: 6px; padding: 9px 10px;

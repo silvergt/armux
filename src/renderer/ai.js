@@ -72,6 +72,20 @@ api.ai.onContext((p) => {
   el.input.focus();
 });
 
+/*
+ * 스트리밍 전송. "생각 중" 한 줄 대신,
+ *  - 사고 과정(thinking)이 오면 🧠 접이식 상자에 실시간으로 흘리고
+ *  - 도구 사용 같은 진행 단계도 그 상자에 줄로 남기며
+ *  - 답변 본문은 글자 단위로 타이핑되듯 채운다.
+ * 완료되면 사고 과정 상자는 자동으로 접힌다(펼쳐 볼 수 있음).
+ */
+let reqSeq = 0;
+const pendingReqs = new Map(); // reqId → 델타 처리 함수
+api.ai.onDelta((p) => {
+  const h = pendingReqs.get(p.reqId);
+  if (h) h(p);
+});
+
 async function send() {
   const q = el.input.value.trim();
   if (!q || state.busy) return;
@@ -95,19 +109,60 @@ async function send() {
 
   state.busy = true;
   el.send.disabled = true;
+  const reqId = `w${Date.now()}_${reqSeq++}`;
   const wait = addMsg('wait', '생각 중…');
+  let think = null; // 🧠 사고 과정 상자
+  let thinkBody = null;
+  let bubble = null; // 답변 버블
+  const ensureThink = () => {
+    if (think) return;
+    think = document.createElement('details');
+    think.className = 'think';
+    think.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = '🧠 사고 과정';
+    thinkBody = document.createElement('div');
+    thinkBody.className = 'think-body';
+    think.append(sum, thinkBody);
+    el.log.appendChild(think);
+    el.log.scrollTop = el.log.scrollHeight;
+  };
+  const onDelta = (p) => {
+    if (wait.parentNode) wait.remove(); // 첫 조각이 오면 "생각 중" 제거
+    if (p.kind === 'thinking') {
+      ensureThink();
+      thinkBody.textContent += p.text;
+    } else if (p.kind === 'step') {
+      ensureThink();
+      const line = document.createElement('div');
+      line.className = 'think-step';
+      line.textContent = `⚙ ${p.text}`;
+      thinkBody.appendChild(line);
+    } else if (p.kind === 'text') {
+      if (!bubble) bubble = addMsg('ai', '');
+      bubble.textContent += p.text;
+    }
+    el.log.scrollTop = el.log.scrollHeight;
+  };
+  pendingReqs.set(reqId, onDelta);
+
   try {
-    const res = await api.ai.ask(state.sshSessionId, prompt, state.resumeId);
-    wait.remove();
-    if (res.error) addMsg('err', res.error);
-    else {
+    const res = await api.ai.askStream(reqId, state.sshSessionId, prompt, state.resumeId);
+    if (wait.parentNode) wait.remove();
+    if (think) think.open = false; // 끝나면 접는다
+    if (res.error) {
+      addMsg('err', res.error);
+    } else {
       state.resumeId = res.sessionId || state.resumeId;
-      addMsg('ai', res.result || '(빈 응답)');
+      // 델타가 하나도 안 왔다면(구버전 서버 등) 최종 결과로 버블을 만든다
+      if (!bubble) bubble = addMsg('ai', res.result || '(빈 응답)');
+      else if (!bubble.textContent) bubble.textContent = res.result || '(빈 응답)';
     }
   } catch (err) {
-    wait.remove();
+    if (wait.parentNode) wait.remove();
     addMsg('err', `실패: ${String((err && err.message) || err).replace(/^Error:\s*/, '')}`);
   } finally {
+    pendingReqs.delete(reqId);
     state.busy = false;
     el.send.disabled = false;
     paintCtx();

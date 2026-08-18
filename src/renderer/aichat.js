@@ -11,6 +11,16 @@
 window.AiChat = (function () {
   const api = window.armux;
 
+  // 스트리밍 델타 라우팅: reqId → 처리 함수 (판이 여러 개여도 알맞은 채팅으로)
+  let reqSeq = 0;
+  const pendingReqs = new Map();
+  if (api.ai.onDelta) {
+    api.ai.onDelta((p) => {
+      const h = pendingReqs.get(p.reqId);
+      if (h) h(p);
+    });
+  }
+
   /**
    * @param {object} opts
    *   getSessionId()      질문을 실행할 SSH/로컬 세션 id
@@ -146,19 +156,58 @@ window.AiChat = (function () {
 
       state.busy = true;
       sendBtn.disabled = true;
+      const reqId = `c${Date.now()}_${reqSeq++}`;
       const wait = addMsg('wait', '생각 중…');
+      // 사고 과정(thinking)·진행 단계는 접이식 상자에, 답변은 실시간 타이핑으로
+      let think = null;
+      let thinkBody = null;
+      let bubble = null;
+      const ensureThink = () => {
+        if (think) return;
+        think = document.createElement('details');
+        think.className = 'ac-think';
+        think.open = true;
+        const sum = document.createElement('summary');
+        sum.textContent = '🧠 사고 과정';
+        thinkBody = document.createElement('div');
+        thinkBody.className = 'ac-think-body';
+        think.append(sum, thinkBody);
+        if (empty.parentNode) empty.remove();
+        log.appendChild(think);
+        log.scrollTop = log.scrollHeight;
+      };
+      pendingReqs.set(reqId, (p) => {
+        if (wait.parentNode) wait.remove();
+        if (p.kind === 'thinking') {
+          ensureThink();
+          thinkBody.textContent += p.text;
+        } else if (p.kind === 'step') {
+          ensureThink();
+          const line = document.createElement('div');
+          line.className = 'ac-think-step';
+          line.textContent = `⚙ ${p.text}`;
+          thinkBody.appendChild(line);
+        } else if (p.kind === 'text') {
+          if (!bubble) bubble = addMsg('ai', '');
+          bubble.textContent += p.text;
+        }
+        log.scrollTop = log.scrollHeight;
+      });
       try {
-        const res = await api.ai.ask(sessionId, prompt, state.resumeId);
-        wait.remove();
+        const res = await api.ai.askStream(reqId, sessionId, prompt, state.resumeId);
+        if (wait.parentNode) wait.remove();
+        if (think) think.open = false; // 끝나면 접는다
         if (res.error) addMsg('err', res.error);
         else {
           state.resumeId = res.sessionId || state.resumeId;
-          addMsg('ai', res.result || '(빈 응답)');
+          if (!bubble) bubble = addMsg('ai', res.result || '(빈 응답)');
+          else if (!bubble.textContent) bubble.textContent = res.result || '(빈 응답)';
         }
       } catch (err) {
-        wait.remove();
+        if (wait.parentNode) wait.remove();
         addMsg('err', `실패: ${String((err && err.message) || err).replace(/^Error:\s*/, '')}`);
       } finally {
+        pendingReqs.delete(reqId);
         state.busy = false;
         sendBtn.disabled = false;
         input.focus();
