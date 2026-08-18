@@ -352,6 +352,13 @@ window.FileViewer = (function () {
       const area = document.createElement('div'); // pre + textarea 가 겹치는 영역
       area.className = 'fv-hlarea';
 
+      // 검색 결과를 칠할 레이어. 글자는 투명하고 배경만 보인다.
+      // 색깔 글자(<pre>)보다 뒤에 두어야 글자를 덮지 않는다.
+      const marks = document.createElement('div');
+      marks.className = 'fv-hl-marks';
+      marks.setAttribute('aria-hidden', 'true');
+      area.appendChild(marks);
+
       let code = null;
       if (hasHl) {
         const pre = document.createElement('pre'); // 뒤: 색깔 입힌 글자
@@ -404,6 +411,8 @@ window.FileViewer = (function () {
           p.scrollTop = ta.scrollTop;
           p.scrollLeft = ta.scrollLeft;
         }
+        marks.scrollTop = ta.scrollTop;
+        marks.scrollLeft = ta.scrollLeft;
         gutter.scrollTop = ta.scrollTop; // 줄 번호도 같이 움직인다
       };
 
@@ -412,6 +421,7 @@ window.FileViewer = (function () {
         markDirty(true);
         paintCode();
         paintGutter();
+        marks.innerHTML = ''; // 내용이 바뀌었으니 이전 검색 표시는 지운다
         syncScroll();
       };
 
@@ -431,6 +441,9 @@ window.FileViewer = (function () {
       paintCode();
       paintGutter();
       state._focus = () => ta.focus();
+      // 검색 기능이 이 편집기의 강조 레이어를 쓸 수 있게 연결해 둔다
+      state._marks = marks;
+      state._syncScroll = syncScroll;
     }
 
     /* ------------------------------ 렌더: 마크다운 ------------------------------ */
@@ -769,8 +782,41 @@ window.FileViewer = (function () {
           i = hay.indexOf(needle, i + Math.max(1, needle.length));
         }
       }
-      if (find.hits.length) stepFind(1);
-      else paintFindCount();
+      if (find.hits.length) {
+        stepFind(1);
+      } else {
+        paintMarks(); // 결과가 없으면 이전 표시를 지운다
+        paintFindCount();
+      }
+    }
+
+    /**
+     * 찾은 자리를 강조 레이어에 칠한다.
+     * textarea 는 포커스가 없으면 브라우저가 선택을 그려 주지 않으므로,
+     * 배경만 있는 레이어를 따로 두고 거기에 직접 표시한다.
+     * 지금 보고 있는 결과는 더 진한 색으로 구분한다.
+     */
+    function paintMarks() {
+      const marks = state._marks;
+      const ta = findTarget();
+      if (!marks || !ta) return;
+      if (!find.hits.length || !find.q) {
+        marks.innerHTML = '';
+        return;
+      }
+      const text = ta.value;
+      const len = find.q.length;
+      let html = '';
+      let at = 0;
+      for (let i = 0; i < find.hits.length; i++) {
+        const pos = find.hits[i];
+        html += esc(text.slice(at, pos));
+        html += `<mark class="${i === find.at ? 'cur' : ''}">${esc(text.slice(pos, pos + len))}</mark>`;
+        at = pos + len;
+      }
+      html += esc(text.slice(at));
+      marks.innerHTML = html;
+      if (state._syncScroll) state._syncScroll();
     }
 
     function paintFindCount() {
@@ -782,25 +828,37 @@ window.FileViewer = (function () {
       findPrev.disabled = findNext.disabled = find.hits.length === 0;
     }
 
-    /** 다음(1)/이전(-1) 결과로 이동해 선택하고 화면을 맞춘다 */
+    /**
+     * 다음(1)/이전(-1) 결과로 이동해 선택하고 화면을 맞춘다.
+     * 포커스는 검색창에 그대로 둔다 — 예전에는 여기서 편집기에 포커스를 줘서
+     * 한 글자만 쳐도 커서가 본문으로 튀어 버렸다(일반 검색창 동작과 다름).
+     * 위치는 직접 계산해 넣으므로 포커스를 옮기지 않아도 정확히 스크롤된다.
+     */
     function stepFind(dir) {
       const ta = findTarget();
       if (!ta || !find.hits.length) return paintFindCount();
       find.at = (find.at + dir + find.hits.length) % find.hits.length;
       const pos = find.hits[find.at];
-      ta.focus();
       ta.setSelectionRange(pos, pos + find.q.length);
       // 줄이 접히지 않으므로(white-space: pre) 줄 번호 × 줄 높이로 위치를 계산할 수 있다
       const line = ta.value.slice(0, pos).split('\n').length;
       const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
       ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 3);
-      ta.dispatchEvent(new Event('scroll')); // 줄 번호·강조 레이어도 같이 움직인다
+      // 찾은 글자가 가로로 멀리 있으면 그쪽도 보이게 맞춘다
+      const col = pos - ta.value.lastIndexOf('\n', pos - 1) - 1;
+      const cw = lh * 0.5; // 고정폭 글꼴의 대략적인 글자 너비
+      const want = col * cw;
+      if (want < ta.scrollLeft || want > ta.scrollLeft + ta.clientWidth - 80) {
+        ta.scrollLeft = Math.max(0, want - ta.clientWidth / 3);
+      }
+      paintMarks(); // 찾은 자리를 칠하고 스크롤도 맞춘다
       paintFindCount();
     }
 
     function openFind() {
       findBar.classList.remove('hidden');
       const ta = findTarget();
+      if (ta) ta.classList.add('finding'); // 포커스가 없어도 선택이 보이도록
       // 드래그로 고른 글자가 있으면 그것을 검색어로 채운다
       if (ta && ta.selectionStart !== ta.selectionEnd) {
         const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
@@ -815,8 +873,12 @@ window.FileViewer = (function () {
       findBar.classList.add('hidden');
       find.hits = [];
       find.at = -1;
+      if (state._marks) state._marks.innerHTML = '';
       const ta = findTarget();
-      if (ta) ta.focus();
+      if (ta) {
+        ta.classList.remove('finding');
+        ta.focus(); // 검색을 끝냈으니 이제 본문으로 돌아간다
+      }
     }
 
     findInput.addEventListener('input', runFind);

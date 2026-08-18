@@ -2223,6 +2223,7 @@ body.is-mac #mac-spacer {
 }
 .fv-hledit,
 .fv-gutter,
+.fv-hl-marks,
 .fv-hl-back,
 .fv-hl-front {
   font-family: Menlo, Consolas, 'D2Coding', 'Noto Sans Mono CJK KR', monospace;
@@ -2249,6 +2250,7 @@ body.is-mac #mac-spacer {
   flex: 1;
   min-width: 0;
 }
+.fv-hl-marks,
 .fv-hl-back,
 .fv-hl-front {
   position: absolute;
@@ -2259,14 +2261,33 @@ body.is-mac #mac-spacer {
   white-space: pre; /* 줄 접힘 없음 — 줄 번호와 1:1 로 맞춘다 */
   overflow: auto;
 }
-.fv-hl-back {
+/*
+ * 검색 결과 표시 레이어. 글자는 투명하고 <mark> 의 배경만 보인다.
+ * 색깔 글자(<pre>)보다 뒤(z 1)에 두어야 글자를 덮지 않는다.
+ */
+.fv-hl-marks {
   z-index: 1;
+  pointer-events: none;
+  color: transparent;
+  background: transparent;
+  overflow: hidden; /* 스크롤은 textarea 에 맞춰 코드로 움직인다 */
+}
+.fv-hl-marks mark {
+  color: transparent;
+  background: #5c4a12; /* 찾은 자리 */
+  border-radius: 2px;
+}
+.fv-hl-marks mark.cur {
+  background: #b8860b; /* 지금 보고 있는 결과 */
+}
+.fv-hl-back {
+  z-index: 2;
   pointer-events: none; /* 클릭은 앞의 textarea 가 받는다 */
   color: #dfe4ea;
   background: transparent;
 }
 .fv-hl-front {
-  z-index: 2;
+  z-index: 3;
   resize: none;
   outline: none;
   background: transparent;
@@ -2279,6 +2300,18 @@ body.is-mac #mac-spacer {
 .fv-hl-front::selection {
   background: #3b6ea5;
   color: transparent;
+}
+/*
+ * 검색 중에는 포커스가 검색창에 있어 편집기 선택이 흐려진다.
+ * 찾은 자리가 확실히 보이도록 더 밝은 색을 준다.
+ */
+.fv-hl-front.finding::selection {
+  background: #d99e28;
+  color: transparent;
+}
+.fv-hl-front.plain.finding::selection {
+  background: #d99e28;
+  color: #1a1200;
 }
 .fv-hl-front.plain::selection {
   background: #3b6ea5;
