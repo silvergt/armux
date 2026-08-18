@@ -636,17 +636,19 @@ function evaluateActivity() {
     for (const t of g.tabs) {
       if (t !== curTab && !scanBackground) continue;
       for (const leaf of leavesOf(t.root)) {
-        // Claude 는 "작업 중"일 때만 스피너를 계속 다시 그린다(=출력이 계속 난다).
-        // 그래서 (1) 화면에 안내 문구가 있고 (2) 최근에 출력이 있었을 때만 작업 중으로 본다.
-        // 문구가 화면에 남아 있어도 출력이 멎으면 곧바로 꺼진다.
-        const recentOutput = Date.now() - (leaf.lastOutputAt || 0) < 1500;
-        const thinking =
-          leaf.mode !== 'web' &&
-          leaf.status === 'ready' &&
-          recentOutput &&
-          CLAUDE_WORK_RE.test(readScreenTail(leaf));
+        // 화면에 Claude 의 작업 안내 문구가 지금 보이는가 (출력량은 보지 않는다)
+        const seen =
+          leaf.mode !== 'web' && leaf.status === 'ready' && CLAUDE_WORK_RE.test(readScreenTail(leaf));
 
-        // 생각을 끝냈는데 그 창을 보고 있지 않으면 알림
+        // 히스테리시스(시간 기반): 보이면 곧바로 thinking, 마지막으로 본 지 0.8초 안이면 유지.
+        // → 다시 그리는 순간 한 프레임 놓쳐도 깜빡이지 않고(기본 원 안 뜸),
+        //   툴 실행으로 출력이 잠깐 멎어도 계속 작업 중으로 본다(성급한 초록 느낌표 방지).
+        //   스캔 빈도와 무관하게 동작하도록 시각으로 판단한다.
+        const now = Date.now();
+        if (seen) leaf.thinkSeenAt = now;
+        const thinking = seen || (leaf.wasThinking && now - (leaf.thinkSeenAt || 0) < 800);
+
+        // 작업이 확실히 끝났고(연속 미검출) 그 창을 보고 있지 않으면 알림
         if (leaf.wasThinking && !thinking) {
           const cur = activeLeaf();
           const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;

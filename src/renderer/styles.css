@@ -1407,6 +1407,9 @@ button {
 .clock-zone {
   font-size: 12px;
   line-height: 1;
+  color: #ffffff;
+  /* 검은 테두리로 어떤 배경에서도 잘 보이게 */
+  text-shadow: 0 0 2px #000, 1px 0 1px #000, -1px 0 1px #000, 0 1px 1px #000, 0 -1px 1px #000;
 }
 .clock-time {
   color: #aab3c0;
