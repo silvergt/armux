@@ -353,6 +353,17 @@ function resolveCredentials({ hostId, credId, profile }) {
   return profile || {};
 }
 
+/** 로컬 터미널 세션 — 이 PC 의 셸을 PTY 로 띄운다. 데이터는 ssh:* 채널을 그대로 쓴다. */
+ipcMain.handle('local:spawn', (e, { size }) => {
+  const sessionId = ssh.openLocal(size, {
+    onReady: (id) => send('ssh:ready', { id }),
+    onData: (id, data) => send('ssh:data', { id, data: new Uint8Array(Buffer.from(data, 'utf8')) }),
+    onExit: (id) => send('ssh:exit', { id }),
+    onError: (id, message) => send('ssh:error', { id, message })
+  });
+  return { sessionId };
+});
+
 ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, size }) => {
   const effective = resolveCredentials({ hostId, credId, profile });
 

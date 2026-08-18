@@ -99,6 +99,7 @@ function exec(sessionId, command, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const s = sessions.get(sessionId);
     if (!s) return reject(new Error('세션이 없습니다.'));
+    if (s.local) return reject(new Error('로컬 터미널에서는 지원하지 않는 기능입니다.'));
     let done = false;
     const timer = setTimeout(() => {
       if (done) return;
@@ -129,13 +130,57 @@ function exec(sessionId, command, timeoutMs = 15000) {
   });
 }
 
+/**
+ * 로컬 터미널 세션. SSH 대신 이 PC 의 셸을 PTY 로 띄운다.
+ * 같은 sessions 맵에 넣어 write/resize/close/count 가 그대로 통한다.
+ */
+function openLocal(size, handlers) {
+  const pty = require('node-pty'); // 네이티브 모듈 — 실제로 쓸 때만 로드
+  const sessionId = crypto.randomUUID();
+  const isWin = process.platform === 'win32';
+  // 사용자의 기본 셸: win 은 PowerShell, 그 외는 $SHELL (없으면 bash/zsh)
+  const shell = isWin
+    ? 'powershell.exe'
+    : process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
+  const meta = { profile: { local: true, shell }, closed: false, local: true };
+
+  const term = pty.spawn(shell, isWin ? [] : ['-l'], {
+    name: 'xterm-256color',
+    cols: (size && size.cols) || 80,
+    rows: (size && size.rows) || 24,
+    cwd: process.env.HOME || process.env.USERPROFILE || undefined,
+    env: process.env
+  });
+  sessions.set(sessionId, { local: true, term, meta });
+
+  term.onData((d) => handlers.onData(sessionId, d));
+  term.onExit(({ exitCode }) => {
+    if (meta.closed) return;
+    meta.closed = true;
+    sessions.delete(sessionId);
+    handlers.onExit(sessionId, exitCode || 0);
+  });
+  // PTY 는 즉시 준비된다
+  setTimeout(() => handlers.onReady(sessionId), 0);
+  return sessionId;
+}
+
 function write(sessionId, data) {
   const s = sessions.get(sessionId);
+  if (s && s.local) return s.term.write(data);
   if (s && s.stream) s.stream.write(data);
 }
 
 function resize(sessionId, cols, rows) {
   const s = sessions.get(sessionId);
+  if (s && s.local) {
+    try {
+      s.term.resize(cols, rows);
+    } catch (e) {
+      /* noop */
+    }
+    return;
+  }
   if (s && s.stream) {
     try {
       s.stream.setWindow(rows, cols, 0, 0);
@@ -150,8 +195,11 @@ function close(sessionId) {
   if (!s) return;
   s.meta.closed = true;
   try {
-    if (s.stream) s.stream.end();
-    s.client.end();
+    if (s.local) s.term.kill();
+    else {
+      if (s.stream) s.stream.end();
+      s.client.end();
+    }
   } catch (e) {
     /* noop */
   }
@@ -167,4 +215,4 @@ function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
-module.exports = { open, exec, write, resize, close, closeAll, count };
+module.exports = { open, openLocal, exec, write, resize, close, closeAll, count };

@@ -452,6 +452,23 @@ async function startSession(leaf) {
   const group = state.groups.find((g) => g.id === leaf.groupId);
   const h = group.host;
   leaf.status = 'connecting';
+
+  // 로컬 터미널: SSH 없이 이 PC 의 셸을 PTY 로 띄운다
+  if (leaf.connect && leaf.connect.local) {
+    render();
+    try {
+      const res = await api.ssh.spawnLocal({ cols: leaf.term.cols, rows: leaf.term.rows });
+      leaf.sessionId = res.sessionId;
+      sessionToLeaf.set(res.sessionId, leaf);
+      render();
+    } catch (err) {
+      leaf.status = 'error';
+      leaf.term.writeln(`\r\n\x1b[31m✖ 로컬 터미널 실패: ${String(err.message || err).replace(/^Error:\s*/, '')}\x1b[0m`);
+      render();
+    }
+    return;
+  }
+
   leaf.term.writeln(`\x1b[90m→ ${h.username}@${h.host}:${h.port} 접속 중…\x1b[0m`);
   render();
 
@@ -479,7 +496,7 @@ async function startSession(leaf) {
 /** 종료/실패한 페인을 같은 정보로 재접속 (정보가 없으면 접속 창을 연다) */
 function reconnect(leaf) {
   const conn = leaf.connect || {};
-  if (!conn.hostId && !conn.credId && !conn.profile) {
+  if (!conn.local && !conn.hostId && !conn.credId && !conn.profile) {
     const group = state.groups.find((g) => g.id === leaf.groupId);
     if (group) openConnectDialog({ group });
     return;
@@ -925,6 +942,26 @@ function createGroup(hostInfo, connect) {
   return group;
 }
 
+/** 로컬 터미널 메인탭을 만든다 (SSH 없이 이 PC 의 셸) */
+function createLocalGroup() {
+  const group = {
+    id: nextId('g'),
+    host: { id: null, name: '로컬 터미널', host: 'local', port: 0, username: 'local' },
+    credId: null,
+    connect: { local: true }, // 분할/서브탭 추가 때도 이 표시로 로컬 PTY 를 띄운다
+    isLocal: true,
+    tabs: [],
+    activeTabId: null,
+    explorer: null,
+    explorerPinned: false, // SFTP 가 없으므로 탐색기는 쓰지 않는다
+    explorerSelected: false
+  };
+  state.groups.push(group);
+  state.activeGroupId = group.id;
+  createTab(group, { local: true });
+  return group;
+}
+
 /** 웹페이지만 있는 메인탭을 만든다 (SSH 접속 없이) */
 function createWebGroup(url) {
   const group = {
@@ -1050,7 +1087,7 @@ function splitActive(dir) {
 
   const group = state.groups.find((g) => g.id === tab.groupId);
   const connect = leaf.connect || group.connect || { hostId: group.host.id || null, credId: group.credId };
-  if (!connect.hostId && !connect.credId) {
+  if (!connect.local && !connect.hostId && !connect.credId) {
     openConnectDialog({ group });
     return;
   }
@@ -1743,6 +1780,7 @@ function sessionSnapshot() {
     dockWidth,
     activeGroupIndex: state.groups.findIndex((g) => g.id === state.activeGroupId),
     groups: state.groups.map((g) => ({
+      isLocal: Boolean(g.isLocal), // 로컬 터미널 그룹
       hostId: (g.connect && g.connect.hostId) || g.host.id || null,
       host: {
         name: g.host.name,
@@ -1802,8 +1840,10 @@ async function restoreSession() {
       id: nextId('g'),
       host: { id: gs.hostId || null, ...gs.host },
       credId: null,
-      // 저장된 호스트면 그 정보로 자동 접속, 아니면 접속하지 않고 남겨둔다
-      connect: gs.hostId ? { hostId: gs.hostId, credId: null } : null,
+      isLocal: Boolean(gs.isLocal),
+      // 로컬 터미널은 그대로 다시 띄우고, 저장된 호스트면 자동 접속,
+      // 그 밖에는 접속하지 않고 남겨둔다
+      connect: gs.isLocal ? { local: true } : gs.hostId ? { hostId: gs.hostId, credId: null } : null,
       tabs: [],
       activeTabId: null,
       explorer: null,
@@ -2268,6 +2308,8 @@ function renderSubstrip() {
   el.substrip.classList.remove('hidden');
 
   // 맨 왼쪽: 항상 존재하는 "파일 탐색기" 서브탭 (📌 로 왼쪽 고정 전환)
+  // 로컬 터미널 그룹은 SFTP 가 없으므로 표시하지 않는다
+  if (!group.isLocal) {
   const exTab = document.createElement('div');
   exTab.className =
     'subtab subtab-explorer' +
@@ -2306,6 +2348,7 @@ function renderSubstrip() {
     ]);
   });
   el.substrip.appendChild(exTab);
+  }
 
   group.tabs.forEach((tab, ti) => {
     const node = document.createElement('div');
@@ -2510,9 +2553,10 @@ function openPaneModeMenu(leaf, ev) {
       if (leaf.mode !== mode) setLeafMode(leaf, mode);
     }
   ];
+  const grp = state.groups.find((g) => g.id === leaf.groupId);
   items.push(row('🌐  웹페이지', 'web'));
   items.push(row('📝  메모', 'notes'));
-  items.push(row('📁  파일', 'explorer'));
+  if (!grp || !grp.isLocal) items.push(row('📁  파일', 'explorer')); // 로컬은 SFTP 없음
 
   // 버튼 바로 아래에 펼친다 (위치를 못 재었으면 마우스 자리에)
   if (anchor) showContextMenu(anchor.x, anchor.y, items, { alignRight: true });
@@ -3435,6 +3479,7 @@ const dlg = {
   webChromeInfo: document.getElementById('web-chrome-info'),
   webFavList: document.getElementById('web-fav-list'),
   openWebBtn: document.getElementById('modal-open-web'),
+  localBtn: document.getElementById('modal-local'),
   body: document.querySelector('#modal .modal-body'),
   saveBtn: document.getElementById('host-save'),
   newBtn: document.getElementById('host-new')
@@ -3461,6 +3506,7 @@ async function setDialogMode(mode) {
     b.classList.toggle('hidden', mode === 'web' || (b === dlg.saveBtn && !dlgSelectedId) || (b === dlg.deleteBtn && !dlgSelectedId));
   }
   dlg.openWebBtn.classList.toggle('hidden', mode !== 'web');
+  dlg.localBtn.classList.toggle('hidden', mode === 'web');
   dlg.title.textContent = mode === 'web' ? '웹페이지 열기' : dlgTargetGroup ? `"${dlgTargetGroup.host.name}" 그룹에 서브탭 추가` : '새 SSH 접속';
 
   if (mode === 'web') {
@@ -3663,6 +3709,12 @@ dlg.webUrl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') openWebPage();
 });
 dlg.openWebBtn.addEventListener('click', () => openWebPage());
+dlg.localBtn.addEventListener('click', () => {
+  const target = dlgTargetGroup;
+  closeDialog();
+  if (target) createTab(target, { local: true }); // 기존 그룹에 로컬 서브탭
+  else createLocalGroup();
+});
 dlg.newBtn.addEventListener('click', clearForm);
 dlg.registerBtn.addEventListener('click', registerHost);
 dlg.saveBtn.addEventListener('click', saveHost);

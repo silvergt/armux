@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('armux', {
 
   ssh: {
     connect: (payload) => ipcRenderer.invoke('ssh:connect', payload),
+    spawnLocal: (size) => ipcRenderer.invoke('local:spawn', { size }),
     write: (id, data) => ipcRenderer.send('ssh:write', { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send('ssh:resize', { id, cols, rows }),
     close: (id) => ipcRenderer.send('ssh:close', { id }),
