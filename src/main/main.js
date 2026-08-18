@@ -88,6 +88,27 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // 렌더러(화면 프로세스)가 죽어도 앱이 통째로 꺼지지 않게 자동 복구한다.
+  // 새로고침하면 지난 세션 복원 기능이 탭 구성을 되살린다.
+  // 1분에 4번 이상 반복해서 죽으면 루프 방지를 위해 안내만 하고 멈춘다.
+  let rendererCrashAt = [];
+  mainWindow.webContents.on('render-process-gone', (e2, details) => {
+    if (!details || details.reason === 'clean-exit') return;
+    console.error('[armux] renderer crashed:', details.reason, details.exitCode);
+    const now = Date.now();
+    rendererCrashAt = rendererCrashAt.filter((t) => now - t < 60000);
+    rendererCrashAt.push(now);
+    if (rendererCrashAt.length <= 3) {
+      mainWindow.webContents.reload();
+    } else {
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        message: '화면이 반복해서 중단됩니다.',
+        detail: `이유: ${details.reason}. 앱을 다시 시작해 주세요. 계속되면 GitHub 이슈로 알려주세요.`
+      });
+    }
+  });
+
   updater.init(send); // 업데이트 진행 상태를 렌더러로 보낸다
 
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });

@@ -356,18 +356,29 @@ function createLeaf(tab, connect, options) {
 
   // GPU 렌더러. 기본 DOM 렌더러보다 훨씬 가볍다(특히 macOS).
   // 컨텍스트를 잃으면 자동으로 기본 렌더러로 돌아간다.
-  try {
-    const webgl = new WebglAddon.WebglAddon();
-    webgl.onContextLoss(() => {
-      try {
-        webgl.dispose();
-      } catch (e2) {
-        /* noop */
-      }
-    });
-    term.loadAddon(webgl);
-  } catch (e) {
-    /* WebGL 을 못 쓰면 기본 렌더러로 그대로 간다 */
+  //
+  // 단, 파일/웹 전용 판(orphan+silent)은 터미널을 화면에 그리지 않으므로 만들지
+  // 않고, 살아 있는 WebGL 판 수도 제한한다 — 브라우저는 WebGL 컨텍스트를
+  // ~16개까지만 허용해서 넘치면 GPU 프로세스가 불안정해져 앱이 통째로 죽을 수 있다.
+  const isViewerOnly = opts.mode === 'orphan' && opts.silent;
+  let webglLive = 0;
+  for (const g of state.groups) for (const t of g.tabs) for (const lf of leavesOf(t.root)) if (lf._webgl) webglLive++;
+  if (!isViewerOnly && webglLive < 12) {
+    try {
+      const webgl = new WebglAddon.WebglAddon();
+      webgl.onContextLoss(() => {
+        leaf._webgl = false;
+        try {
+          webgl.dispose();
+        } catch (e2) {
+          /* noop */
+        }
+      });
+      term.loadAddon(webgl);
+      leaf._webgl = true;
+    } catch (e) {
+      /* WebGL 을 못 쓰면 기본 렌더러로 그대로 간다 */
+    }
   }
 
   leaf.el = pane;
@@ -2698,16 +2709,30 @@ api.onMenu(async (cmd, arg) => {
       break;
     // 입력칸(메모장·주소창·다이얼로그)에서는 브라우저 기본 편집 동작을,
     // 터미널에서는 xterm 선택/SSH 쓰기를 쓴다.
-    case 'copy':
+    case 'copy': {
+      // 파일 뷰어 등에서 드래그로 고른 일반 텍스트 선택이 있으면 그것을 먼저 복사한다
+      const domSel = String(window.getSelection ? window.getSelection() : '');
       if (isTextInput(document.activeElement)) document.execCommand('copy');
+      else if (domSel) api.util.clipboardWrite(domSel);
       else if (l && l.mode !== 'web' && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
       break;
+    }
     case 'cut':
       if (isTextInput(document.activeElement)) document.execCommand('cut');
       break;
     case 'selectAll':
       if (isTextInput(document.activeElement)) document.activeElement.select();
-      else if (l && l.mode !== 'web') l.term.selectAll();
+      else if (l && l.mode === 'file') {
+        // 파일 뷰(구문 강조 <pre>) 전체 선택
+        const code = l.el && l.el.querySelector('.fv-code');
+        if (code && window.getSelection) {
+          const r = document.createRange();
+          r.selectNodeContents(code);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(r);
+        }
+      } else if (l && l.mode !== 'web') l.term.selectAll();
       break;
     case 'paste': {
       if (isTextInput(document.activeElement)) {
