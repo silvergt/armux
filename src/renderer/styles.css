@@ -1304,6 +1304,10 @@ button {
 .tab.active.drop-after {
   box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent);
 }
+.subtab.drop-merge {
+  background: #16324a;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 
 .ex-btn:disabled,
 .ex-btn.disabled {
@@ -1339,7 +1343,7 @@ button {
   gap: 10px;
   flex: 1;
   min-width: 0;
-  justify-content: flex-end; /* 오른쪽 정렬 (상세 정보 표시는 없앴다) */
+  justify-content: center; /* 하단바 가운데 */
 }
 #status-claude.hidden {
   display: none;
@@ -2066,10 +2070,11 @@ body.is-mac #mac-spacer {
 
 /* ipynb */
 .fv-nb { position: absolute; inset: 0; overflow: auto; padding: 12px; user-select: text; }
-.nb-cell { display: flex; gap: 8px; margin-bottom: 10px; }
+.nb-cell { display: flex; gap: 8px; margin-bottom: 10px; align-items: flex-start; }
 .nb-gutter { flex: none; width: 44px; text-align: right; color: #6f7784; font-family: Menlo,Consolas,monospace; font-size: 11px; padding-top: 6px; }
 .nb-main { flex: 1; min-width: 0; }
 .nb-src {
+  display: block; box-sizing: border-box; min-height: 28px;
   width: 100%; resize: none; border: 1px solid var(--border); border-radius: 6px;
   background: #0f1115; color: #dfe4ea; font-family: Menlo,Consolas,"D2Coding",monospace;
   font-size: 12.5px; line-height: 1.5; padding: 8px 10px; overflow: hidden; user-select: text;
@@ -2142,3 +2147,8 @@ body.is-mac #mac-spacer {
 #modal .hint, #modal .form-hint { color: #6f7784; }
 #modal .form-hint b { color: #9fd0ff; }
 #web-form .web-form-body { padding-top: 22px; }
+
+/* 하단바를 3등분해 Claude 영역이 정중앙에 오도록 */
+#statusbar { position: relative; }
+#status-left { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#status-rspace { flex: 1 1 0; }

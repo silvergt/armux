@@ -1127,14 +1127,8 @@ function ensureExplorer(group) {
  * (터미널 창은 그대로 두고, 파일은 별도 탭으로 열린다. 닫으면 그 탭이 사라진다.)
  */
 async function openFileInPane(group, entry) {
-  const ok = await api.util.confirm(
-    `"${entry.name}" 을(를) 새 탭으로 열까요?`,
-    '터미널은 그대로 두고 새 탭에 파일이 열립니다.',
-    '열기'
-  );
-  if (!ok) return;
-
   const tab = makeTabShell(group);
+  tab.customTitle = entry.name; // 서브탭 제목을 파일명으로
   const leaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 파일 전용 판
   tab.root = leaf;
   tab.activeLeafId = leaf.id;
@@ -1897,8 +1891,13 @@ function renderClaudeStatus() {
  * @param {string} kind       'group' | 'tab' — 다른 스트립으로는 못 끌게 구분용
  * @param {Function} after    정렬이 끝난 뒤 호출
  */
-function makeReorderable(node, arr, index, kind, after) {
+/**
+ * 드래그로 순서 바꾸기. 서브탭(kind==='tab')은 가운데에 떨어뜨리면 "합치기"(onMerge)도 지원한다.
+ * @param {Function} onMerge (fromIndex,toIndex) => void  (서브탭에서만 사용)
+ */
+function makeReorderable(node, arr, index, kind, after, onMerge) {
   node.draggable = true;
+  const canMerge = kind === 'tab' && typeof onMerge === 'function';
 
   node.addEventListener('dragstart', (e) => {
     e.dataTransfer.effectAllowed = 'move';
@@ -1912,18 +1911,26 @@ function makeReorderable(node, arr, index, kind, after) {
     clearDropMarks(node.parentElement);
   });
 
+  // 가운데 40% 구역이면 합치기, 양 끝이면 순서 바꾸기
+  const zoneOf = (e) => {
+    const r = node.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    if (canMerge && x > 0.3 && x < 0.7) return 'merge';
+    return x > 0.5 ? 'after' : 'before';
+  };
+
   node.addEventListener('dragover', (e) => {
     if (!e.dataTransfer.types.includes(`armux/${kind}`)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    const r = node.getBoundingClientRect();
-    const after0 = e.clientX > r.left + r.width / 2; // 절반을 넘겼으면 오른쪽에 삽입
-    node.classList.toggle('drop-before', !after0);
-    node.classList.toggle('drop-after', after0);
+    const z = zoneOf(e);
+    node.classList.toggle('drop-before', z === 'before');
+    node.classList.toggle('drop-after', z === 'after');
+    node.classList.toggle('drop-merge', z === 'merge');
   });
 
   node.addEventListener('dragleave', () => {
-    node.classList.remove('drop-before', 'drop-after');
+    node.classList.remove('drop-before', 'drop-after', 'drop-merge');
   });
 
   node.addEventListener('drop', (e) => {
@@ -1932,15 +1939,51 @@ function makeReorderable(node, arr, index, kind, after) {
     e.preventDefault();
     e.stopPropagation();
     const from = Number(raw);
-    const r = node.getBoundingClientRect();
-    let to = index + (e.clientX > r.left + r.width / 2 ? 1 : 0);
+    const z = zoneOf(e);
     clearDropMarks(node.parentElement);
-    if (Number.isNaN(from) || from === to || from + 1 === to) return;
+    if (Number.isNaN(from)) return;
+
+    if (z === 'merge') {
+      if (from !== index) onMerge(from, index); // 다른 서브탭을 이 서브탭 안으로 합친다
+      return;
+    }
+    let to = index + (z === 'after' ? 1 : 0);
+    if (from === to || from + 1 === to) return;
     if (from < to) to -= 1; // 앞에서 빼면 뒤 인덱스가 하나 당겨진다
     const [moved] = arr.splice(from, 1);
     arr.splice(to, 0, moved);
     after();
   });
+}
+
+/**
+ * 서브탭 합치기: 소스 서브탭의 판들을 대상 서브탭 안으로 넣는다(좌우 분할로 결합).
+ * 세션은 그대로 살아 있고 위치만 옮겨진다.
+ */
+function mergeSubTabs(group, fromIndex, toIndex) {
+  const src = group.tabs[fromIndex];
+  const dst = group.tabs[toIndex];
+  if (!src || !dst || src === dst) return;
+
+  // 대상 트리와 소스 트리를 좌우 분할로 묶는다
+  dst.root = { kind: 'split', id: nextId('s'), dir: 'row', sizes: [0.5, 0.5], children: [dst.root, src.root] };
+
+  // 소스의 모든 판을 대상 탭 소속으로 바꾸고 DOM 도 대상으로 옮긴다(layoutTab 이 leaf.el 을 재배치)
+  for (const leaf of leavesOf(src.root)) leaf.tabId = dst.id;
+
+  // 소스 탭 껍데기 제거 (판은 살려둔다 — dispose 하지 않음)
+  const idx = group.tabs.indexOf(src);
+  group.tabs.splice(idx, 1);
+  src.container.remove();
+  if (src.explorer) {
+    /* 서브탭엔 탐색기 인스턴스가 없다 */
+  }
+
+  group.activeTabId = dst.id;
+  layoutTab(dst);
+  render();
+  fitTab(dst);
+  saveSession();
 }
 
 function clearDropMarks(container) {
@@ -2143,10 +2186,17 @@ function renderSubstrip() {
     node.appendChild(close);
 
     // 끌어서 서브탭 순서 바꾸기
-    makeReorderable(node, group.tabs, ti, 'tab', () => {
-      render();
-      fitTab(activeTab());
-    });
+    makeReorderable(
+      node,
+      group.tabs,
+      ti,
+      'tab',
+      () => {
+        render();
+        fitTab(activeTab());
+      },
+      (from, to) => mergeSubTabs(group, from, to) // 가운데로 드롭하면 합치기
+    );
 
     node.addEventListener('click', () => selectTab(group, tab.id));
     node.addEventListener('auxclick', (e) => {
@@ -2796,7 +2846,10 @@ window.addEventListener(
         const l = activeLeaf();
         const g = activeGroup();
         if (g && g.explorerSelected && !g.explorerPinned) leaveExplorer(g);
-        else if (l) closeLeaf(l);
+        else if (l && l.mode === 'file') {
+          const t = g && g.tabs.find((x) => x.id === l.tabId);
+          if (t) closeFileTab(g, t);
+        } else if (l) closeLeaf(l);
         return;
       }
     }

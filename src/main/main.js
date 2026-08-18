@@ -386,22 +386,31 @@ function wrapLogin(script) {
 }
 
 ipcMain.handle('sftp:parquetPreview', async (e, { sessionId, path: p, limit }) => {
-  const n = Number(limit) || 200;
+  const n = Number(limit) || 300;
   const q = p.replace(/'/g, `'\\''`);
+  // venv/conda 등 여러 곳에서 pandas 있는 python 을 직접 찾는다(로그인 PATH 에 없어도).
   const script =
-    `command -v duckdb >/dev/null 2>&1 && duckdb -csv -c "SELECT * FROM read_parquet('${q}') LIMIT ${n}" 2>/dev/null` +
-    ` || python3 - <<'PYEOF' 2>/dev/null
+    `F='${q}'; N=${n}
 ` +
-    `import sys
-try:
- import pandas as pd
- df=pd.read_parquet('${q}')
- print("ARMUX_SHAPE:%d,%d"%(df.shape[0],df.shape[1]))
- print(df.head(${n}).to_csv(index=False),end="")
-except Exception as ex:
- print("ARMUX_ERR:"+str(ex))
-PYEOF
-`;
+    `CANDS="python3 python $VIRTUAL_ENV/bin/python $HOME/.virtualenv/*/bin/python $HOME/.venv/bin/python $HOME/venv/bin/python $HOME/miniconda3/bin/python $HOME/anaconda3/bin/python /opt/conda/bin/python $HOME/miniconda3/envs/*/bin/python $HOME/anaconda3/envs/*/bin/python"
+` +
+    `if command -v duckdb >/dev/null 2>&1; then
+` +
+    `  duckdb -csv -c "SELECT * FROM read_parquet('$F') LIMIT $N" 2>/dev/null && exit 0
+` +
+    `fi
+` +
+    `for PY in $CANDS; do
+` +
+    `  [ -x "$PY" ] || command -v "$PY" >/dev/null 2>&1 || continue
+` +
+    `  "$PY" -c 'import pandas' 2>/dev/null || continue
+` +
+    `  "$PY" -c 'import sys,pandas as pd; df=pd.read_parquet(sys.argv[1]); print("ARMUX_SHAPE:%d,%d"%df.shape); print(df.head(int(sys.argv[2])).to_csv(index=False),end="")' "$F" "$N" && exit 0
+` +
+    `done
+` +
+    `echo ARMUX_ERR:no-pandas`;
   const { stdout } = await ssh.exec(sessionId, wrapLogin(script), 30000);
   return String(stdout);
 });
@@ -410,165 +419,27 @@ PYEOF
 ipcMain.handle('sftp:runNotebook', async (e, { sessionId, path: p, timeout }) => {
   const q = p.replace(/'/g, `'\\''`);
   const to = Number(timeout) || 300;
-  // nbconvert 를 여러 방법으로 시도(설치 형태가 제각각이므로). 없으면 명확히 알린다.
   const script =
-    `TO=${to}; F='${q}'; ` +
-    `run(){ "$@" --to notebook --execute --inplace --ExecutePreprocessor.timeout=$TO "$F"; }; ` +
-    `if command -v jupyter-nbconvert >/dev/null 2>&1; then run jupyter-nbconvert 2>&1 | tail -6; echo ARMUX_DONE; ` +
-    `elif command -v jupyter >/dev/null 2>&1 && jupyter nbconvert --version >/dev/null 2>&1; then run jupyter nbconvert 2>&1 | tail -6; echo ARMUX_DONE; ` +
-    `elif command -v python3 >/dev/null 2>&1 && python3 -c 'import nbconvert' 2>/dev/null; then run python3 -m nbconvert 2>&1 | tail -6; echo ARMUX_DONE; ` +
-    `else echo ARMUX_NONBCONVERT; fi`;
+    `F='${q}'; TO=${to}
+` +
+    `CANDS="python3 python $VIRTUAL_ENV/bin/python $HOME/.virtualenv/*/bin/python $HOME/.venv/bin/python $HOME/venv/bin/python $HOME/miniconda3/bin/python $HOME/anaconda3/bin/python /opt/conda/bin/python $HOME/miniconda3/envs/*/bin/python $HOME/anaconda3/envs/*/bin/python"
+` +
+    `for PY in $CANDS; do
+` +
+    `  [ -x "$PY" ] || command -v "$PY" >/dev/null 2>&1 || continue
+` +
+    `  "$PY" -c 'import nbconvert' 2>/dev/null || continue
+` +
+    `  "$PY" -m nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=$TO "$F" 2>&1 | tail -6; echo ARMUX_DONE; exit 0
+` +
+    `done
+` +
+    `echo ARMUX_NONBCONVERT`;
   const { stdout } = await ssh.exec(sessionId, wrapLogin(script), (to + 30) * 1000);
   return String(stdout);
 });
 
-/** 전송 진행률을 렌더러로 (100ms 간격으로만) */
-function progressReporter(id) {
-  let last = 0;
-  return (name, transferred, total) => {
-    const now = Date.now();
-    if (now - last < 100 && transferred !== total) return;
-    last = now;
-    send('sftp:progress', { id, name, transferred, total });
-  };
-}
-
-/** 원격 → 로컬. localPath 를 안 주면 저장 위치를 물어본다. */
-ipcMain.handle('sftp:download', async (e, { id, remote, name, isDir, localPath }) => {
-  let target = localPath;
-  if (!target) {
-    if (isDir) {
-      const res = await dialog.showOpenDialog(mainWindow, {
-        title: '폴더를 내려받을 위치 선택',
-        properties: ['openDirectory', 'createDirectory']
-      });
-      if (res.canceled || !res.filePaths.length) return null;
-      target = path.join(res.filePaths[0], name);
-    } else {
-      const res = await dialog.showSaveDialog(mainWindow, {
-        title: '다른 이름으로 저장',
-        defaultPath: path.join(app.getPath('downloads'), name)
-      });
-      if (res.canceled || !res.filePath) return null;
-      target = res.filePath;
-    }
-  }
-  await sftp.download(id, remote, target, progressReporter(id));
-  return target;
-});
-
-/** 로컬 → 원격 업로드 */
-ipcMain.handle('sftp:upload', async (e, { id, localPaths, remoteDir }) => {
-  const done = [];
-  for (const local of localPaths) {
-    const base = path.basename(local);
-    await sftp.upload(id, local, sftp.joinRemote(remoteDir, base), progressReporter(id));
-    done.push(base);
-  }
-  return done;
-});
-
-/** 로컬에서 업로드할 파일 고르기 */
-ipcMain.handle('sftp:pickUpload', async (e, { directory }) => {
-  const res = await dialog.showOpenDialog(mainWindow, {
-    title: directory ? '업로드할 폴더 선택' : '업로드할 파일 선택',
-    properties: directory ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections']
-  });
-  if (res.canceled) return [];
-  return res.filePaths;
-});
-
-/**
- * 탐색기에서 바탕화면 등으로 파일을 끌어다 놓기 위한 처리.
- * 원격 파일을 임시 폴더로 내려받은 뒤 OS 드래그를 시작한다.
- */
-ipcMain.handle('sftp:dragOut', async (e, { id, remote, name }) => {
-  const dir = path.join(app.getPath('temp'), 'armux-drag', String(Date.now()));
-  const local = path.join(dir, name);
-  await sftp.download(id, remote, local, progressReporter(id));
-  try {
-    e.sender.startDrag({ file: local, icon: dragIcon() });
-  } catch (err) {
-    return { path: local, dragStarted: false };
-  }
-  return { path: local, dragStarted: true };
-});
-
-/** startDrag 는 아이콘이 필수라 1x1 투명 이미지를 만들어 쓴다 */
-let cachedDragIcon = null;
-function dragIcon() {
-  if (!cachedDragIcon) {
-    const iconPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
-    const img = nativeImage.createFromPath(iconPath);
-    cachedDragIcon = img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 64, height: 64 });
-  }
-  return cachedDragIcon;
-}
-
-/* --------------------------- IPC: 앱 정보 / 업데이트 --------------------------- */
-
-/** 빌드 시점 정보 (scripts/write-buildinfo.js 가 만든다) */
-function buildInfo() {
-  try {
-    return require('../buildinfo.json');
-  } catch (err) {
-    return { version: app.getVersion(), builtAt: null, commit: '' };
-  }
-}
-
-ipcMain.handle('app:info', () => {
-  const info = buildInfo();
-  return {
-    name: 'Armux Terminal',
-    version: info.version || app.getVersion(),
-    builtAt: info.builtAt,
-    commit: info.commit || '',
-    developer: 'Jun Yeol Yang',
-    repoUrl: `https://github.com/${updater.REPO.owner}/${updater.REPO.repo}`,
-    releasesUrl: updater.RELEASES_URL,
-    electron: process.versions.electron,
-    node: process.versions.node,
-    packaged: app.isPackaged
-  };
-});
-
-ipcMain.handle('update:check', () => updater.check());
-ipcMain.handle('update:download', () => updater.download());
-ipcMain.handle('update:install', () => updater.install());
-ipcMain.handle('update:state', () => updater.getState());
-ipcMain.on('update:openReleases', () => updater.openReleases());
-ipcMain.on('app:openExternal', (e, url) => {
-  if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);
-});
-
-/* -------------------------------- IPC: 창 제어 -------------------------------- */
-
-ipcMain.on('win:toggleFullScreen', () => {
-  if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen());
-});
-ipcMain.on('win:toggleDevTools', () => {
-  if (mainWindow) mainWindow.webContents.toggleDevTools();
-});
-
-/* ------------------------------- IPC: 웹 페인 -------------------------------- */
-
-ipcMain.handle('web:chromeInfo', () => ({
-  chromiumVersion: process.versions.chrome,
-  historyAvailable: chromehistory.available()
-}));
-ipcMain.handle('web:historySuggest', (e, { query }) => {
-  try {
-    return chromehistory.suggest(query);
-  } catch (err) {
-    return [];
-  }
-});
-/** 시스템 기본 브라우저(보통 크롬)로 열기 */
-ipcMain.on('web:openExternal', (e, url) => {
-  if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);
-});
-
-/* --------------------------------- IPC: 메모장 -------------------------------- */
+/* --------------------------------- IPC: 메모장 -------------------------------- *//* --------------------------------- IPC: 메모장 -------------------------------- */
 
 ipcMain.handle('notes:list', () => notes.list());
 ipcMain.handle('notes:read', (e, { name }) => notes.read(name));

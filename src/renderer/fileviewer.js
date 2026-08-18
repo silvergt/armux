@@ -31,6 +31,16 @@ window.FileViewer = (function () {
     return m ? m[1] : '';
   };
 
+  const HLJS_LANG = {
+    js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', tsx: 'typescript',
+    py: 'python', sh: 'bash', bash: 'bash', zsh: 'bash',
+    json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini', ini: 'ini', conf: 'ini', cfg: 'ini', env: 'ini', properties: 'ini',
+    go: 'go', rs: 'rust', c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp', cc: 'cpp', java: 'java',
+    sql: 'sql', rb: 'ruby', php: 'php', html: 'xml', htm: 'xml', xml: 'xml', vue: 'xml', svelte: 'xml',
+    css: 'css', scss: 'css', less: 'css', md: 'markdown', markdown: 'markdown', dockerfile: 'dockerfile'
+  };
+
   function kindOf(name) {
     const e = extOf(name);
     if (e === 'ipynb') return 'ipynb';
@@ -196,7 +206,7 @@ window.FileViewer = (function () {
     closeBtn.className = 'fv-btn fv-close';
     closeBtn.textContent = '✕ 닫기';
     closeBtn.title = '파일을 닫고 터미널로 (Ctrl/⌘+W)';
-    closeBtn.addEventListener('click', () => requestClose());
+    closeBtn.addEventListener('click', () => opts.onClose());
 
     bar.append(title, dirtyDot, spacer, status, tools, closeBtn);
 
@@ -274,13 +284,60 @@ window.FileViewer = (function () {
       return { wrap, ta };
     }
 
+    function highlightLang() {
+      return HLJS_LANG[extOf(opts.name)] || null;
+    }
+
     function renderText() {
       tools.innerHTML = '';
+      const lang = highlightLang();
+      const hasHl = lang && window.hljs;
+      if (!state._textInit) {
+        state._textInit = true;
+        state.mode = hasHl ? 'view' : 'edit';
+      }
+
+      if (hasHl) {
+        addTool(state.mode === 'view' ? '편집' : '보기', '구문 강조 보기 ↔ 편집', () => {
+          state.mode = state.mode === 'view' ? 'edit' : 'view';
+          renderText();
+        });
+      }
+      if (extOf(opts.name) === 'json') {
+        addTool('정리', 'JSON 들여쓰기 정리', () => {
+          try {
+            state.content = JSON.stringify(JSON.parse(state.content), null, 2);
+            markDirty(true);
+            renderText();
+          } catch (e) {
+            setStatus('JSON 형식이 아니라 정리할 수 없습니다.', true);
+          }
+        });
+      }
       addTool('저장', '저장 (Ctrl/⌘+S)', save);
+
       body.innerHTML = '';
-      const { wrap, ta } = makeEditor(state.content);
-      body.appendChild(wrap);
-      state._focus = () => ta.focus();
+      if (hasHl && state.mode === 'view') {
+        const pre = document.createElement('pre');
+        pre.className = 'fv-code';
+        const code = document.createElement('code');
+        try {
+          code.innerHTML = window.hljs.highlight(state.content, { language: lang, ignoreIllegals: true }).value;
+        } catch (e) {
+          code.textContent = state.content;
+        }
+        pre.appendChild(code);
+        pre.title = '더블클릭하면 편집';
+        pre.addEventListener('dblclick', () => {
+          state.mode = 'edit';
+          renderText();
+        });
+        body.appendChild(pre);
+      } else {
+        const { wrap, ta } = makeEditor(state.content);
+        body.appendChild(wrap);
+        state._focus = () => ta.focus();
+      }
     }
 
     /* ------------------------------ 렌더: 마크다운 ------------------------------ */
@@ -423,6 +480,8 @@ window.FileViewer = (function () {
       const cells = Array.isArray(nb.cells) ? nb.cells : [];
       cells.forEach((cell, idx) => list.appendChild(renderCell(cell, idx)));
       body.appendChild(list);
+      // DOM 에 올라간 뒤에 코드 셀 높이를 다시 맞춘다(붙기 전엔 scrollHeight 가 0)
+      requestAnimationFrame(() => list.querySelectorAll('.nb-src').forEach(autoGrow));
       setStatus(`${cells.length}개 셀`, true);
     }
 
@@ -493,7 +552,8 @@ window.FileViewer = (function () {
 
     function autoGrow(ta) {
       ta.style.height = 'auto';
-      ta.style.height = Math.min(600, ta.scrollHeight + 2) + 'px';
+      const h = ta.scrollHeight || (ta.value.split('\n').length * 18 + 16);
+      ta.style.height = Math.max(28, Math.min(600, h + 2)) + 'px';
     }
 
     function renderOutput(o) {
