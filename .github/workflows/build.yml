@@ -58,8 +58,17 @@ jobs:
         run: |
           set -e
           TAG="${GITHUB_REF_NAME}"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" -t "$TAG" -n "Armux Terminal $TAG" || true
+          # 변경점 요약(RELEASE_NOTES.md)이 있으면 릴리스 본문으로 쓴다.
+          # win/mac 두 잡이 동시에 도니 먼저 온 쪽이 만들고, 나머지는 본문만 맞춘다.
+          if [ -f RELEASE_NOTES.md ]; then
+            gh release view "$TAG" >/dev/null 2>&1 \
+              && gh release edit "$TAG" -t "$TAG" --notes-file RELEASE_NOTES.md || true
+            gh release view "$TAG" >/dev/null 2>&1 || \
+              gh release create "$TAG" -t "$TAG" --notes-file RELEASE_NOTES.md || true
+          else
+            gh release view "$TAG" >/dev/null 2>&1 || \
+              gh release create "$TAG" -t "$TAG" -n "Armux Terminal $TAG" || true
+          fi
           shopt -s nullglob
           rm -f dist/builder-debug.yml
           files=(dist/*.exe dist/*.dmg dist/*.zip dist/*.yml dist/*.blockmap)
