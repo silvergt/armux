@@ -97,7 +97,8 @@ contextBridge.exposeInMainWorld('armux', {
 
   /** 원격 서버의 Claude Code 로그인/사용량 정보 */
   claude: {
-    info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId })
+    info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId }),
+    installHooks: (sessionId) => ipcRenderer.invoke('claude:installHooks', { sessionId })
   },
 
   util: {

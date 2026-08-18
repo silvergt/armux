@@ -11,6 +11,7 @@ const claudeinfo = require('./claudeinfo');
 const notes = require('./notes');
 const updater = require('./updater');
 const chromehistory = require('./chromehistory');
+const claudehooks = require('./claudehooks');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
@@ -560,6 +561,14 @@ ipcMain.handle('session:load', () => {
 ipcMain.on('session:save', (e, snapshot) => writeSession(snapshot));
 
 /* ----------------------------- IPC: Claude 계정 정보 ---------------------------- */
+
+ipcMain.handle('claude:installHooks', async (e, { sessionId }) => {
+  try {
+    return await claudehooks.install(sessionId);
+  } catch (err) {
+    return false;
+  }
+});
 
 ipcMain.handle('claude:info', async (e, { sessionId }) => {
   try {

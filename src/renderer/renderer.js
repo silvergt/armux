@@ -256,6 +256,35 @@ function createLeaf(tab, connect, options) {
     /* noop */
   }
 
+  // OSC 6789: Claude Code 훅이 보내는 상태 신호(우리가 원격 settings.json 에 심는다).
+  //   armux-status;busy → 작업 시작, ;idle → 완료, ;alert → 입력/권한 대기.
+  // 화면 추측보다 정확하므로, 한 번이라도 신호가 오면 이 판은 훅 상태를 따른다.
+  try {
+    term.parser.registerOscHandler(6789, (data) => {
+      const parts = String(data).split(';'); // "armux-status;<sig>"
+      if (parts[0] !== 'armux-status') return true;
+      const sig = parts[1];
+      leaf.hooksActive = true;
+      leaf.hookAt = Date.now();
+      if (sig === 'busy') {
+        clearAlert(leaf);
+        leaf.hookBusy = true;
+      } else if (sig === 'idle') {
+        leaf.hookBusy = false;
+        const cur = activeLeaf();
+        const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
+        if (!looking) raiseAlert(leaf); // 끝났는데 안 보고 있으면 알림
+      } else if (sig === 'alert') {
+        leaf.hookBusy = false;
+        raiseAlert(leaf, true); // 입력/권한 대기 — 보고 있어도 표시
+      }
+      scheduleRender();
+      return true;
+    });
+  } catch (e) {
+    /* noop */
+  }
+
   // OSC 52: tmux·vim 등이 시스템 클립보드로 복사할 때 쓰는 시퀀스를 받아 실제로 클립보드에 쓴다.
   // (이게 없으면 tmux 복사가 tmux 자체 버퍼에만 들어가 앱 밖에서 붙여넣기가 안 된다)
   try {
@@ -504,7 +533,19 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
  * 일반 명령 실행이나 전체화면 앱은 따로 표시하지 않는다.
  */
 // Claude Code 가 "작업 중"일 때만 화면 하단에 나타나는 문구들
-const CLAUDE_WORK_RE = /esc to interrupt|interrupt\)|to interrupt/i;
+/**
+ * 한 줄이 Claude 의 "작업 중" 라이브 상태줄인지 판별한다.
+ * 상태줄은 "esc to interrupt" 와 함께 항상 스피너 말줄임표(…)나 진행 표시(초·토큰),
+ * 또는 "ctrl+t" 힌트를 같은 줄에 달고 있다.
+ * 대화 본문에 그냥 "(esc to interrupt)" 라는 말이 들어 있어도 이런 동반 표시가 없어 걸러진다.
+ */
+const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
+function isClaudeWorkingLine(line) {
+  if (!/esc to interrupt/i.test(line)) return false;
+  // 라이브 상태줄은 줄 맨 앞에 스피너 글리프가 있다. 대화 본문은 글자/한글로 시작하므로 걸러진다.
+  const first = line.trimStart()[0];
+  return Boolean(first) && SPINNER_GLYPHS.includes(first);
+}
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
 /** 마지막 비어 있지 않은 줄 */
@@ -548,10 +589,14 @@ function feedAlertDetector(leaf, text) {
 }
 
 /** 알림 켜기. 지금 보고 있는 페인이면 굳이 표시하지 않는다. */
-function raiseAlert(leaf) {
+function raiseAlert(leaf, force) {
   if (leaf.alert) return;
-  const cur = activeLeaf();
-  if (cur && cur.id === leaf.id && document.hasFocus()) return;
+  // 보통은 지금 보고 있는 판이면 표시하지 않는다.
+  // 단 force(권한/입력 대기 알림)면 보고 있어도 표시한다.
+  if (!force) {
+    const cur = activeLeaf();
+    if (cur && cur.id === leaf.id && document.hasFocus()) return;
+  }
   leaf.alert = true;
   scheduleRender();
 }
@@ -588,6 +633,24 @@ function readScreenTail(leaf) {
     if (line) text += line.translateToString(true) + '\n';
   }
   return text;
+}
+
+/**
+ * 화면에서 눈에 보이는 "마지막 비어 있지 않은 몇 줄"만 돌려준다.
+ * Claude 의 라이브 상태줄은 항상 화면 맨 아래에 있으므로, 이 부분만 검사하면
+ * 위쪽 대화 본문에 우연히 들어간 문구를 상태줄로 오인하지 않는다.
+ */
+function bottomNonEmptyLines(leaf, n = 3) {
+  const buf = leaf.term.buffer.active;
+  const end = Math.min(buf.length, buf.baseY + leaf.term.rows);
+  const lines = [];
+  for (let i = end - 1; i >= buf.baseY && lines.length < n; i--) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    const t = line.translateToString(true).replace(/\s+$/, '');
+    if (t.trim()) lines.push(t);
+  }
+  return lines; // 아래에서 위 순서
 }
 
 /** tmux 안인지 (상태줄로 판단) */
@@ -636,9 +699,24 @@ function evaluateActivity() {
     for (const t of g.tabs) {
       if (t !== curTab && !scanBackground) continue;
       for (const leaf of leavesOf(t.root)) {
-        // 화면에 Claude 의 작업 안내 문구가 지금 보이는가 (출력량은 보지 않는다)
+        // 훅 신호를 한 번이라도 받은 판은 훅 상태를 그대로 따른다(가장 정확).
+        // 알림 전환은 OSC 핸들러에서 이미 처리하므로 여기서는 스피너만 반영한다.
+        if (leaf.hooksActive) {
+          const kindH = leaf.mode !== 'web' && leaf.status === 'ready' && leaf.hookBusy ? 'busy' : null;
+          if (leaf.spin !== kindH) {
+            leaf.spin = kindH;
+            changed = true;
+          }
+          leaf.wasThinking = Boolean(kindH);
+          continue;
+        }
+
+        // (폴백) 훅이 아직 없는 세션: 화면 맨 아래 "작업 중 상태줄" 을 본다.
+        // 대화 본문에 "esc to interrupt" 라는 말이 있어도 줄 맨 앞 스피너 글리프가 없어 걸러진다.
         const seen =
-          leaf.mode !== 'web' && leaf.status === 'ready' && CLAUDE_WORK_RE.test(readScreenTail(leaf));
+          leaf.mode !== 'web' &&
+          leaf.status === 'ready' &&
+          bottomNonEmptyLines(leaf, 3).some(isClaudeWorkingLine);
 
         // 히스테리시스(시간 기반): 보이면 곧바로 thinking, 마지막으로 본 지 0.8초 안이면 유지.
         // → 다시 그리는 순간 한 프레임 놓쳐도 깜빡이지 않고(기본 원 안 뜸),
@@ -2411,6 +2489,16 @@ api.ssh.onReady(({ id }) => {
   leaf.status = 'ready';
   const grp = state.groups.find((g) => g.id === leaf.groupId);
   if (grp) setTimeout(() => refreshClaudeInfo(grp, true), 800);
+  // Claude 상태 훅을 그 서버에 한 번 설치한다(정확한 스피너/알림용).
+  // 이미 실행 중인 Claude 에는 다음 실행부터 적용된다.
+  if (grp && !grp.hooksInstalled) {
+    grp.hooksInstalled = true;
+    setTimeout(() => {
+      api.claude.installHooks(id).catch(() => {
+        grp.hooksInstalled = false; // 실패하면 다음 세션에서 다시 시도
+      });
+    }, 1200);
+  }
   api.ssh.resize(id, leaf.term.cols, leaf.term.rows);
   render();
   const cur = activeLeaf();
