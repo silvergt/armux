@@ -1781,13 +1781,12 @@ function rebuildLayout(tab, group, node, schedule) {
 
 /*
  * 사용량 조회 주기.
- * 사용량 창은 5시간·7일 단위라 분 단위로 새로 받아 봐야 값이 거의 그대로다.
- * 반면 Anthropic 사용량 API 는 호출이 잦으면 rate_limit 을 돌려주므로,
- * 예전의 60초 폴링은 스스로 제한을 만들어 내고 있었다. 10분으로 늦춘다.
+ * 평소에는 1분마다 갱신해 값을 최신으로 유지한다.
+ * 다만 Anthropic 사용량 API 는 호출이 잦으면 rate_limit 을 돌려주므로,
+ * 제한에 걸리면 10분을 쉬었다가 다시 부른다(쉬는 동안 부르면 제한만 갱신된다).
  */
-const CLAUDE_POLL_MS = 600000; // 10분마다 갱신
-const CLAUDE_BACKOFF_MIN_MS = 600000; // 제한에 걸리면 최소 10분 대기
-const CLAUDE_BACKOFF_MAX_MS = 3600000; // 계속 걸리면 최대 1시간까지 늘린다
+const CLAUDE_POLL_MS = 60000; // 1분마다 갱신
+const CLAUDE_BACKOFF_MS = 600000; // 제한에 걸리면 10분 뒤에 다시 호출
 const CLAUDE_FORCE_FLOOR_MS = 15000; // 새로고침을 눌러도 15초 안에는 다시 안 부른다
 let claudePollTimer = null;
 /*
@@ -1795,7 +1794,7 @@ let claudePollTimer = null;
  * (탭을 여러 개 열면 각 그룹이 번갈아 호출해 제한을 계속 갱신한다)
  * 그래서 대기 시각과 마지막 호출 시각은 앱 전체에서 하나로 공유한다.
  */
-const claudeGate = { backoffUntil: 0, backoffMs: 0, lastCallAt: 0 };
+const claudeGate = { backoffUntil: 0, lastCallAt: 0 };
 
 /** 그룹의 살아 있는 세션 하나를 고른다 (조회용 exec 채널을 열 연결) */
 function anyReadySession(group) {
@@ -1830,18 +1829,10 @@ async function refreshClaudeInfo(group, force) {
       info.stale = true;
       info.staleAt = prev.staleAt || group.claudeFetchedAt || Date.now();
     }
-    // 제한에 걸리면 대기 시간을 두 배씩 늘린다(10분 → 20 → 40 → 최대 1시간).
-    // 성공하면 원래대로 되돌린다.
-    if (info && info.rateLimited) {
-      claudeGate.backoffMs = Math.min(
-        CLAUDE_BACKOFF_MAX_MS,
-        claudeGate.backoffMs ? claudeGate.backoffMs * 2 : CLAUDE_BACKOFF_MIN_MS
-      );
-      claudeGate.backoffUntil = Date.now() + claudeGate.backoffMs;
-    } else if (info && info.usageFailed) {
-      claudeGate.backoffUntil = Date.now() + CLAUDE_BACKOFF_MIN_MS; // 다른 실패도 잠시 쉰다
+    // 제한(또는 그 밖의 조회 실패)이면 10분 쉬었다가 다시 부른다. 성공하면 곧바로 해제.
+    if (info && (info.rateLimited || info.usageFailed)) {
+      claudeGate.backoffUntil = Date.now() + CLAUDE_BACKOFF_MS;
     } else {
-      claudeGate.backoffMs = 0;
       claudeGate.backoffUntil = 0;
     }
     group.claudeInfo = info;
