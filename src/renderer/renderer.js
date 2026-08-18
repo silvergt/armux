@@ -337,6 +337,15 @@ function createLeaf(tab, connect, options) {
   // (mac 의 ⌘/⌥ 조합과 Alt+방향키를 iTerm/Terminal.app 과 같게 맞춘다)
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
+    /*
+     * IME(한글 등) 조합 중의 키는 xterm 이 keydown 경로로 처리하지 않게 한다.
+     * mac 한글 입력에서 조합 중 방향키를 누르면, xterm 이 keydown 쪽에서 조합을
+     * 강제 확정해 전송하고 브라우저의 compositionend 쪽에서도 한 번 더 전송해
+     * 마지막 글자가 키 입력마다 반복되는 버그("지지지지")가 있다. keydown 을
+     * 막으면 확정은 compositionend 한 경로로만 흘러 정확히 한 번 입력된다.
+     * (keyCode 229 = "IME 가 처리 중인 키")
+     */
+    if (e.isComposing || e.keyCode === 229) return false;
     if (!leaf.sessionId || leaf.status !== 'ready') return true;
     const send = (seq) => {
       api.ssh.write(leaf.sessionId, seq);
