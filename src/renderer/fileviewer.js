@@ -213,7 +213,29 @@ window.FileViewer = (function () {
     const body = document.createElement('div');
     body.className = 'fv-body';
 
-    root.append(bar, body);
+    /* ------------------------------ 파일 안 검색 바 ------------------------------ */
+    const findBar = document.createElement('div');
+    findBar.className = 'fv-find hidden';
+    const findInput = document.createElement('input');
+    findInput.className = 'fv-find-input';
+    findInput.placeholder = '파일에서 찾기';
+    findInput.spellcheck = false;
+    const findCount = document.createElement('span');
+    findCount.className = 'fv-find-count';
+    const mkFindBtn = (label, tip, fn) => {
+      const b = document.createElement('button');
+      b.className = 'fv-btn';
+      b.textContent = label;
+      b.title = tip;
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const findPrev = mkFindBtn('↑', '이전 (Shift+Enter)', () => stepFind(-1));
+    const findNext = mkFindBtn('↓', '다음 (Enter)', () => stepFind(1));
+    const findClose = mkFindBtn('✕', '닫기 (Esc)', () => closeFind());
+    findBar.append(findInput, findCount, findPrev, findNext, findClose);
+
+    root.append(bar, findBar, body);
 
     /* ------------------------------- 도구 버튼 헬퍼 ------------------------------- */
     function addTool(label, tip, fn) {
@@ -288,21 +310,23 @@ window.FileViewer = (function () {
       return HLJS_LANG[extOf(opts.name)] || null;
     }
 
+    /*
+     * 텍스트/코드 파일.
+     *
+     * 따로 "편집" 을 누르지 않아도 곧바로 고칠 수 있어야 하고, 그러면서 색깔도
+     * 유지되어야 한다. 그래서 구문 강조한 <pre> 를 뒤에 깔고 그 위에 글자가
+     * 투명한 <textarea> 를 정확히 겹쳐 놓는다. 사용자는 textarea 에 입력하지만
+     * 눈에 보이는 글자는 뒤쪽 <pre> 의 색깔 있는 글자다.
+     *
+     * 왼쪽에는 줄 번호(gutter)를 둔다. 줄 번호가 글자와 어긋나지 않으려면 줄이
+     * 접히면 안 되므로 자동 줄바꿈 대신 가로 스크롤을 쓴다(코드 편집기와 같은 방식).
+     * 세 요소(줄번호·pre·textarea)의 폰트·크기·행간·세로 여백이 모두 같아야 한다.
+     */
     function renderText() {
       tools.innerHTML = '';
       const lang = highlightLang();
       const hasHl = lang && window.hljs;
-      if (!state._textInit) {
-        state._textInit = true;
-        state.mode = hasHl ? 'view' : 'edit';
-      }
 
-      if (hasHl) {
-        addTool(state.mode === 'view' ? '편집' : '보기', '구문 강조 보기 ↔ 편집', () => {
-          state.mode = state.mode === 'view' ? 'edit' : 'view';
-          renderText();
-        });
-      }
       if (extOf(opts.name) === 'json') {
         addTool('정리', 'JSON 들여쓰기 정리', () => {
           try {
@@ -317,27 +341,96 @@ window.FileViewer = (function () {
       addTool('저장', '저장 (Ctrl/⌘+S)', save);
 
       body.innerHTML = '';
-      if (hasHl && state.mode === 'view') {
-        const pre = document.createElement('pre');
-        pre.className = 'fv-code';
-        const code = document.createElement('code');
-        try {
-          code.innerHTML = window.hljs.highlight(state.content, { language: lang, ignoreIllegals: true }).value;
-        } catch (e) {
-          code.textContent = state.content;
-        }
+
+      const wrap = document.createElement('div');
+      wrap.className = 'fv-hledit';
+
+      const gutter = document.createElement('div'); // 왼쪽 줄 번호
+      gutter.className = 'fv-gutter';
+      gutter.setAttribute('aria-hidden', 'true');
+
+      const area = document.createElement('div'); // pre + textarea 가 겹치는 영역
+      area.className = 'fv-hlarea';
+
+      let code = null;
+      if (hasHl) {
+        const pre = document.createElement('pre'); // 뒤: 색깔 입힌 글자
+        pre.className = 'fv-hl-back';
+        pre.setAttribute('aria-hidden', 'true');
+        code = document.createElement('code');
         pre.appendChild(code);
-        pre.title = '더블클릭하면 편집';
-        pre.addEventListener('dblclick', () => {
-          state.mode = 'edit';
-          renderText();
-        });
-        body.appendChild(pre);
-      } else {
-        const { wrap, ta } = makeEditor(state.content);
-        body.appendChild(wrap);
-        state._focus = () => ta.focus();
+        area.appendChild(pre);
+        area.dataset.hl = '1';
       }
+
+      const ta = document.createElement('textarea'); // 앞: 실제 입력
+      ta.className = 'fv-hl-front' + (hasHl ? '' : ' plain'); // 강조가 없으면 글자를 그대로 보여 준다
+      ta.spellcheck = false;
+      ta.value = state.content;
+      area.appendChild(ta);
+
+      wrap.append(gutter, area);
+      body.appendChild(wrap);
+
+      const back = () => area.querySelector('.fv-hl-back');
+
+      /** 줄 번호를 현재 줄 수에 맞게 다시 그린다 */
+      const paintGutter = () => {
+        const n = ta.value.split('\n').length;
+        if (gutter.childElementCount !== n) {
+          const frag = [];
+          for (let i = 1; i <= n; i++) frag.push(`<span>${i}</span>`);
+          gutter.innerHTML = frag.join('');
+        }
+        // 자릿수만큼 너비를 잡아 준다(1000줄이 넘어가도 잘리지 않게)
+        gutter.style.width = `calc(${String(n).length}ch + 20px)`;
+      };
+
+      /** 구문 강조를 다시 칠한다 */
+      const paintCode = () => {
+        if (!code) return;
+        try {
+          code.innerHTML = window.hljs.highlight(ta.value, { language: lang, ignoreIllegals: true }).value;
+        } catch (e) {
+          code.textContent = ta.value;
+        }
+        // 끝이 개행이면 <pre> 높이가 한 줄 모자라 스크롤이 어긋난다
+        if (ta.value.endsWith('\n')) code.innerHTML += '\n';
+      };
+
+      const syncScroll = () => {
+        const p = back();
+        if (p) {
+          p.scrollTop = ta.scrollTop;
+          p.scrollLeft = ta.scrollLeft;
+        }
+        gutter.scrollTop = ta.scrollTop; // 줄 번호도 같이 움직인다
+      };
+
+      const onEdit = () => {
+        state.content = ta.value;
+        markDirty(true);
+        paintCode();
+        paintGutter();
+        syncScroll();
+      };
+
+      ta.addEventListener('input', onEdit);
+      ta.addEventListener('scroll', syncScroll);
+      // Tab 은 포커스 이동 대신 들여쓰기로 (코드 편집기다운 동작)
+      ta.addEventListener('keydown', (e) => {
+        if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+        e.preventDefault();
+        const st = ta.selectionStart;
+        const en = ta.selectionEnd;
+        ta.value = ta.value.slice(0, st) + '  ' + ta.value.slice(en);
+        ta.selectionStart = ta.selectionEnd = st + 2;
+        onEdit();
+      });
+
+      paintCode();
+      paintGutter();
+      state._focus = () => ta.focus();
     }
 
     /* ------------------------------ 렌더: 마크다운 ------------------------------ */
@@ -653,8 +746,105 @@ window.FileViewer = (function () {
       opts.onClose();
     }
 
+    /* -------------------------------- 파일 안 검색 ------------------------------- */
+
+    const find = { hits: [], at: -1, q: '' };
+
+    /** 지금 화면의 편집기(textarea). 텍스트/코드 보기일 때만 있다. */
+    const findTarget = () => body.querySelector('.fv-hl-front, .fv-textarea');
+
+    /** 검색어로 위치를 모두 찾아 둔다 (대소문자 무시) */
+    function runFind() {
+      const ta = findTarget();
+      const q = findInput.value;
+      find.q = q;
+      find.hits = [];
+      find.at = -1;
+      if (ta && q) {
+        const hay = ta.value.toLowerCase();
+        const needle = q.toLowerCase();
+        let i = hay.indexOf(needle);
+        while (i !== -1 && find.hits.length < 5000) {
+          find.hits.push(i);
+          i = hay.indexOf(needle, i + Math.max(1, needle.length));
+        }
+      }
+      if (find.hits.length) stepFind(1);
+      else paintFindCount();
+    }
+
+    function paintFindCount() {
+      const ta = findTarget();
+      if (!ta) findCount.textContent = '이 보기에서는 검색할 수 없습니다';
+      else if (!find.q) findCount.textContent = '';
+      else if (!find.hits.length) findCount.textContent = '결과 없음';
+      else findCount.textContent = `${find.at + 1} / ${find.hits.length}`;
+      findPrev.disabled = findNext.disabled = find.hits.length === 0;
+    }
+
+    /** 다음(1)/이전(-1) 결과로 이동해 선택하고 화면을 맞춘다 */
+    function stepFind(dir) {
+      const ta = findTarget();
+      if (!ta || !find.hits.length) return paintFindCount();
+      find.at = (find.at + dir + find.hits.length) % find.hits.length;
+      const pos = find.hits[find.at];
+      ta.focus();
+      ta.setSelectionRange(pos, pos + find.q.length);
+      // 줄이 접히지 않으므로(white-space: pre) 줄 번호 × 줄 높이로 위치를 계산할 수 있다
+      const line = ta.value.slice(0, pos).split('\n').length;
+      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+      ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 3);
+      ta.dispatchEvent(new Event('scroll')); // 줄 번호·강조 레이어도 같이 움직인다
+      paintFindCount();
+    }
+
+    function openFind() {
+      findBar.classList.remove('hidden');
+      const ta = findTarget();
+      // 드래그로 고른 글자가 있으면 그것을 검색어로 채운다
+      if (ta && ta.selectionStart !== ta.selectionEnd) {
+        const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+        if (sel && !sel.includes('\n')) findInput.value = sel;
+      }
+      findInput.focus();
+      findInput.select();
+      runFind();
+    }
+
+    function closeFind() {
+      findBar.classList.add('hidden');
+      find.hits = [];
+      find.at = -1;
+      const ta = findTarget();
+      if (ta) ta.focus();
+    }
+
+    findInput.addEventListener('input', runFind);
+    findInput.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        stepFind(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeFind();
+      }
+    });
+
     root.addEventListener('keydown', (e) => {
       const mod = api.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+      if (mod && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        e.stopPropagation();
+        openFind();
+        return;
+      }
+      if (e.key === 'Escape' && !findBar.classList.contains('hidden')) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeFind();
+        return;
+      }
       if (mod && e.key.toLowerCase() === 's') {
         e.preventDefault();
         e.stopPropagation();
@@ -669,6 +859,7 @@ window.FileViewer = (function () {
       el: root,
       focus: () => (state._focus ? state._focus() : root.focus()),
       isDirty: () => state.dirty,
+      openFind,
       dispose: () => root.remove()
     };
   }

@@ -555,7 +555,9 @@ function setLeafMode(leaf, mode, url) {
         hostLabel: group.host.name,
         getSftpId: () => leaf.explorer && leaf.explorer.sftpId,
         // 파일을 열면 지금까지처럼 새 서브탭에 뷰어를 띄운다(이 판의 SFTP 연결을 쓴다)
-        onOpenFile: (entry) => openFileInPane(group, entry, () => leaf.explorer && leaf.explorer.sftpId)
+        // 이 탐색기 판의 바로 오른쪽에 파일을 연다
+        onOpenFile: (entry) =>
+          openFileInPane(group, entry, () => leaf.explorer && leaf.explorer.sftpId, leaf)
       });
       body.appendChild(leaf.explorer.el);
     }
@@ -621,7 +623,7 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
 const HOOK_TRUST_MS = 1800000; // 30분
 // 훅은 "작업 중" 이라는데 그 판 화면에 Claude 가 이만큼 안 보이면 화면 쪽을 믿는다.
 // (tmux 에서 빠져나오는 등 다른 화면으로 옮겨도 스피너가 계속 돌던 문제를 막는다)
-const HOOK_SCREEN_GRACE_MS = 5000;
+const HOOK_SCREEN_GRACE_MS = 8000;
 
 const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
 function isClaudeWorkingLine(line) {
@@ -630,6 +632,19 @@ function isClaudeWorkingLine(line) {
   const first = line.trimStart()[0];
   return Boolean(first) && SPINNER_GLYPHS.includes(first);
 }
+/*
+ * "이 판에 Claude 화면이 떠 있는가" 를 느슨하게 본다.
+ * 작업 상태줄(isClaudeWorkingLine)은 화면이 짧거나(판을 여러 개로 쪼갠 경우)
+ * 출력이 밀리면 검사 범위 밖으로 나갈 수 있다. 그때 훅이 "작업 중" 이라고 해도
+ * 화면을 못 찾아 스피너를 꺼 버리면 안 되므로, 입력 상자·단축키 힌트 같은
+ * Claude UI 흔적이 남아 있는지까지 폭넓게 본다.
+ * (tmux 에서 빠져나오면 이런 흔적이 통째로 사라지므로 그때는 제대로 꺼진다)
+ */
+const CLAUDE_UI_RE = /esc to interrupt|for shortcuts|bypass permissions|⏵⏵|╭─{3,}|╰─{3,}|│\s*>/i;
+function looksLikeClaudeScreen(leaf) {
+  return bottomNonEmptyLines(leaf, 20).some((l) => CLAUDE_UI_RE.test(l));
+}
+
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
 /** 마지막 비어 있지 않은 줄 */
@@ -798,8 +813,9 @@ function evaluateActivity() {
         // 줄 맨 앞 스피너 글리프가 없어 걸러진다.
         const seen = live && bottomNonEmptyLines(leaf, 12).some(isClaudeWorkingLine);
 
-        // 화면에 Claude 작업줄이 보인 마지막 시각을 기록해 둔다.
-        if (seen) leaf.claudeSeenAt = now;
+        // 화면에 Claude 흔적(작업줄이든 입력 상자든)이 보인 마지막 시각을 기록한다.
+        // 작업줄만 보면 판이 짧을 때 놓치므로 UI 흔적까지 넓게 인정한다.
+        if (seen || (live && leaf.hookBusy && looksLikeClaudeScreen(leaf))) leaf.claudeSeenAt = now;
 
         /*
          * 작업 중 판정.
@@ -1225,22 +1241,40 @@ function ensureExplorer(group) {
  * 탐색기에서 파일을 열 때: 새 서브탭을 만들어 그 안에 파일 뷰어를 띄운다.
  * (터미널 창은 그대로 두고, 파일은 별도 탭으로 열린다. 닫으면 그 탭이 사라진다.)
  */
-async function openFileInPane(group, entry, getSftpId) {
-  const tab = makeTabShell(group);
-  tab.customTitle = entry.name; // 서브탭 제목을 파일명으로
+/**
+ * 탐색기에서 파일을 열 때: 지금 보고 있는 서브탭 안에서, 기준이 되는 판의
+ * 오른쪽에 판을 하나 더 만들어 그 안에 파일 뷰어를 띄운다.
+ * (새 서브탭을 만들지 않으므로 터미널과 파일을 나란히 놓고 볼 수 있다)
+ * @param {object} baseLeaf 이 판의 오른쪽에 연다. 없으면 지금 활성 판 옆에.
+ */
+async function openFileInPane(group, entry, getSftpId, baseLeaf) {
+  const tab = group.tabs.find((t) => t.id === group.activeTabId) || group.tabs[0];
+  if (!tab) return;
+  const base = baseLeaf || findLeaf(tab.root, tab.activeLeafId) || firstLeaf(tab.root);
+  if (!base) return;
+
   const leaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 파일 전용 판
-  tab.root = leaf;
+  // 기준 판을 좌우로 쪼개고 오른쪽에 새 판을 넣는다
+  const split = {
+    kind: 'split',
+    id: nextId('s'),
+    dir: 'row',
+    children: [base, leaf],
+    sizes: [0.5, 0.5]
+  };
+  replaceNode(tab, base, split);
   tab.activeLeafId = leaf.id;
   layoutTab(tab);
 
   leaf.mode = 'file';
+  leaf.title = entry.name; // 판 제목을 파일명으로
   leaf.file = window.FileViewer.create({
     // 파일을 연 탐색기의 SFTP 연결을 쓴다(판 안 탐색기면 그 판의 것, 아니면 그룹 것)
     sftpId: () => (getSftpId ? getSftpId() : group.explorer && group.explorer.sftpId),
     sessionId: () => anyReadySession(group), // 원격 실행(parquet/ipynb)용 셸 세션은 그룹에서 빌려온다
     path: entry.path,
     name: entry.name,
-    onClose: () => closeFileTab(group, tab)
+    onClose: () => closeFilePane(group, tab, leaf)
   });
   leaf.el.querySelector('.pane-body').appendChild(leaf.file.el);
   applyPaneBody(leaf);
@@ -1248,18 +1282,33 @@ async function openFileInPane(group, entry, getSftpId) {
   group.explorerSelected = false; // 전체화면 탐색기였다면 나온다
   state.notesOpen = false;
   render();
+  fitTab(tab);
   leaf.file.focus();
+  saveSession();
 }
 
-/** 파일 전용 탭을 닫는다(그 탭 제거) */
-async function closeFileTab(group, tab) {
-  const leaf = firstLeaf(tab.root);
-  if (leaf && leaf.file && leaf.file.isDirty && leaf.file.isDirty()) {
+/** 파일 판 닫기. 저장하지 않은 변경이 있을 때만 물어본다. */
+async function closeFilePane(group, tab, leaf) {
+  if (leaf.file && leaf.file.isDirty && leaf.file.isDirty()) {
     const ok = await api.util.confirm('저장하지 않은 변경이 있습니다. 그래도 닫을까요?', '', '닫기');
     if (!ok) return;
   }
-  closeTab(group, tab); // 확인 없이 바로 닫음(파일 탭은 셸 세션이 없다)
+  // 이 판이 탭의 전부라면 탭을 닫고, 아니면 판만 떼어 낸다
+  if (leavesOf(tab.root).length <= 1) {
+    closeTab(group, tab);
+    return;
+  }
+  detachLeaf(tab, leaf);
+  disposeLeaf(leaf);
+  const next = firstLeaf(tab.root);
+  tab.activeLeafId = next ? next.id : null;
+  layoutTab(tab);
+  render();
+  fitTab(tab);
+  if (next) focusLeaf(next);
+  saveSession();
 }
+
 
 /** 판 본문에서 터미널/웹/파일 중 무엇을 보일지 반영 */
 function applyPaneBody(leaf) {
@@ -2616,34 +2665,134 @@ function bindPaneDrag(leaf, header) {
   header.addEventListener('dragend', () => {
     draggingLeafId = null;
     leaf.el.classList.remove('pane-dragging');
-    for (const el2 of document.querySelectorAll('.pane.drop-target')) el2.classList.remove('drop-target');
+    clearDropHints();
   });
 
-  // 이 판 전체가 드롭 대상이 된다
+  // 판 헤더(상단바) 위에 떨어뜨리면 "자리 바꾸기"
+  if (!header.dataset.dropBound) {
+    header.dataset.dropBound = '1';
+    header.addEventListener('dragover', (e) => {
+      if (!canDropHere(e, leaf)) return;
+      e.preventDefault();
+      e.stopPropagation(); // 아래 판 전체의 dragover 로 내려가지 않게
+      e.dataTransfer.dropEffect = 'move';
+      showDropHint(leaf, 'swap');
+    });
+    header.addEventListener('drop', (e) => {
+      if (!canDropHere(e, leaf)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      clearDropHints();
+      const src = findDragSource(e, leaf);
+      if (src) swapLeaves(src, leaf);
+    });
+  }
+
+  // 판 본문 위에 떨어뜨리면 그 가장자리 방향으로 "분할"
   const pane = leaf.el;
   if (pane.dataset.dropBound) return;
   pane.dataset.dropBound = '1';
 
   pane.addEventListener('dragover', (e) => {
-    if (!draggingLeafId || draggingLeafId === leaf.id) return;
-    if (!e.dataTransfer.types.includes('armux/pane')) return;
+    if (!canDropHere(e, leaf)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    pane.classList.add('drop-target');
+    showDropHint(leaf, dropZoneOf(pane, e));
   });
-  pane.addEventListener('dragleave', () => pane.classList.remove('drop-target'));
+  pane.addEventListener('dragleave', (e) => {
+    // 자식 요소로 옮겨 다닐 때도 dragleave 가 오므로, 판 밖으로 나갔을 때만 지운다
+    if (e.relatedTarget && pane.contains(e.relatedTarget)) return;
+    clearDropHints();
+  });
   pane.addEventListener('drop', (e) => {
-    if (!e.dataTransfer.types.includes('armux/pane')) return;
+    if (!canDropHere(e, leaf)) return;
     e.preventDefault();
     e.stopPropagation();
-    pane.classList.remove('drop-target');
-    const srcId = e.dataTransfer.getData('armux/pane');
-    const tab = (state.groups.find((g) => g.id === leaf.groupId) || { tabs: [] }).tabs.find(
-      (t) => t.id === leaf.tabId
-    );
-    const src = tab && findLeaf(tab.root, srcId);
-    if (src) swapLeaves(src, leaf);
+    const zone = dropZoneOf(pane, e);
+    clearDropHints();
+    const src = findDragSource(e, leaf);
+    if (src) dropLeafInto(src, leaf, zone);
   });
+}
+
+/** 지금 끌고 있는 것이 다른 판인지 */
+function canDropHere(e, leaf) {
+  if (!draggingLeafId || draggingLeafId === leaf.id) return false;
+  return e.dataTransfer.types.includes('armux/pane');
+}
+
+/** 드롭 데이터에서 끌려온 판을 찾는다 (같은 서브탭 안에서만) */
+function findDragSource(e, leaf) {
+  const srcId = e.dataTransfer.getData('armux/pane');
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  return tab ? findLeaf(tab.root, srcId) : null;
+}
+
+/**
+ * 판 안에서 마우스가 어느 쪽에 있는지 → 어떤 분할이 될지.
+ * 가운데(가로·세로 모두 중앙 1/3)에 놓으면 자리 바꾸기로 본다.
+ */
+function dropZoneOf(pane, e) {
+  const r = pane.getBoundingClientRect();
+  const px = (e.clientX - r.left) / (r.width || 1); // 0(왼쪽) ~ 1(오른쪽)
+  const py = (e.clientY - r.top) / (r.height || 1); // 0(위) ~ 1(아래)
+  const dx = Math.min(px, 1 - px); // 좌우 가장자리까지의 거리
+  const dy = Math.min(py, 1 - py); // 상하 가장자리까지의 거리
+  if (dx > 1 / 3 && dy > 1 / 3) return 'swap'; // 한가운데
+  if (dx < dy) return px < 0.5 ? 'left' : 'right'; // 좌우 쪽이 더 가깝다
+  return py < 0.5 ? 'top' : 'bottom';
+}
+
+/** 어디에 놓일지 미리 보여 주는 표시 */
+function showDropHint(leaf, zone) {
+  clearDropHints();
+  leaf.el.classList.add('drop-target', `drop-${zone}`);
+}
+
+function clearDropHints() {
+  for (const el2 of document.querySelectorAll('.pane.drop-target')) {
+    el2.classList.remove('drop-target', 'drop-left', 'drop-right', 'drop-top', 'drop-bottom', 'drop-swap');
+  }
+}
+
+/**
+ * 끌어온 판(src)을 대상 판(dst)의 지정한 쪽에 붙인다.
+ * src 를 원래 자리에서 떼어 낸 뒤, dst 자리를 분할 노드로 바꿔 둘을 나란히 넣는다.
+ */
+function dropLeafInto(src, dst, zone) {
+  if (!src || !dst || src === dst) return;
+  if (zone === 'swap') return swapLeaves(src, dst);
+
+  const group = state.groups.find((g) => g.id === dst.groupId);
+  const tab = group && group.tabs.find((t) => t.id === dst.tabId);
+  if (!tab || src.tabId !== dst.tabId) return;
+
+  detachLeaf(tab, src); // 원래 자리에서 뺀다 (형제가 그 자리를 물려받는다)
+  // 떼어 내면서 대상이 트리에서 사라졌다면(대상이 src 의 형제였던 경우) 되돌린다
+  if (!findLeaf(tab.root, dst.id)) {
+    layoutTab(tab);
+    render();
+    return;
+  }
+
+  const dir = zone === 'left' || zone === 'right' ? 'row' : 'col';
+  const first = zone === 'left' || zone === 'top' ? src : dst;
+  const second = first === src ? dst : src;
+  replaceNode(tab, dst, {
+    kind: 'split',
+    id: nextId('s'),
+    dir,
+    children: [first, second],
+    sizes: [0.5, 0.5]
+  });
+
+  tab.activeLeafId = src.id;
+  layoutTab(tab);
+  render();
+  fitTab(tab);
+  focusLeaf(src);
+  saveSession();
 }
 
 function renderStatus() {
@@ -3086,7 +3235,7 @@ window.addEventListener(
         if (g && g.explorerSelected && !g.explorerPinned) leaveExplorer(g);
         else if (l && l.mode === 'file') {
           const t = g && g.tabs.find((x) => x.id === l.tabId);
-          if (t) closeFileTab(g, t);
+          if (t) closeFilePane(g, t, l); // 파일 판만 닫는다(셸 세션이 없으므로 확인 없이)
         } else if (l) closeLeaf(l);
         return;
       }
@@ -3224,7 +3373,13 @@ updateBackdrop.addEventListener('mousedown', (e) => {
 /* ---------------------------------- 검색바 ---------------------------------- */
 
 function openFind() {
-  if (!activeLeaf()) return;
+  const l = activeLeaf();
+  // 파일 판이면 터미널 검색바 대신 그 파일 안에서 찾는다
+  if (l && l.mode === 'file' && l.file && l.file.openFind) {
+    l.file.openFind();
+    return;
+  }
+  if (!l) return;
   el.findbar.classList.remove('hidden');
   el.findInput.focus();
   el.findInput.select();

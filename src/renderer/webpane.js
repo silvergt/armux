@@ -28,7 +28,7 @@ window.WebPane = (function () {
    * @param {object} opts { url, onTitle(title), onUrl(url) }
    */
   function create(opts) {
-    const state = { url: opts.url || null, title: '' };
+    const state = { url: opts.url || null, title: '', faved: false };
 
     const root = document.createElement('div');
     root.className = 'webpane';
@@ -50,12 +50,31 @@ window.WebPane = (function () {
     const backBtn = mk('←', '뒤로', () => view.canGoBack() && view.goBack());
     const fwdBtn = mk('→', '앞으로', () => view.canGoForward() && view.goForward());
     const reloadBtn = mk('⟳', '새로고침', () => view.reload());
-    const homeBtn = mk('☆ 즐겨찾기', '시작 화면(주소 입력 + 즐겨찾기)', () => showStart());
-    const favBtn = mk('★ 추가', '이 페이지를 즐겨찾기에 추가', async () => {
-      await api.web.favAdd({ name: state.title || state.url, url: state.url });
-      favBtn.textContent = '★ 추가됨';
-      setTimeout(() => (favBtn.textContent = '★ 추가'), 1500);
+    const homeBtn = mk('⌂ 홈', '시작 화면(주소 입력 + 즐겨찾기)', () => showStart());
+
+    // 즐겨찾기 토글. 지금 페이지가 목록에 있으면 꽉 찬 별(★), 없으면 빈 별(☆).
+    const favBtn = mk('☆ 즐겨찾기', '이 페이지를 즐겨찾기에 추가', async () => {
+      if (!state.url) return;
+      if (state.faved) await api.web.favRemove(state.url);
+      else await api.web.favAdd({ name: state.title || state.url, url: state.url });
+      await syncFav();
+      renderFavs(); // 시작 화면 목록도 같이 갱신
     });
+
+    /** 지금 주소가 즐겨찾기에 들어 있는지 확인해 별 모양을 맞춘다 */
+    async function syncFav() {
+      let list = [];
+      try {
+        list = (await api.web.favList()) || [];
+      } catch (e) {
+        list = [];
+      }
+      state.faved = Boolean(state.url && list.some((f) => f.url === state.url));
+      favBtn.textContent = state.faved ? '★ 즐겨찾기' : '☆ 즐겨찾기';
+      favBtn.title = state.faved ? '즐겨찾기에서 빼기' : '이 페이지를 즐겨찾기에 추가';
+      favBtn.classList.toggle('on', state.faved);
+      favBtn.disabled = !state.url;
+    }
 
     const urlWrap = document.createElement('div');
     urlWrap.className = 'web-url-wrap';
@@ -235,15 +254,45 @@ window.WebPane = (function () {
       }
     }
 
+    // 열지 못했을 때 보여 줄 화면. webview 는 실패하면 하얀 화면만 남으므로
+    // 무엇이 잘못됐는지 이 판 위에 직접 그려 준다.
+    const errBox = document.createElement('div');
+    errBox.className = 'web-error hidden';
+    const errTitle = document.createElement('div');
+    errTitle.className = 'web-error-title';
+    const errMsg = document.createElement('div');
+    errMsg.className = 'web-error-msg';
+    const errActions = document.createElement('div');
+    errActions.className = 'web-error-actions';
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'web-btn';
+    retryBtn.textContent = '다시 시도';
+    retryBtn.addEventListener('click', () => state.url && go(state.url));
+    const extBtn = document.createElement('button');
+    extBtn.className = 'web-btn';
+    extBtn.textContent = '크롬에서 열기';
+    extBtn.addEventListener('click', () => state.url && api.web.openExternal(state.url));
+    errActions.append(retryBtn, extBtn);
+    errBox.append(errTitle, errMsg, errActions);
+
+    const showError = (title, msg) => {
+      errTitle.textContent = title;
+      errMsg.textContent = msg || '';
+      errBox.classList.remove('hidden');
+    };
+    const hideError = () => errBox.classList.add('hidden');
+
     const status = document.createElement('div');
     status.className = 'web-status';
 
-    root.append(bar, start, view, status);
+    root.append(bar, start, view, errBox, status);
 
     function showStart() {
+      hideError();
       start.classList.remove('hidden');
       view.classList.add('hidden');
       urlInput.value = '';
+      syncFav();
       renderFavs();
       startInput.focus();
     }
@@ -260,6 +309,7 @@ window.WebPane = (function () {
       state.url = url;
       urlInput.value = url;
       showBrowser();
+      syncFav();
       view.loadURL(url).catch(() => {});
     }
 
@@ -269,6 +319,7 @@ window.WebPane = (function () {
     }
 
     view.addEventListener('did-start-loading', () => {
+      hideError();
       status.textContent = '불러오는 중…';
       reloadBtn.textContent = '✕';
       reloadBtn.title = '중지';
@@ -280,15 +331,18 @@ window.WebPane = (function () {
       syncNav();
     });
     view.addEventListener('did-navigate', (e) => {
+      hideError();
       state.url = e.url;
       urlInput.value = e.url;
       syncNav();
+      syncFav(); // 주소가 바뀌었으니 별 모양을 다시 맞춘다
       if (opts.onUrl) opts.onUrl(e.url);
     });
     view.addEventListener('did-navigate-in-page', (e) => {
       if (!e.isMainFrame) return;
       state.url = e.url;
       urlInput.value = e.url;
+      syncFav();
       if (opts.onUrl) opts.onUrl(e.url);
     });
     view.addEventListener('page-title-updated', (e) => {
@@ -297,7 +351,17 @@ window.WebPane = (function () {
     });
     view.addEventListener('did-fail-load', (e) => {
       if (e.errorCode === -3) return; // 사용자가 중단한 경우
-      status.textContent = `열지 못했습니다: ${e.errorDescription || e.errorCode}`;
+      if (e.isMainFrame === false) return; // 페이지 안의 부속 요청 실패는 무시
+      status.textContent = '';
+      const desc = e.errorDescription || `오류 ${e.errorCode}`;
+      // 인증서 계열(-200 대)은 본 프로세스가 확인 창을 띄우므로 그에 맞춰 안내한다
+      const certish = e.errorCode <= -200 && e.errorCode > -300;
+      showError(
+        certish ? '이 사이트의 인증서를 확인할 수 없습니다' : '페이지를 열지 못했습니다',
+        certish
+          ? `${desc}\n확인 창에서 "위험을 감수하고 열기" 를 고르면 이 사이트를 열 수 있습니다.`
+          : `${desc}\n${state.url || ''}`
+      );
     });
     // 새 창(target=_blank)은 같은 판에서 연다
     view.addEventListener('new-window', (e) => {

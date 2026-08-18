@@ -684,6 +684,54 @@ ipcMain.handle('web:historySuggest', (e, { query }) => chromehistory.suggest(que
 ipcMain.on('web:openExternal', (e, url) => {
   if (url) shell.openExternal(url);
 });
+/*
+ * 인증서를 확인할 수 없는 사이트(자체 서명·만료·사설 CA 등) 처리.
+ * 기본 동작은 "차단" 이라 화면이 하얗게 비어 버린다. 브라우저처럼 한 번 물어보고,
+ * 사용자가 계속을 고르면 그 호스트만 허용한 뒤 다시 불러온다.
+ * 무조건 허용하지는 않는다(중간자 공격을 그냥 통과시키게 되므로).
+ * 허용 기록은 이번 실행 동안만 기억한다.
+ */
+const certAllowed = new Set(); // 사용자가 허용한 호스트
+const certAsking = new Set(); // 이미 물어보는 중인 호스트(중복 창 방지)
+
+app.on('certificate-error', (event, wc, url, error, certificate, callback) => {
+  let host = url;
+  try {
+    host = new URL(url).host;
+  } catch (e) {
+    /* URL 이 아니면 원문 그대로 쓴다 */
+  }
+  if (certAllowed.has(host)) {
+    event.preventDefault();
+    callback(true); // 이미 허용한 곳
+    return;
+  }
+  callback(false); // 일단 막는다. 허용하면 아래에서 다시 불러온다.
+  if (certAsking.has(host)) return;
+  certAsking.add(host);
+
+  dialog
+    .showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['취소', '위험을 감수하고 열기'],
+      defaultId: 0,
+      cancelId: 0,
+      message: `${host} 의 인증서를 확인할 수 없습니다.`,
+      detail:
+        `${error}\n\n` +
+        '자체 서명 인증서이거나 만료된 인증서일 수 있습니다.\n' +
+        '직접 관리하는 서버처럼 믿을 수 있는 곳일 때만 계속하세요.\n' +
+        '(허용은 앱을 끄면 사라집니다)'
+    })
+    .then((res) => {
+      certAsking.delete(host);
+      if (res.response !== 1) return;
+      certAllowed.add(host);
+      if (wc && !wc.isDestroyed()) wc.loadURL(url); // 허용했으니 다시 시도
+    })
+    .catch(() => certAsking.delete(host));
+});
+
 // 즐겨찾기 저장소
 ipcMain.handle('web:favList', () => webfav.list());
 ipcMain.handle('web:favAdd', (e, item) => webfav.add(item));
