@@ -272,6 +272,9 @@ function createLeaf(tab, connect, options) {
       if (sig === 'busy') {
         clearAlert(leaf);
         leaf.hookBusy = true;
+        // 화면에 작업줄이 그려지기 전이라도 곧바로 스피너가 돌도록 시각을 채워 둔다
+        // (이 값이 오래되면 화면 쪽 판정으로 넘어간다 — HOOK_SCREEN_GRACE_MS)
+        leaf.claudeSeenAt = Date.now();
       } else if (sig === 'idle') {
         leaf.hookBusy = false;
         const cur = activeLeaf();
@@ -392,6 +395,7 @@ function createLeaf(tab, connect, options) {
   term.onData((data) => {
     leaf.lastInputAt = Date.now();
     clearAlert(leaf);
+    checkActivitySoon(); // 입력하면 화면이 바뀔 수 있으니 상태를 다시 본다
     if (leaf.sessionId && leaf.status === 'ready') {
       api.ssh.write(leaf.sessionId, data);
     } else if (leaf.status === 'closed' || leaf.status === 'error') {
@@ -615,6 +619,9 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
  */
 // 훅 신호를 이 시간 안에 받았으면 훅 상태를 믿는다. 지나면 화면 감지로 되돌아간다.
 const HOOK_TRUST_MS = 1800000; // 30분
+// 훅은 "작업 중" 이라는데 그 판 화면에 Claude 가 이만큼 안 보이면 화면 쪽을 믿는다.
+// (tmux 에서 빠져나오는 등 다른 화면으로 옮겨도 스피너가 계속 돌던 문제를 막는다)
+const HOOK_SCREEN_GRACE_MS = 5000;
 
 const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
 function isClaudeWorkingLine(line) {
@@ -791,9 +798,20 @@ function evaluateActivity() {
         // 줄 맨 앞 스피너 글리프가 없어 걸러진다.
         const seen = live && bottomNonEmptyLines(leaf, 12).some(isClaudeWorkingLine);
 
-        // 훅이 살아 있어도 화면에 스피너가 보이면 작업 중으로 본다.
-        // (훅 설치 전에 이미 떠 있던 Claude 세션까지 함께 잡아 준다)
-        const busyNow = hookFresh ? Boolean(leaf.hookBusy) || seen : seen;
+        // 화면에 Claude 작업줄이 보인 마지막 시각을 기록해 둔다.
+        if (seen) leaf.claudeSeenAt = now;
+
+        /*
+         * 작업 중 판정.
+         *  - 화면에 작업줄이 보이면 무조건 작업 중 (훅이 없는 Claude 도 잡힌다)
+         *  - 훅이 "작업 중" 이라고 해도, 그 화면이 실제로 이 판에 보여야 인정한다.
+         *    tmux 에서 detach 하거나 다른 프로그램으로 옮기면 Claude 화면이
+         *    사라지는데, 예전에는 훅 상태만 보고 스피너를 계속 돌렸다.
+         *    화면에서 사라진 지 5초가 지나면 화면 쪽을 믿고 스피너를 끈다.
+         */
+        const hookSaysBusy =
+          hookFresh && leaf.hookBusy && now - (leaf.claudeSeenAt || 0) < HOOK_SCREEN_GRACE_MS;
+        const busyNow = seen || hookSaysBusy;
 
         // 히스테리시스(시간 기반): 보이면 곧바로 thinking, 마지막으로 본 지 0.8초 안이면 유지.
         // → 다시 그리는 순간 한 프레임 놓쳐도 깜빡이지 않고,
@@ -822,6 +840,17 @@ function evaluateActivity() {
 }
 
 setInterval(evaluateActivity, 250);
+
+/*
+ * 화면이 바뀔 만한 일(창 전환·키 입력)이 생기면 곧바로 상태를 다시 본다.
+ * 화면이 다시 그려지는 데 시간이 걸리므로 잠깐 뒤에도 한 번 더 확인한다.
+ * (주기 검사만으로도 결국 맞춰지지만, 전환 직후 잠깐 옛 표시가 남는 것을 막는다)
+ */
+let activitySoonTimers = [];
+function checkActivitySoon() {
+  for (const t of activitySoonTimers) clearTimeout(t);
+  activitySoonTimers = [80, 500, 1500].map((ms) => setTimeout(evaluateActivity, ms));
+}
 
 /** 탭 안에 Claude 가 작업 중인 판이 있는지 */
 const tabSpin = (tab) => (leavesOf(tab.root).some((l) => l.spin === 'busy') ? 'busy' : null);
@@ -1109,6 +1138,7 @@ function focusLeaf(leaf) {
   clearAlert(leaf);
   render();
   fitTab(tab);
+  checkActivitySoon(); // 보이는 판이 바뀌었으니 상태 표시를 다시 맞춘다
   leaf.term.focus();
 }
 
@@ -1392,6 +1422,7 @@ function selectGroup(groupId) {
   if (t) clearAlertsInTab(t); // 열어서 확인했으므로 알림 해제
   render();
   fitTab(t);
+  checkActivitySoon(); // 보이는 창이 바뀌었으니 상태 표시를 다시 맞춘다
   const l = activeLeaf();
   if (l) l.term.focus();
 }
@@ -1405,6 +1436,7 @@ function selectTab(group, tabId) {
   if (t) clearAlertsInTab(t);
   render();
   fitTab(t);
+  checkActivitySoon(); // 보이는 서브탭이 바뀌었으니 상태 표시를 다시 맞춘다
   const l = activeLeaf();
   if (l) l.term.focus();
 }
