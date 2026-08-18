@@ -2392,6 +2392,37 @@ function renderPanes() {
  * 헤더를 다른 판 위로 끌어다 놓으면 두 판의 자리가 바뀐다.
  */
 /**
+ * 판 헤더 버튼 아이콘.
+ * 선 두께를 굵게 잡아 22px 버튼 안에서도 형태가 또렷하게 보이도록 했다.
+ *   popout  — 상자에서 화살표가 밖으로 (새 서브탭으로 꺼내기)
+ *   split-v — 상자를 세로선으로 나눠 오른쪽을 채움 (좌우 분할)
+ *   split-h — 상자를 가로선으로 나눠 아래쪽을 채움 (위아래 분할)
+ *   swap    — 서로 반대 방향 화살표 (다른 화면으로 전환)
+ *   close   — X
+ */
+function paneIcon(name) {
+  const open =
+    '<svg class="pt-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">';
+  const box = '<rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4"/>';
+  const paths = {
+    popout:
+      '<path d="M12.5 8.6V12a1.6 1.6 0 0 1-1.6 1.6H4A1.6 1.6 0 0 1 2.4 12V5.1A1.6 1.6 0 0 1 4 3.5h3.4"/>' +
+      '<path d="M10 2.6h3.6v3.6"/><path d="M13.6 2.6 8.6 7.6"/>',
+    'split-v':
+      box + '<rect x="8" y="3.2" width="5.8" height="9.6" rx="1.4" fill="currentColor" opacity=".3" stroke="none"/>' +
+      '<path d="M8 3.2v9.6"/>',
+    'split-h':
+      box + '<rect x="2.2" y="8" width="11.6" height="4.8" rx="1.4" fill="currentColor" opacity=".3" stroke="none"/>' +
+      '<path d="M2.2 8h11.6"/>',
+    swap: '<path d="M2.6 5.6h9.2"/><path d="M9.6 3.2l2.4 2.4-2.4 2.4"/>' +
+      '<path d="M13.4 10.4H4.2"/><path d="M6.4 8l-2.4 2.4L6.4 12.8"/>',
+    close: '<path d="M4.2 4.2l7.6 7.6"/><path d="M11.8 4.2l-7.6 7.6"/>'
+  };
+  return open + (paths[name] || '') + '</svg>';
+}
+
+/**
  * 판 헤더의 "⇄ 전환" 드롭다운.
  * 이 판 하나만 웹페이지 · 메모 · 파일 탐색기로 바꾼다.
  * 터미널은 없애지 않고 감춰 두므로 돌아오면 SSH 세션이 그대로 살아 있다.
@@ -2453,10 +2484,19 @@ function renderPaneHeader(leaf) {
   const tools = document.createElement('span');
   tools.className = 'pane-tools';
 
-  const mk = (text, tip, fn, cls) => {
+  // 아이콘 + 글자를 함께 넣는다. 유니코드 글리프는 폰트마다 모양이 제각각이고
+  // 작아서 구분이 안 되므로, 무엇을 하는 버튼인지 그림으로 알 수 있게 SVG 를 쓴다.
+  const mk = (iconName, label, tip, fn, cls) => {
     const b = document.createElement('button');
-    b.textContent = text;
+    b.innerHTML = paneIcon(iconName);
+    if (label) {
+      const t = document.createElement('span');
+      t.className = 'pt-label';
+      t.textContent = label;
+      b.appendChild(t);
+    }
     b.title = tip;
+    b.setAttribute('aria-label', tip);
     if (cls) b.className = cls;
     b.addEventListener('mousedown', (e) => e.stopPropagation());
     b.addEventListener('click', (e) => {
@@ -2467,17 +2507,17 @@ function renderPaneHeader(leaf) {
   };
 
   tools.append(
-    mk('⇱', '이 판을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
-    mk('▯|▯', `좌우로 분할 (${isMacPlatform ? '⌘D' : 'Ctrl+Shift+D'})`, () => {
+    mk('popout', '', '이 판을 새 서브탭으로 열기', () => popOutLeaf(leaf)),
+    mk('split-v', '', `좌우로 분할 (${isMacPlatform ? '⌘D' : 'Ctrl+Shift+D'})`, () => {
       focusLeaf(leaf);
       splitActive('row');
     }),
-    mk('▤', `위아래로 분할 (${isMacPlatform ? '⌘⇧D' : 'Ctrl+Shift+E'})`, () => {
+    mk('split-h', '', `위아래로 분할 (${isMacPlatform ? '⌘⇧D' : 'Ctrl+Shift+E'})`, () => {
       focusLeaf(leaf);
       splitActive('col');
     }),
-    mk('⇄ 전환', '이 판을 웹페이지 · 메모 · 파일로 전환', (ev) => openPaneModeMenu(leaf, ev)),
-    mk('✕', `이 판 닫기 (${isMacPlatform ? '⌘W' : 'Ctrl+W'})`, () => closeLeaf(leaf), 'danger')
+    mk('swap', '전환', '이 판을 웹페이지 · 메모 · 파일로 전환', (ev) => openPaneModeMenu(leaf, ev), 'wide'),
+    mk('close', '', `이 판 닫기 (${isMacPlatform ? '⌘W' : 'Ctrl+W'})`, () => closeLeaf(leaf), 'danger')
   );
   header.appendChild(tools);
 

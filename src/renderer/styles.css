@@ -413,12 +413,12 @@ body.resizing-row * {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 4px 0 6px;
+  gap: 5px;
+  height: 27px;
+  padding: 0 5px 0 7px;
   background: #14171c;
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--fg-dim);
   cursor: grab;
   user-select: none;
@@ -449,25 +449,50 @@ body.resizing-row * {
 .pane-tools {
   flex: none;
   display: flex;
-  gap: 1px;
+  align-items: center;
+  gap: 2px;
 }
+/* 아이콘이 또렷하게 보이도록 넉넉한 크기와 밝은 기본 색을 준다 */
 .pane-tools button {
-  min-width: 20px;
-  height: 18px;
-  padding: 0 4px;
-  border: none;
-  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 24px;
+  height: 21px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
   background: transparent;
-  color: var(--fg-dim);
-  font-size: 10px;
+  color: #9aa3ae;
+  font-size: 11px;
   line-height: 1;
+}
+.pane-tools .pt-ico {
+  display: block;
+  flex: none;
+}
+.pane-tools .pt-label {
+  line-height: 1;
+}
+.pane-tools button.wide {
+  padding: 0 7px;
 }
 .pane-tools button:hover {
   background: var(--accent-dim);
+  border-color: #4a7fb5;
   color: #fff;
+}
+.pane-tools button:active {
+  background: #24486f;
 }
 .pane-tools button.danger:hover {
   background: #6b2b33;
+  border-color: #8c3a44;
+}
+/* 포커스된 판에서는 버튼을 더 또렷하게 */
+.pane.focused .pane-tools button {
+  color: #c3cad4;
 }
 
 /* 응답 대기 알림 배지 */
