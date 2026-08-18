@@ -282,6 +282,11 @@ function buildMenu() {
       label: '도움',
       submenu: [
         {
+          label: 'AI 질문',
+          accelerator: 'CmdOrCtrl+K',
+          click: () => mainWindow && mainWindow.webContents.send('menu:ai')
+        },
+        {
           label: 'tmux 사용법',
           click: () => mainWindow && mainWindow.webContents.send('menu:help-tmux')
         },
@@ -683,6 +688,60 @@ ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
 });
 
 /* ---------------------------------- AI 질문 ---------------------------------- */
+
+/** AI 질문 창 (하나만 유지). 메인 창을 가리지 않는 독립 윈도우다. */
+let aiWindow = null;
+let aiWinBounds = null; // 닫았다 다시 열어도 자리·크기를 기억
+
+function openAiWindow(payload) {
+  if (aiWindow && !aiWindow.isDestroyed()) {
+    aiWindow.show();
+    aiWindow.focus();
+    aiWindow.webContents.send('ai:context', payload);
+    return;
+  }
+  aiWindow = new BrowserWindow({
+    width: (aiWinBounds && aiWinBounds.width) || 460,
+    height: (aiWinBounds && aiWinBounds.height) || 620,
+    x: aiWinBounds ? aiWinBounds.x : undefined,
+    y: aiWinBounds ? aiWinBounds.y : undefined,
+    minWidth: 320,
+    minHeight: 360,
+    title: 'AI 질문',
+    backgroundColor: '#101318',
+    parent: undefined, // 독립 창 — 메인 창을 가리지도, 따라다니지도 않는다
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      spellcheck: false
+    }
+  });
+  aiWindow.setMenuBarVisibility(false);
+  aiWindow.loadFile(path.join(__dirname, '..', 'renderer', 'ai.html'));
+  aiWindow.webContents.once('did-finish-load', () => {
+    if (aiWindow && !aiWindow.isDestroyed()) aiWindow.webContents.send('ai:context', payload);
+  });
+  aiWindow.on('close', () => {
+    try {
+      aiWinBounds = aiWindow.getBounds();
+    } catch (e) {
+      /* noop */
+    }
+  });
+  aiWindow.on('closed', () => {
+    aiWindow = null;
+  });
+}
+
+ipcMain.on('ai:openWindow', (e, payload) => openAiWindow(payload || {}));
+ipcMain.handle('ai:togglePin', () => {
+  if (!aiWindow || aiWindow.isDestroyed()) return false;
+  const next = !aiWindow.isAlwaysOnTop();
+  aiWindow.setAlwaysOnTop(next);
+  return next;
+});
 
 /**
  * 판에서 Ctrl/⌘+K 로 여는 AI 질문. 원격 서버에 로그인된 Claude 계정으로

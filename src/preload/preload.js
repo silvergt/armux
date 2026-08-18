@@ -65,9 +65,12 @@ contextBridge.exposeInMainWorld('armux', {
     toggleDevTools: () => ipcRenderer.send('win:toggleDevTools')
   },
 
-  /** AI 질문 (원격 claude -p) */
+  /** AI 질문 (원격 claude -p, 독립 창) */
   ai: {
-    ask: (sessionId, prompt, resumeId) => ipcRenderer.invoke('ai:ask', { sessionId, prompt, resumeId })
+    ask: (sessionId, prompt, resumeId) => ipcRenderer.invoke('ai:ask', { sessionId, prompt, resumeId }),
+    openWindow: (payload) => ipcRenderer.send('ai:openWindow', payload),
+    onContext: (cb) => ipcRenderer.on('ai:context', (e, p) => cb(p)),
+    togglePin: () => ipcRenderer.invoke('ai:togglePin')
   },
 
   /** 웹 페인 (판 안의 브라우저) */
@@ -139,6 +142,7 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:split-vertical',
       'menu:split-horizontal',
       'menu:close-tab',
+      'menu:ai',
       'menu:copy',
       'menu:paste',
       'menu:cut',
