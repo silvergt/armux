@@ -198,7 +198,14 @@ function detachLeaf(tab, leaf) {
 
 // xterm 기본 애드온과 같은 규칙 (끝의 문장부호는 링크에서 뺀다)
 const TERM_URL_RE = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/g;
-const MAX_JOIN_ROWS = 16; // 위·아래로 이어 붙일 최대 줄 수 (폭주 방지)
+/*
+ * 이어 붙일 수 있는 최대 줄 수 / 글자 수.
+ * OAuth 링크는 토큰이 들어가면 수천 자가 되기도 한다(98칸으로 자르면 수십 줄).
+ * 길이 때문에 링크가 잘리는 일이 없도록 넉넉히 두되, 마우스를 올릴 때마다 도는
+ * 검사이므로 글자 수로 상한을 걸어 둔다.
+ */
+const MAX_JOIN_ROWS = 120;
+const MAX_JOIN_CHARS = 12000;
 
 /** 주소가 진짜 URL 인지 (애드온과 같은 검사) */
 function isRealUrl(text) {
@@ -215,12 +222,17 @@ function isRealUrl(text) {
   }
 }
 
+// URL 에 쓰일 수 있는 글자
+const URL_CHAR_RE = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]/;
+// "기계가 자른 줄" 로 볼 최소 폭. 사람이 쓴 글이 우연히 여기에 걸리지 않을 만큼 길다.
+const MIN_WRAP = 40;
+
 /**
  * 버퍼 한 줄을 글자 단위로 편다.
  * 넓은 글자(한글 등)는 두 칸을 차지하므로 뒤칸(width 0)은 건너뛰고,
  * 글자마다 실제 칸 번호(col)를 같이 들고 다녀야 링크 위치가 어긋나지 않는다.
  */
-function rowGlyphs(term, row) {
+function rowInfo(term, row) {
   const line = term.buffer.active.getLine(row);
   if (!line) return null;
   const cells = [];
@@ -232,39 +244,122 @@ function rowGlyphs(term, row) {
   }
   let end = cells.length;
   while (end > 0 && cells[end - 1].ch === ' ') end--; // 오른쪽 공백은 버린다
-  const trimmed = cells.slice(0, end);
+  let first = 0;
+  while (first < end && cells[first].ch === ' ') first++;
+  const body = cells.slice(first, end);
   return {
-    cells: trimmed,
-    // 글자가 마지막 칸까지 닿아 있다 = 여기서 잘렸을 가능성이 있다
-    reachesEnd: trimmed.length > 0 && trimmed[trimmed.length - 1].col >= line.length - 1
+    cells: cells.slice(0, end), // 앞쪽 공백은 칸 번호를 지키려고 남겨 둔다
+    text: body.map((c) => c.ch).join(''),
+    startCol: body.length ? body[0].col : -1,
+    wrapped: Boolean(line.isWrapped)
   };
 }
 
-/** 윗줄(a)과 아랫줄(b)이 원래 한 줄이었는지 */
-function rowsJoin(term, a, b) {
-  const lineB = term.buffer.active.getLine(b);
-  if (!lineB) return false;
-  if (lineB.isWrapped) return true; // 터미널이 접은 줄 — 확실히 이어진다
-  const ga = rowGlyphs(term, a);
-  const gb = rowGlyphs(term, b);
-  if (!ga || !gb || !ga.reachesEnd || !gb.cells.length) return false;
-  // 다음 줄이 칸 0 부터 공백 없이 시작해야 "잘려서 넘어간 것" 으로 본다
-  return gb.cells[0].col === 0 && gb.cells[0].ch !== ' ';
+/** 이 줄이 "윗줄에서 잘려 넘어온 조각" 처럼 보이는가 */
+function looksLikeContinuation(info) {
+  if (!info || !info.text) return false;
+  if (info.startCol !== 0) return false; // 이어지는 조각은 왼쪽 끝에서 시작한다
+  if (/\s/.test(info.text)) return false; // 잘린 URL 조각에는 공백이 없다
+  if (/^https?:\/\//i.test(info.text)) return false; // 새 URL 의 시작이면 남남이다
+  return URL_CHAR_RE.test(info.text[0]);
 }
 
-/** row 가 속한 "원래 한 줄" 을 글자 배열로 만든다 ({ch,row,col}) */
+/** 윗줄이 "여기서 잘렸다" 고 볼 만한가 (충분히 길고 URL 글자로 끝난다) */
+function looksCut(info) {
+  return Boolean(
+    info && info.text.length >= MIN_WRAP && URL_CHAR_RE.test(info.text[info.text.length - 1])
+  );
+}
+
+/** 마지막 조각(앞 줄보다 짧은 꼬리)이 URL 꼬리처럼 보이는가 */
+function looksLikeUrlTail(text) {
+  return /[%&=?]/.test(text) || (text.includes('/') && text.length >= 16);
+}
+
+/*
+ * row 가 속한 "원래 한 줄" 을 글자 배열로 만든다 ({ch,row,col}).
+ *
+ * 두 가지 방식으로 잘린 줄을 모두 이어 붙인다.
+ *   1) 터미널이 접은 줄(isWrapped) — xterm 이 알려 준다.
+ *   2) 프로그램이 직접 자른 줄 — codex 같은 TUI 는 터미널 폭과 무관하게 자기
+ *      폭(예: 98칸)으로 URL 을 잘라 여러 줄에 그린다. 이때 각 줄은 서로 남남인
+ *      줄로 남아서, 예전에는 첫 줄만 링크로 잡혀 "없는 주소" 가 열렸다.
+ *      → "같은 길이로 이어지는 줄" 을 기계가 자른 흔적으로 보고 이어 붙인다.
+ *        폭이 정해지면 그 폭인 줄을 계속 잇고, 마지막에 그보다 짧은 꼬리 한 줄을
+ *        더 붙인다. (첫 줄만 짧을 수 있어 폭은 뒤쪽 두 줄에서도 찾는다)
+ */
 function logicalRowGlyphs(term, row) {
   const buf = term.buffer.active;
+  const info = (r) => (r >= 0 && r < buf.length ? rowInfo(term, r) : null);
+
+  // 1) 위로 — 잘려 넘어온 조각이면 그 위로 거슬러 올라간다
   let top = row;
-  let bottom = row;
-  for (let i = 0; i < MAX_JOIN_ROWS && top > 0 && rowsJoin(term, top - 1, top); i++) top--;
-  for (let i = 0; i < MAX_JOIN_ROWS && bottom < buf.length - 1 && rowsJoin(term, bottom, bottom + 1); i++) bottom++;
+  let budget = MAX_JOIN_CHARS;
+  for (let i = 0; i < MAX_JOIN_ROWS && top > 0 && budget > 0; i++) {
+    const cur = info(top);
+    const up = info(top - 1);
+    if (!cur || !up) break;
+    if (cur.wrapped) {
+      budget -= cur.text.length;
+      top--;
+      continue;
+    }
+    if (looksLikeContinuation(cur) && looksCut(up)) {
+      budget -= cur.text.length;
+      top--;
+      continue;
+    }
+    break;
+  }
+
+  // 2) 아래로 — 폭을 정해 가며 이어 붙인다
+  const rows = [top];
+  let width = null; // 기계가 자른 폭 (정해지면 그 폭인 줄만 잇는다)
+  let cur = top;
+  budget = MAX_JOIN_CHARS;
+  for (let i = 0; i < MAX_JOIN_ROWS && budget > 0; i++) {
+    const ci = info(cur);
+    const ni = info(cur + 1);
+    if (!ci || !ni) break;
+    if (ni.wrapped) {
+      rows.push(cur + 1);
+      cur += 1;
+      budget -= ni.text.length;
+      continue;
+    }
+    if (!looksLikeContinuation(ni) || !looksCut(ci)) break;
+
+    const Ln = ni.text.length;
+    const Lc = ci.text.length;
+    if (width === null) {
+      const after = info(cur + 2);
+      if (Lc === Ln && Ln >= MIN_WRAP) {
+        width = Ln; // 같은 폭이 이어진다 = 기계가 자른 줄
+      } else if (
+        after && !after.wrapped && looksLikeContinuation(after) &&
+        after.text.length === Ln && Ln >= MIN_WRAP
+      ) {
+        width = Ln; // 첫 줄만 짧은 경우(앞에 다른 글자가 있었다)
+      } else if (Ln < Lc && looksLikeUrlTail(ni.text)) {
+        rows.push(cur + 1); // 두 줄짜리 — 꼬리 하나만 더 붙이고 끝
+        break;
+      } else {
+        break;
+      }
+    } else if (Ln !== width) {
+      if (Ln < width && looksLikeUrlTail(ni.text)) rows.push(cur + 1); // 마지막 꼬리
+      break;
+    }
+    rows.push(cur + 1);
+    cur += 1;
+    budget -= Ln;
+  }
 
   const out = [];
-  for (let r = top; r <= bottom; r++) {
-    const g = rowGlyphs(term, r);
-    if (!g) continue;
-    for (const c of g.cells) out.push({ ch: c.ch, row: r, col: c.col });
+  for (const r of rows) {
+    const gi = info(r);
+    if (!gi) continue;
+    for (const c of gi.cells) out.push({ ch: c.ch, row: r, col: c.col });
   }
   return out;
 }

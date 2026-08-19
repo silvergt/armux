@@ -114,11 +114,28 @@ window.AiChat = (function () {
 
     // 답변은 언제나 "현재 대화" 묶음에 쌓인다. 보관 대화를 열람 중이어도
     // 스트리밍이 엉뚱한 곳에 붙지 않는다.
+    /*
+     * AI 답변은 마크다운으로 그린다(코드블록·목록·표·굵게…).
+     * 사용자가 보낸 글은 손대지 않고 그대로 보여 준다 — 친 그대로가 정확하다.
+     *
+     * 스트리밍 중에는 조각이 계속 붙으므로, 원문을 md 에 모아 두고 그때그때
+     * 다시 그린다. setMarkdown() 이 그 일을 한다.
+     */
     const addMsg = (cls, text) => {
       if (empty.parentNode) empty.remove();
       const m = document.createElement('div');
       m.className = `ac-msg ac-${cls}`;
-      m.textContent = text;
+      if (cls === 'ai') {
+        m.classList.add('ac-md');
+        m.md = '';
+        m.setMarkdown = (t) => {
+          m.md = t;
+          window.Markdown.into(m, t);
+        };
+        m.setMarkdown(text || '');
+      } else {
+        m.textContent = text;
+      }
       liveWrap.appendChild(m);
       if (!state.viewing) log.scrollTop = log.scrollHeight;
       return m;
@@ -335,6 +352,22 @@ window.AiChat = (function () {
         liveWrap.appendChild(think);
         if (!state.viewing) log.scrollTop = log.scrollHeight;
       };
+      /*
+       * 토큰이 올 때마다 전체를 다시 그리면 무거우므로 한 프레임에 한 번만 그린다.
+       * (코드블록이 열린 채로 오는 중에도 보기 좋게 나오도록 마크다운은 매번 새로 만든다)
+       */
+      let paintQueued = null;
+      const paint = (text) => {
+        if (!bubble) return;
+        bubble.md = text;
+        if (paintQueued) return;
+        paintQueued = requestAnimationFrame(() => {
+          paintQueued = null;
+          if (bubble) bubble.setMarkdown(bubble.md);
+          if (!state.viewing) log.scrollTop = log.scrollHeight;
+        });
+      };
+
       pendingReqs.set(reqId, (p) => {
         if (wait.parentNode) wait.remove();
         if (p.kind === 'thinking') {
@@ -348,11 +381,11 @@ window.AiChat = (function () {
           thinkBody.appendChild(line);
         } else if (p.kind === 'text') {
           if (!bubble) bubble = addMsg('ai', '');
-          bubble.textContent += p.text; // claude: 토큰이 이어 붙는다
+          paint(bubble.md + p.text); // claude: 토큰이 이어 붙는다
         } else if (p.kind === 'answer') {
           // codex: 메시지 단위로 오므로 통째로 갈아 끼운다
           if (!bubble) bubble = addMsg('ai', '');
-          bubble.textContent = p.text;
+          paint(p.text);
         }
         if (!state.viewing) log.scrollTop = log.scrollHeight;
       });
@@ -364,7 +397,7 @@ window.AiChat = (function () {
         else {
           state.resumeId = res.sessionId || state.resumeId;
           if (!bubble) bubble = addMsg('ai', res.result || '(빈 응답)');
-          else if (!bubble.textContent) bubble.textContent = res.result || '(빈 응답)';
+          else bubble.setMarkdown(bubble.md || res.result || '(빈 응답)'); // 마지막 조각까지 반영
         }
       } catch (err) {
         if (wait.parentNode) wait.remove();

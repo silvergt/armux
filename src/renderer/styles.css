@@ -606,6 +606,100 @@ body.resizing-row * {
 }
 .ac-user { align-self: flex-end; background: #24486f; color: #e8f0fa; }
 .ac-ai { align-self: flex-start; background: #1a1f27; color: #d5dbe3; border: 1px solid #262c36; }
+/*
+ * 마크다운으로 그린 AI 답변.
+ * .ac-msg 의 pre-wrap 은 태그로 그린 뒤에는 방해가 되므로 되돌린다.
+ */
+.ac-md {
+  white-space: normal;
+  max-width: 96%;
+}
+.ac-md > *:first-child { margin-top: 0; }
+.ac-md > *:last-child { margin-bottom: 0; }
+.ac-md p { margin: 0 0 8px; }
+.ac-md h1, .ac-md h2, .ac-md h3, .ac-md h4, .ac-md h5, .ac-md h6 {
+  margin: 12px 0 6px;
+  color: #fff;
+  font-size: 13.5px;
+}
+.ac-md ul, .ac-md ol { margin: 0 0 8px; padding-left: 20px; }
+.ac-md li { margin: 2px 0; }
+.ac-md blockquote {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border-left: 3px solid #3a4250;
+  color: var(--fg-dim);
+}
+.ac-md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.ac-md code {
+  background: #0f1115;
+  border: 1px solid #262c36;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: #9aedfe;
+}
+.ac-md a.md-link { color: #57c7ff; }
+.ac-md table.md-table {
+  border-collapse: collapse;
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  display: block;
+  overflow-x: auto;
+}
+.ac-md table.md-table th, .ac-md table.md-table td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+}
+.ac-md table.md-table th { background: #171b22; color: #fff; }
+
+/* 코드블록 — 언어 이름과 복사 버튼을 얹는다 */
+.md-code {
+  position: relative;
+  margin: 0 0 8px;
+}
+.md-code .md-lang {
+  position: absolute;
+  top: 4px;
+  left: 10px;
+  font-size: 10px;
+  color: var(--fg-dim);
+  pointer-events: none;
+}
+.md-code .md-copy {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--fg-dim);
+  background: #171b22;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.md-code:hover .md-copy { opacity: 1; }
+.md-code .md-copy:hover { color: #fff; border-color: var(--accent); }
+.ac-md pre.md-pre {
+  background: #0f1115;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 12px 10px;
+  margin: 0;
+  overflow-x: auto;
+}
+.ac-md pre.md-pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #cfd6df;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
 .ac-err { align-self: flex-start; background: #3a2226; color: #ffb0b0; border: 1px solid #5c3138; }
 .ac-wait { align-self: flex-start; color: var(--fg-dim); animation: pulse 1.2s infinite ease-in-out; }
 /* 사고 과정(접이식) */
