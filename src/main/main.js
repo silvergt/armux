@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils, webContents, powerMonitor, Notification } = require('electron');
 const store = require('./store');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
@@ -273,6 +273,30 @@ function buildMenu() {
               { type: 'separator' }
             ]
           : []),
+        // 켬/끔 항목. 실제 값은 화면 쪽(localStorage)이 갖고 있고,
+        // 시작할 때와 바뀔 때 settings:sync 로 여기 체크 표시를 맞춘다.
+        {
+          id: 'opt-notify',
+          label: '작업 완료 시 알림',
+          type: 'checkbox',
+          checked: true,
+          click: (mi) => mainWindow && mainWindow.webContents.send('menu:option', { key: 'notifyOs', on: mi.checked })
+        },
+        {
+          id: 'opt-reconnect',
+          label: '절전에서 깨면 자동 재접속',
+          type: 'checkbox',
+          checked: true,
+          click: (mi) => mainWindow && mainWindow.webContents.send('menu:option', { key: 'autoReconnect', on: mi.checked })
+        },
+        {
+          id: 'opt-tmux',
+          label: '재접속하면 tmux 다시 붙기',
+          type: 'checkbox',
+          checked: true,
+          click: (mi) => mainWindow && mainWindow.webContents.send('menu:option', { key: 'tmuxReattach', on: mi.checked })
+        },
+        { type: 'separator' },
         {
           label: '글자 크게',
           accelerator: 'CmdOrCtrl+Plus',
@@ -741,6 +765,64 @@ ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
   });
   return res.response === 1;
 });
+
+/** 화면 쪽 설정값을 메뉴 체크 표시에 반영한다 */
+ipcMain.on('settings:sync', (e, opts) => {
+  const menu = Menu.getApplicationMenu();
+  if (!menu || !opts) return;
+  const map = { 'opt-notify': 'notifyOs', 'opt-reconnect': 'autoReconnect', 'opt-tmux': 'tmuxReattach' };
+  for (const [id, key] of Object.entries(map)) {
+    const item = menu.getMenuItemById(id);
+    if (item && typeof opts[key] === 'boolean') item.checked = opts[key];
+  }
+});
+
+/* ------------------------------- 앱 밖 알림 · 절전 ------------------------------- */
+
+/*
+ * 창이 가려져 있을 때도 "끝났다 / 물어본다" 를 알린다.
+ * 앱 안의 초록 느낌표만으로는 다른 창에서 일하는 동안 알 수가 없다.
+ *   - 알림을 누르면 그 판으로 바로 이동한다.
+ *   - 배지(맥/리눅스)와 창 깜빡임(윈도우)으로 대기 건수를 알린다.
+ */
+ipcMain.on('notify:alert', (e, { leafId, title, body }) => {
+  if (!Notification.isSupported()) return;
+  const n = new Notification({
+    title: String(title || 'Armux'),
+    body: String(body || ''),
+    silent: false
+  });
+  n.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('notify:jump', { leafId });
+  });
+  n.show();
+});
+
+/** 대기 중인 판 개수를 독 배지(맥·리눅스) 또는 창 깜빡임(윈도우)으로 */
+ipcMain.on('notify:badge', (e, { count }) => {
+  const n = Math.max(0, Number(count) || 0);
+  try {
+    app.setBadgeCount(n); // 윈도우에서는 조용히 무시된다
+  } catch (err) {
+    /* noop */
+  }
+  if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
+    // 윈도우는 배지 대신 작업표시줄 깜빡임 (포커스를 얻으면 저절로 멈춘다)
+    mainWindow.flashFrame(n > 0 && !mainWindow.isFocused());
+  }
+});
+
+/*
+ * 절전에서 깨어나면 SSH 연결은 대개 죽어 있다(keepalive 20초 × 6회).
+ * 노트북을 덮었다 열 때마다 판마다 Enter 를 눌러야 했으므로, 깨어나면
+ * 화면 쪽에 알려서 끊긴 판을 알아서 다시 붙이게 한다.
+ */
+powerMonitor.on('suspend', () => send('power:suspend'));
+powerMonitor.on('resume', () => send('power:resume'));
 
 /* ---------------------------------- AI 채팅 ---------------------------------- */
 

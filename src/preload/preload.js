@@ -117,6 +117,24 @@ contextBridge.exposeInMainWorld('armux', {
     save: (snapshot) => ipcRenderer.send('session:save', snapshot)
   },
 
+  /** 앱 밖 알림 (창이 가려져 있을 때 완료/대기를 알린다) */
+  notify: {
+    alert: (payload) => ipcRenderer.send('notify:alert', payload),
+    badge: (count) => ipcRenderer.send('notify:badge', { count }),
+    onJump: (cb) => ipcRenderer.on('notify:jump', (e, p) => cb(p))
+  },
+
+  /** 절전/복귀 — 깨어나면 끊긴 판을 다시 붙인다 */
+  power: {
+    onSuspend: (cb) => ipcRenderer.on('power:suspend', () => cb()),
+    onResume: (cb) => ipcRenderer.on('power:resume', () => cb())
+  },
+
+  /** 켬/끔 설정을 시스템 메뉴 체크 표시에 반영 */
+  settings: {
+    sync: (opts) => ipcRenderer.send('settings:sync', opts)
+  },
+
   /** 원격 서버의 Claude Code 로그인/사용량 정보 */
   claude: {
     info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId }),
@@ -165,7 +183,8 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:about',
       'menu:update',
       'menu:toggle-explorer',
-      'menu:toggle-notes'
+      'menu:toggle-notes',
+      'menu:option'
     ];
     for (const ch of channels) {
       ipcRenderer.on(ch, (e, arg) => cb(ch.replace('menu:', ''), arg));

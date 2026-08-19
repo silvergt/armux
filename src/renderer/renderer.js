@@ -520,6 +520,7 @@ function createLeaf(tab, connect, options) {
     clearAlert(leaf);
     checkActivitySoon(); // 입력하면 화면이 바뀔 수 있으니 상태를 다시 본다
     if (leaf.sessionId && leaf.status === 'ready') {
+      watchTmuxCommand(leaf, data); // 어떤 tmux 세션에 붙는지 기억해 둔다
       api.ssh.write(leaf.sessionId, data);
     } else if (leaf.status === 'closed' || leaf.status === 'error') {
       if (data === '\r') reconnect(leaf); // 종료된 페인에서 Enter → 재접속
@@ -846,6 +847,110 @@ function feedAlertDetector(leaf, text) {
 }
 
 /** 알림 켜기. 지금 보고 있는 페인이면 굳이 표시하지 않는다. */
+/* ---------------------------- 앱 밖 알림 · 절전 복구 ---------------------------- */
+
+/*
+ * 켬/끔 설정. 앱 안 초록 느낌표와 별개로, 창이 가려져 있을 때 OS 알림을
+ * 보낼지 / 절전에서 깨면 자동으로 다시 붙을지 / 그때 tmux 에 다시 붙을지.
+ */
+const OPT_KEYS = ['notifyOs', 'autoReconnect', 'tmuxReattach'];
+const opts = {
+  notifyOs: localStorage.getItem('opt.notifyOs') !== '0',
+  autoReconnect: localStorage.getItem('opt.autoReconnect') !== '0',
+  tmuxReattach: localStorage.getItem('opt.tmuxReattach') !== '0'
+};
+function setOption(key, on) {
+  if (!OPT_KEYS.includes(key)) return;
+  opts[key] = Boolean(on);
+  localStorage.setItem(`opt.${key}`, opts[key] ? '1' : '0');
+  api.settings.sync(opts);
+  if (!opts.notifyOs) api.notify.badge(0);
+  else syncBadge();
+}
+api.settings.sync(opts); // 시작할 때 시스템 메뉴 체크 표시를 맞춘다
+
+/** 지금 확인이 필요한 판의 개수를 독 배지/작업표시줄에 알린다 */
+function syncBadge() {
+  let n = 0;
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const l of leavesOf(t.root)) if (l.alert) n++;
+    }
+  }
+  api.notify.badge(opts.notifyOs ? n : 0);
+}
+
+/**
+ * 창이 가려져 있을 때만 OS 알림을 띄운다.
+ * 지금 그 판을 보고 있으면 화면의 느낌표로 충분하므로 보내지 않는다.
+ */
+function notifyOutside(leaf, needsInput) {
+  if (!opts.notifyOs) return;
+  const cur = activeLeaf();
+  const looking = document.hasFocus() && cur && cur.id === leaf.id && !state.notesOpen;
+  if (looking) return;
+
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const where = `${group ? group.host.name : ''}${leaf.title ? ` · ${leaf.title}` : ''}`;
+  api.notify.alert({
+    leafId: leaf.id,
+    title: needsInput ? '입력을 기다리고 있습니다' : '작업이 끝났습니다',
+    body: where || 'Armux'
+  });
+}
+
+/** 알림을 눌렀을 때 그 판으로 이동 */
+api.notify.onJump(({ leafId }) => {
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      const leaf = leavesOf(t.root).find((l) => l.id === leafId);
+      if (leaf) {
+        state.activeGroupId = g.id;
+        g.activeTabId = t.id;
+        if (state.notesOpen) closeNotes();
+        focusLeaf(leaf);
+        return;
+      }
+    }
+  }
+});
+
+/*
+ * 절전에서 깨면 SSH 는 대개 끊겨 있다. 끊긴 판을 순서대로 다시 붙인다.
+ * 한꺼번에 붙으면 서버가 동시 접속을 거절할 수 있어 조금씩 띄운다.
+ */
+let reconnectingAll = false;
+function reconnectDeadPanes(reason) {
+  if (!opts.autoReconnect || reconnectingAll) return;
+  const dead = [];
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const l of leavesOf(t.root)) {
+        if (l.status !== 'closed' && l.status !== 'error') continue;
+        const c = l.connect || {};
+        if (!c.local && !c.hostId && !c.credId && !c.profile) continue; // 붙을 정보가 없다
+        dead.push(l);
+      }
+    }
+  }
+  if (!dead.length) return;
+  reconnectingAll = true;
+  el.statusLeft.textContent = `${reason} — 끊긴 판 ${dead.length}개를 다시 붙이는 중…`;
+  dead.forEach((leaf, i) => {
+    setTimeout(() => {
+      // 그 사이 사용자가 직접 붙였을 수도 있다
+      if (leaf.status === 'closed' || leaf.status === 'error') {
+        leaf.reattachTmux = opts.tmuxReattach && Boolean(leaf.tmuxSession || leaf.wasTmux);
+        reconnect(leaf);
+      }
+      if (i === dead.length - 1) setTimeout(() => { reconnectingAll = false; }, 1500);
+    }, i * 400);
+  });
+}
+
+api.power.onResume(() => setTimeout(() => reconnectDeadPanes('절전에서 깨어남'), 1500));
+window.addEventListener('online', () => setTimeout(() => reconnectDeadPanes('네트워크 복구'), 1500));
+
 function raiseAlert(leaf, force) {
   if (leaf.alert) return;
   // 보통은 지금 보고 있는 판이면 표시하지 않는다.
@@ -855,12 +960,15 @@ function raiseAlert(leaf, force) {
     if (cur && cur.id === leaf.id && document.hasFocus()) return;
   }
   leaf.alert = true;
+  notifyOutside(leaf, force); // 창이 가려져 있으면 OS 알림으로도 알린다
+  syncBadge();
   scheduleRender();
 }
 
 function clearAlert(leaf) {
   if (!leaf || !leaf.alert) return;
   leaf.alert = false;
+  syncBadge();
   scheduleRender();
 }
 
@@ -873,7 +981,10 @@ function clearAlertsInTab(tab) {
       changed = true;
     }
   }
-  if (changed) scheduleRender();
+  if (changed) {
+    syncBadge();
+    scheduleRender();
+  }
 }
 
 const tabHasAlert = (tab) => leavesOf(tab.root).some((l) => l.alert);
@@ -913,6 +1024,65 @@ function bottomNonEmptyLines(leaf, n = 3) {
 /** tmux 안인지 (상태줄로 판단) */
 function looksLikeTmux(leaf) {
   return TMUX_STATUS_RE.test(readScreenTail(leaf));
+}
+
+/*
+ * tmux 상태줄 왼쪽은 기본값이 "[세션이름] " 이라 거기서 세션 이름을 얻는다.
+ * (status-left 를 바꿔 쓰는 사람도 있으므로 못 읽으면 이름 없이 tmux 안이라는
+ *  사실만 기억한다 — 그때는 재접속 후 그냥 `tmux attach` 를 쓴다)
+ */
+const TMUX_SESSION_RE = /^\[([^\]]{1,40})\]/;
+
+function rememberTmux(leaf) {
+  const lines = bottomNonEmptyLines(leaf, 2);
+  const inTmux = lines.some((l) => TMUX_STATUS_RE.test(l));
+  if (!inTmux) return; // tmux 를 벗어난 것일 수도 있으니 기억을 지우지는 않는다
+  leaf.wasTmux = true;
+  if (leaf.tmuxSession) return; // 명령에서 이미 정확한 이름을 얻었으면 그것을 쓴다
+  for (const l of lines) {
+    const m = TMUX_SESSION_RE.exec(l.trim());
+    /*
+     * 닫는 대괄호까지 보일 때만 인정한다.
+     * tmux 의 status-left-length 기본값이 10 이라 이름이 길면 "[octopus_bi" 처럼
+     * 잘려서 나온다. 잘린 이름으로 붙으려 들면 엉뚱한 세션에 붙을 수 있다.
+     */
+    if (m) {
+      leaf.tmuxSession = m[1];
+      return;
+    }
+  }
+}
+
+/*
+ * 사용자가 친 tmux 명령에서 세션 이름을 정확히 얻는다.
+ * 화면의 상태줄은 잘려 나오기 때문에(위 참고) 이쪽이 훨씬 믿을 만하다.
+ * 한 줄씩 모았다가 Enter 를 칠 때만 살펴본다.
+ */
+const TMUX_ATTACH_RE = /\btmux\s+(?:a|at|att|attach|attach-session)\b[^\n]*?-t\s+["']?([\w.@-]{1,40})/;
+const TMUX_NEW_RE = /\btmux\s+new(?:-session)?\b[^\n]*?-s\s+["']?([\w.@-]{1,40})/;
+const TMUX_SWITCH_RE = /\btmux\s+switch(?:-client)?\b[^\n]*?-t\s+["']?([\w.@-]{1,40})/;
+
+function watchTmuxCommand(leaf, data) {
+  if (typeof data !== 'string') return;
+  if (data.includes('\r') || data.includes('\n')) {
+    const line = (leaf.cmdBuf || '') + data;
+    leaf.cmdBuf = '';
+    for (const re of [TMUX_ATTACH_RE, TMUX_NEW_RE, TMUX_SWITCH_RE]) {
+      const m = re.exec(line);
+      if (m) {
+        leaf.tmuxSession = m[1];
+        leaf.wasTmux = true;
+        return;
+      }
+    }
+    return;
+  }
+  if (data === '\u007f') {
+    leaf.cmdBuf = (leaf.cmdBuf || '').slice(0, -1); // 백스페이스
+    return;
+  }
+  if (data.length > 200 || /[\u0000-\u001f]/.test(data)) return; // 붙여넣기·제어키는 무시
+  leaf.cmdBuf = ((leaf.cmdBuf || '') + data).slice(-200);
 }
 
 /**
@@ -980,6 +1150,10 @@ function evaluateActivity() {
           if (!looking) raiseAlert(leaf);
         }
         leaf.wasThinking = thinking;
+
+        // 이 판이 tmux 안인지, 어떤 세션인지 기억해 둔다.
+        // 절전에서 깨어나 다시 붙을 때 같은 세션으로 돌려놓기 위해서다.
+        if (live) rememberTmux(leaf);
       }
     }
   }
@@ -1716,6 +1890,11 @@ const APP_MENUS = [
       }],
       ['메모장', isMacPlatform ? '⌘⌃`' : 'Ctrl+Alt+`', () => toggleNotes()],
       ['-'],
+      // 켬/끔 — 메뉴를 열 때마다 라벨을 다시 만들어 ✓ 를 보여 준다
+      [() => `${opts.notifyOs ? '✓' : '  '} 작업 완료 시 알림`, '', () => setOption('notifyOs', !opts.notifyOs)],
+      [() => `${opts.autoReconnect ? '✓' : '  '} 절전에서 깨면 자동 재접속`, '', () => setOption('autoReconnect', !opts.autoReconnect)],
+      [() => `${opts.tmuxReattach ? '✓' : '  '} 재접속하면 tmux 다시 붙기`, '', () => setOption('tmuxReattach', !opts.tmuxReattach)],
+      ['-'],
       ['글자 크게', `${MOD}+ +`, () => setFontSize(state.fontSize + 1)],
       ['글자 작게', `${MOD}+ -`, () => setFontSize(state.fontSize - 1)],
       ['글자 크기 초기화', `${MOD}+0`, () => setFontSize(13)],
@@ -1786,7 +1965,8 @@ function toggleAppMenu(index, button) {
     const [label, accel, fn] = item;
     const b = document.createElement('button');
     const name = document.createElement('span');
-    name.textContent = label;
+    // 라벨이 함수면 열 때마다 계산한다 (켬/끔 항목의 ✓ 표시용)
+    name.textContent = typeof label === 'function' ? label() : label;
     const key = document.createElement('span');
     key.className = 'menu-accel';
     key.textContent = accel || '';
@@ -3302,6 +3482,33 @@ api.ssh.onReady(({ id }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
   leaf.status = 'ready';
+
+  /*
+   * 절전에서 깨어나 자동으로 다시 붙은 판이라면, 끊기기 전에 보고 있던 tmux
+   * 세션으로 돌려놓는다. 서버의 tmux 는 살아 있으므로 화면이 그대로 돌아온다.
+   * 사용자가 직접 누른 재접속에는 하지 않는다(원치 않는 명령을 넣지 않기 위해).
+   */
+  if (leaf.reattachTmux) {
+    leaf.reattachTmux = false;
+    const name = leaf.tmuxSession;
+    // 이름은 셸에 그대로 들어가므로 안전한 글자만 통과시킨다
+    const safe = name && /^[\w.@-]{1,40}$/.test(name) ? name : '';
+    if (safe) {
+      /*
+       * 반드시 "그 판이 보고 있던 세션" 에만 붙는다.
+       * 이름이 없거나 그 세션이 사라졌다면 아무것도 하지 않는다 — 그냥
+       * `tmux attach` 로 넘어가면 엉뚱한 세션(예: 돌아가고 있는 운영 세션)에
+       * 붙을 수 있고, 거기서는 키 하나가 사고가 된다.
+       */
+      setTimeout(() => {
+        if (leaf.status === 'ready' && leaf.sessionId) {
+          api.ssh.write(leaf.sessionId, `tmux attach -t ${safe}\n`);
+        }
+      }, 700); // 셸 프롬프트가 뜬 뒤에 보낸다
+    } else if (leaf.wasTmux) {
+      el.statusLeft.textContent = '다시 접속했습니다. 이 판은 tmux 였습니다 — tmux a 로 다시 붙으세요.';
+    }
+  }
   const grp = state.groups.find((g) => g.id === leaf.groupId);
   if (grp) {
     setTimeout(() => refreshClaudeInfo(grp, true), 800);
@@ -3461,6 +3668,9 @@ api.onMenu(async (cmd, arg) => {
       break;
     case 'help-shortcuts':
       openHelp('shortcuts');
+      break;
+    case 'option': // 보기 메뉴의 켬/끔 (mac 시스템 메뉴)
+      if (arg && arg.key) setOption(arg.key, arg.on);
       break;
     case 'ai':
       openAiPanel(activeLeaf());
