@@ -727,6 +727,22 @@ body.resizing-row * {
 }
 .ac-err { align-self: flex-start; background: #3a2226; color: #ffb0b0; border: 1px solid #5c3138; }
 .ac-wait { align-self: flex-start; color: var(--fg-dim); animation: pulse 1.2s infinite ease-in-out; }
+/* 보관 대화를 볼 때 위에 붙는 안내줄 */
+.ac-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: stretch;
+  padding: 5px 10px;
+  margin-bottom: 4px;
+  border: 1px dashed #3a4250;
+  border-radius: 8px;
+  background: #14171d;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.ac-banner .ac-hbtn { margin-left: auto; }
+
 /* 사고 과정(접이식) */
 details.ac-think {
   align-self: stretch;

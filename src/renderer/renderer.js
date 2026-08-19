@@ -1505,6 +1505,10 @@ function closeTab(group, tab) {
 function closeGroup(group) {
   for (const t of [...group.tabs]) {
     for (const l of leavesOf(t.root)) disposeLeaf(l);
+    if (t.stashedAiLeaf) {
+      disposeLeaf(t.stashedAiLeaf); // 닫아 두었던 임시 AI 패널도 함께 정리
+      t.stashedAiLeaf = null;
+    }
     t.container.remove();
   }
   if (group.explorer) {
@@ -1584,6 +1588,12 @@ async function closeLeaf(leaf) {
 
   if (leavesOf(tab.root).length === 1) {
     confirmCloseTab(group, tab); // 마지막 창이면 탭이 닫히므로 탭 기준으로 물어본다
+    return;
+  }
+
+  // 임시 AI 패널은 어느 경로로 닫든 같게 — 접어 두고 내용은 보관한다
+  if (leaf.ephemeral) {
+    closeAiPanel(leaf);
     return;
   }
 
@@ -3361,7 +3371,15 @@ function closeAiPanel(leaf) {
   const group = state.groups.find((g) => g.id === leaf.groupId);
   const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
   if (!group || !tab) return;
-  if (leavesOf(tab.root).length === 1) return; // 혼자 남았으면 닫을 곳이 없다
+  /*
+   * 옆 판을 먼저 닫아서 이 패널만 남았다면 접을 곳이 없다.
+   * 그대로 두면 닫히지도 않는 패널에 갇히므로, 이때는 보통 판으로 바꿔 준다.
+   * (그 뒤로는 일반 판처럼 ✕ 로 닫을 수 있다)
+   */
+  if (leavesOf(tab.root).length === 1) {
+    pinAiPanel(leaf);
+    return;
+  }
   detachLeaf(tab, leaf);
   if (leaf.el && leaf.el.parentElement) leaf.el.remove(); // 화면에서만 뗀다
   tab.stashedAiLeaf = leaf; // 내용은 그대로 보관
@@ -3768,7 +3786,7 @@ const ctxMenu = document.createElement('div');
 ctxMenu.className = 'ex-menu hidden';
 document.body.appendChild(ctxMenu);
 
-/** items = [[라벨, 실행함수, 'danger'?] | ['-']] */
+/** items = [[라벨, 실행함수, 'danger'?, 삭제함수?] | ['-']] */
 function showContextMenu(x, y, items, opts) {
   ctxMenu.innerHTML = '';
   for (const item of items) {
@@ -3789,17 +3807,18 @@ function showContextMenu(x, y, items, opts) {
     // 삭제는 항목을 고르는 것과 다른 동작이므로 메뉴를 닫지 않는다.
     if (typeof item[3] === 'function') {
       b.classList.add('has-remove');
-      const x = document.createElement('span');
-      x.className = 'ctx-remove';
-      x.textContent = '✕';
-      x.title = '삭제';
-      x.addEventListener('mousedown', (e) => e.stopPropagation());
-      x.addEventListener('click', (e) => {
+      // 바깥의 좌표 인자 x 와 헷갈리지 않게 이름을 따로 둔다
+      const rm = document.createElement('span');
+      rm.className = 'ctx-remove';
+      rm.textContent = '✕';
+      rm.title = '삭제';
+      rm.addEventListener('mousedown', (e) => e.stopPropagation());
+      rm.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
         item[3]();
       });
-      b.appendChild(x);
+      b.appendChild(rm);
     }
     ctxMenu.appendChild(b);
   }
