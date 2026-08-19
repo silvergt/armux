@@ -194,4 +194,4 @@ console.log('ARMUX_HOOKS:removed');
   return String(stdout).includes('ARMUX_HOOKS:removed');
 }
 
-module.exports = { install, uninstall, OSC, MARKER };
+module.exports = { install, uninstall, OSC, MARKER, notifyScript };

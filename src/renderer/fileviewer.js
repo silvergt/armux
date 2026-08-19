@@ -921,6 +921,7 @@ window.FileViewer = (function () {
       el: root,
       focus: () => (state._focus ? state._focus() : root.focus()),
       isDirty: () => state.dirty,
+      getText: () => state.content || '', // AI 채팅에 이 파일을 첨부할 때 쓴다
       openFind,
       dispose: () => root.remove()
     };

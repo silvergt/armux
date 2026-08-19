@@ -13,11 +13,28 @@ const updater = require('./updater');
 const chromehistory = require('./chromehistory');
 const webfav = require('./webfav');
 const claudehooks = require('./claudehooks');
+const codexinfo = require('./codexinfo');
+const codexhooks = require('./codexhooks');
 
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
 let allowClose = false; // 종료 확인을 이미 받았는지
 let exitAsking = false; // 확인 창이 이미 떠 있는지
+
+/**
+ * 바깥 프로그램(기본 브라우저·메일 앱)으로 넘길 수 있는 링크만 넘긴다.
+ *
+ * about:blank · javascript: · data: 같은 스킴을 그대로 shell 로 넘기면 OS 가
+ * "이 'about' 링크를 열 앱을 다운로드하세요" 같은 대화를 띄운다. 브라우저는
+ * 이런 링크를 바깥으로 넘기지 않으므로 우리도 조용히 무시한다.
+ */
+const EXTERNAL_SCHEMES = /^(https?|mailto|tel|ftp|ftps):/i;
+function openExternalSafe(url) {
+  const u = String(url || '').trim();
+  if (!u || !EXTERNAL_SCHEMES.test(u)) return false;
+  shell.openExternal(u).catch(() => {});
+  return true;
+}
 
 /** 종료 전 확인. 열린 세션이 없으면 묻지 않는다. */
 async function confirmExit() {
@@ -84,7 +101,7 @@ function createWindow() {
 
   // 터미널 안의 링크는 외부 브라우저로
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
 
@@ -93,7 +110,18 @@ function createWindow() {
   // 여기서 게스트 webContents 에 핸들러를 달아 렌더러로 알려 줘야 한다.
   mainWindow.webContents.on('did-attach-webview', (e2, guest) => {
     guest.setWindowOpenHandler(({ url }) => {
-      send('web:openInNewTab', { viewId: guest.id, url });
+      const u = String(url || '');
+      // 평범한 링크(http/https)는 그 판의 새 탭으로
+      if (/^https?:\/\//i.test(u)) {
+        send('web:openInNewTab', { viewId: guest.id, url: u });
+        return { action: 'deny' };
+      }
+      // window.open('') 처럼 빈 창을 열고 스크립트로 채우는 방식(결제·인쇄·OAuth 등).
+      // 새 탭으로 만들면 페이지가 그 창을 다룰 수 없어 빈 화면이 되므로,
+      // 크롬처럼 진짜 팝업 창을 허용한다.
+      if (!u || /^about:blank/i.test(u)) return { action: 'allow' };
+      // mailto:·tel: 등은 OS 에 넘기되, 열 수 없는 스킴은 조용히 무시한다
+      openExternalSafe(u);
       return { action: 'deny' };
     });
   });
@@ -282,7 +310,7 @@ function buildMenu() {
       label: '도움',
       submenu: [
         {
-          label: 'AI 질문',
+          label: 'AI 채팅',
           accelerator: 'CmdOrCtrl+K',
           click: () => mainWindow && mainWindow.webContents.send('menu:ai')
         },
@@ -603,7 +631,7 @@ ipcMain.handle('update:install', () => updater.install());
 ipcMain.handle('update:state', () => updater.getState());
 ipcMain.on('update:openReleases', () => updater.openReleases());
 ipcMain.on('app:openExternal', (e, url) => {
-  if (/^https?:\/\//i.test(String(url))) shell.openExternal(url);
+  openExternalSafe(url);
 });
 
 /* -------------------------------- IPC: 창 제어 -------------------------------- */
@@ -664,6 +692,22 @@ ipcMain.handle('claude:installHooks', async (e, { sessionId }) => {
   }
 });
 
+ipcMain.handle('codex:installHooks', async (e, { sessionId }) => {
+  try {
+    return await codexhooks.install(sessionId);
+  } catch (err) {
+    return false;
+  }
+});
+
+ipcMain.handle('codex:info', async (e, { sessionId }) => {
+  try {
+    return await codexinfo.fetchInfo(sessionId);
+  } catch (err) {
+    return { loggedIn: false };
+  }
+});
+
 ipcMain.handle('claude:info', async (e, { sessionId }) => {
   try {
     return await claudeinfo.fetchInfo(sessionId);
@@ -698,88 +742,85 @@ ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
   return res.response === 1;
 });
 
-/* ---------------------------------- AI 질문 ---------------------------------- */
+/* ---------------------------------- AI 채팅 ---------------------------------- */
 
-/** AI 질문 창 (하나만 유지). 메인 창을 가리지 않는 독립 윈도우다. */
-let aiWindow = null;
-let aiWinBounds = null; // 닫았다 다시 열어도 자리·크기를 기억
-
-function openAiWindow(payload) {
-  if (aiWindow && !aiWindow.isDestroyed()) {
-    aiWindow.show();
-    aiWindow.focus();
-    aiWindow.webContents.send('ai:context', payload);
-    return;
-  }
-  aiWindow = new BrowserWindow({
-    width: (aiWinBounds && aiWinBounds.width) || 460,
-    height: (aiWinBounds && aiWinBounds.height) || 620,
-    x: aiWinBounds ? aiWinBounds.x : undefined,
-    y: aiWinBounds ? aiWinBounds.y : undefined,
-    minWidth: 320,
-    minHeight: 360,
-    title: 'AI 질문',
-    backgroundColor: '#101318',
-    parent: undefined, // 독립 창 — 메인 창을 가리지도, 따라다니지도 않는다
-    webPreferences: {
-      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      spellcheck: false
-    }
-  });
-  aiWindow.setMenuBarVisibility(false);
-  aiWindow.loadFile(path.join(__dirname, '..', 'renderer', 'ai.html'));
-  aiWindow.webContents.once('did-finish-load', () => {
-    if (aiWindow && !aiWindow.isDestroyed()) aiWindow.webContents.send('ai:context', payload);
-  });
-  aiWindow.on('close', () => {
-    try {
-      aiWinBounds = aiWindow.getBounds();
-    } catch (e) {
-      /* noop */
-    }
-  });
-  aiWindow.on('closed', () => {
-    aiWindow = null;
-  });
-}
-
-ipcMain.on('ai:openWindow', (e, payload) => openAiWindow(payload || {}));
-ipcMain.handle('ai:togglePin', () => {
-  if (!aiWindow || aiWindow.isDestroyed()) return false;
-  const next = !aiWindow.isAlwaysOnTop();
-  aiWindow.setAlwaysOnTop(next);
-  return next;
-});
-
-/**
- * 판에서 Ctrl/⌘+K 로 여는 AI 질문. 원격 서버에 로그인된 Claude 계정으로
- * `claude -p` 를 실행해 답을 받아온다(API 키 불필요, 사용량은 그 계정 기준).
- * 이어지는 질문은 --resume <세션id> 로 맥락을 유지한다.
+/*
+ * AI 채팅 — 원격(또는 로컬) 서버에 설치된 CLI 를 그대로 빌려 쓴다.
+ * API 키가 필요 없고, 사용량은 그 서버에 로그인된 계정에서 나간다.
+ *
+ *   claude : claude -p --output-format stream-json  (--resume 로 맥락 유지)
+ *   codex  : codex exec --json                      (exec resume <id> 로 맥락 유지)
+ *
  * 프롬프트는 따옴표 문제를 피하려고 base64 → stdin 으로 넘긴다.
  */
-ipcMain.handle('ai:ask', async (e, { sessionId, prompt, resumeId }) => {
-  const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
-  const resume = resumeId ? `--resume ${String(resumeId).replace(/[^0-9a-f-]/gi, '')} ` : '';
-  const script = `
+
+/** claude 실행 파일 찾기 (SSH exec 는 로그인 셸이 아닐 수 있다) */
+const FIND_CLAUDE = `
 CLAUDE="$(command -v claude 2>/dev/null)"
 if [ -z "$CLAUDE" ]; then
   for c in "$HOME"/.local/bin/claude "$HOME"/.claude/local/claude /usr/local/bin/claude /opt/homebrew/bin/claude; do
     [ -x "$c" ] && CLAUDE="$c" && break
   done
-fi
+fi`.trim();
+
+/** 이어지는 대화 id 는 셸로 들어가므로 UUID 글자만 남긴다 */
+const safeId = (id) => String(id || '').replace(/[^0-9a-zA-Z-]/g, '').slice(0, 64);
+
+/**
+ * 질문 한 번을 실행할 셸 스크립트.
+ * @param {'claude'|'codex'} tool
+ * @param {boolean} stream  조각조각 흘려보낼지(true) 한 번에 받을지(false)
+ */
+function buildAskScript(tool, promptB64, resumeId, stream) {
+  const decode = `printf %s ${promptB64} | { base64 -d 2>/dev/null || base64 --decode; }`;
+  if (tool === 'codex') {
+    // 주의: resume 은 하위 명령이라 --json 같은 옵션보다 "뒤" 에 와야 한다.
+    //   codex exec <옵션들> resume <스레드id> -     ← 맞음
+    //   codex exec resume <스레드id> <옵션들> -     ← resume 이 그 옵션들을 모른다
+    const resume = resumeId ? ` resume ${safeId(resumeId)}` : '';
+    // 채팅용이므로 읽기 전용 모래상자로 돌린다(실수로 파일을 고치지 않게).
+    return `
+${codexinfo.FIND_CODEX}
+if [ -z "$CODEX" ]; then echo 'ARMUX_AI:no-codex'; exit 0; fi
+cd "$HOME" 2>/dev/null
+${decode} | "$CODEX" exec --json --skip-git-repo-check -s read-only${resume} - 2>/dev/null
+`.trim();
+  }
+  const resume = resumeId ? `--resume ${safeId(resumeId)} ` : '';
+  const fmt = stream
+    ? '--output-format stream-json --include-partial-messages --verbose'
+    : '--output-format json';
+  return `
+${FIND_CLAUDE}
 if [ -z "$CLAUDE" ]; then echo 'ARMUX_AI:no-claude'; exit 0; fi
 cd "$HOME" 2>/dev/null
-printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p ${resume}--output-format json 2>/dev/null
+${decode} | "$CLAUDE" -p ${resume}${fmt} 2>/dev/null
 `.trim();
+}
+
+/** 그 서버에 CLI 가 없을 때 보여 줄 말 */
+function missingMsg(tool) {
+  return tool === 'codex'
+    ? '이 서버에서 codex 명령을 찾지 못했습니다. Codex CLI 가 설치되어 있어야 합니다.'
+    : '이 서버에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치되어 있어야 합니다.';
+}
+
+/** 스크립트를 로그인 셸로 감싸 원격에서 돌릴 형태로 */
+function wrapRemote(script) {
+  const b64 = Buffer.from(script, 'utf8').toString('base64');
+  return `S=${b64}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`;
+}
+
+ipcMain.handle('ai:ask', async (e, { sessionId, prompt, resumeId, tool }) => {
+  const kind = tool === 'codex' ? 'codex' : 'claude';
+  const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
+  const script = buildAskScript(kind, b64, resumeId, false);
 
   let stdout = '';
   if (ssh.isLocal(sessionId)) {
-    // 로컬 터미널 그룹: 이 PC 의 claude 를 직접 실행한다 (win 은 아직 미지원)
+    // 로컬 터미널 그룹: 이 PC 의 CLI 를 직접 실행한다 (win 은 아직 미지원)
     if (process.platform === 'win32') {
-      return { error: '로컬 터미널의 AI 질문은 아직 macOS/리눅스에서만 지원합니다.' };
+      return { error: '로컬 터미널의 AI 채팅은 아직 macOS/리눅스에서만 지원합니다.' };
     }
     stdout = await new Promise((resolve) => {
       const { execFile } = require('child_process');
@@ -788,13 +829,36 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
       });
     });
   } else {
-    const res = await ssh.exec(sessionId, `S=${Buffer.from(script, 'utf8').toString('base64')}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`, 180000);
+    const res = await ssh.exec(sessionId, wrapRemote(script), 180000);
     stdout = res.stdout; // 답변이 길면 오래 걸린다
   }
   const text = String(stdout);
-  if (text.includes('ARMUX_AI:no-claude')) {
-    return { error: '이 서버에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치되어 있어야 합니다.' };
+  if (text.includes('ARMUX_AI:no-claude') || text.includes('ARMUX_AI:no-codex')) {
+    return { error: missingMsg(kind) };
   }
+
+  if (kind === 'codex') {
+    // codex 는 JSONL 이라 마지막 agent_message 를 답으로 삼는다
+    let answer = '';
+    let threadId = null;
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t.startsWith('{')) continue;
+      let o = null;
+      try {
+        o = JSON.parse(t);
+      } catch (err) {
+        continue;
+      }
+      if (o.type === 'thread.started' && o.thread_id) threadId = o.thread_id;
+      if (o.type === 'item.completed' && o.item && o.item.type === 'agent_message') {
+        answer = String(o.item.text || '');
+      }
+    }
+    if (!answer) return { error: '응답이 비어 있습니다. (codex 로그인 상태를 확인해 보세요)' };
+    return { result: answer, sessionId: threadId };
+  }
+
   const a = text.indexOf('{');
   const b = text.lastIndexOf('}');
   if (a < 0 || b <= a) return { error: '응답이 비어 있습니다. (로그인 상태를 확인해 보세요)' };
@@ -808,35 +872,75 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
 });
 
 /**
- * AI 질문 스트리밍판. stream-json 을 줄 단위로 파싱해
- * 사고 과정(thinking)·도구 사용·답변 텍스트를 조각조각 렌더러로 흘려보낸다.
+ * 스트리밍판. 사고 과정(thinking)·도구 사용·답변 텍스트를 조각조각 흘려보낸다.
  *   ai:delta → { reqId, kind: 'thinking'|'text'|'step', text }
  * invoke 자체는 끝났을 때 { result, sessionId } 또는 { error } 로 완결된다.
+ *
+ * claude 는 토큰 단위로 흐르고, codex 는 "항목이 끝날 때마다" 온다(줄 단위).
+ * 둘 다 같은 delta 모양으로 바꿔서 보내므로 화면 쪽은 구분할 필요가 없다.
  */
-ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId }) => {
+ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, tool }) => {
+  const kind = tool === 'codex' ? 'codex' : 'claude';
   const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
-  const resume = resumeId ? `--resume ${String(resumeId).replace(/[^0-9a-f-]/gi, '')} ` : '';
-  const script = `
-CLAUDE="$(command -v claude 2>/dev/null)"
-if [ -z "$CLAUDE" ]; then
-  for c in "$HOME"/.local/bin/claude "$HOME"/.claude/local/claude /usr/local/bin/claude /opt/homebrew/bin/claude; do
-    [ -x "$c" ] && CLAUDE="$c" && break
-  done
-fi
-if [ -z "$CLAUDE" ]; then echo 'ARMUX_AI:no-claude'; exit 0; fi
-cd "$HOME" 2>/dev/null
-printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p ${resume}--output-format stream-json --include-partial-messages --verbose 2>/dev/null
-`.trim();
+  const script = buildAskScript(kind, b64, resumeId, true);
 
   // 델타는 "요청을 보낸 창" 으로 직접 보낸다.
-  // (send() 는 메인 창 전용이라 독립 AI 질문 창은 델타를 못 받았다)
+  // (send() 는 메인 창 전용이라 다른 창에서는 델타를 못 받는다)
   const sender = e.sender;
   return await new Promise((resolve) => {
     let buf = '';
-    let final = null;
-    let sawNoClaude = false;
-    const emit = (kind, text) => {
-      if (!sender.isDestroyed()) sender.send('ai:delta', { reqId, kind, text });
+    let final = null; // claude 의 result 이벤트
+    let answer = ''; // codex 의 마지막 agent_message
+    let threadId = null; // codex 의 thread_id
+    let sawMissing = false;
+
+    const emit = (dkind, text) => {
+      if (!sender.isDestroyed()) sender.send('ai:delta', { reqId, kind: dkind, text });
+    };
+
+    const handleClaude = (o) => {
+      if (o.type === 'stream_event' && o.event) {
+        const ev = o.event;
+        if (ev.type === 'content_block_delta' && ev.delta) {
+          if (ev.delta.type === 'thinking_delta') emit('thinking', ev.delta.thinking || '');
+          else if (ev.delta.type === 'text_delta') emit('text', ev.delta.text || '');
+        } else if (ev.type === 'content_block_start' && ev.content_block) {
+          if (ev.content_block.type === 'tool_use') {
+            emit('step', `도구 실행: ${ev.content_block.name || '?'}`);
+          }
+        }
+      } else if (o.type === 'result') {
+        final = o;
+      }
+    };
+
+    const handleCodex = (o) => {
+      if (o.type === 'thread.started' && o.thread_id) {
+        threadId = o.thread_id;
+        return;
+      }
+      const item = o.item;
+      if (o.type === 'item.started' && item && item.type === 'command_execution') {
+        emit('step', `명령 실행: ${String(item.command || '').slice(0, 120)}`);
+        return;
+      }
+      if (o.type !== 'item.completed' || !item) return;
+      if (item.type === 'agent_message') {
+        // codex 는 중간 안내 메시지도 agent_message 로 보낸다.
+        // 마지막 것이 최종 답이므로, 새 메시지가 오면 앞의 것은 사고 과정으로 접어 둔다.
+        if (answer) emit('thinking', `${answer}\n\n`);
+        answer = String(item.text || '');
+        emit('answer', answer); // 화면은 이 값으로 답변을 통째로 갈아 끼운다
+      } else if (item.type === 'reasoning') {
+        emit('thinking', `${String(item.text || item.summary || '')}\n`);
+      } else if (item.type === 'command_execution') {
+        const code = item.exit_code;
+        emit('step', `명령 끝남 (exit ${code == null ? '?' : code})`);
+      } else if (item.type === 'file_change' || item.type === 'patch') {
+        emit('step', '파일 변경 제안');
+      } else if (item.type === 'mcp_tool_call' || item.type === 'web_search') {
+        emit('step', `도구 실행: ${item.type}`);
+      }
     };
 
     const feed = (chunk) => {
@@ -846,8 +950,8 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!line) continue;
-        if (line.includes('ARMUX_AI:no-claude')) {
-          sawNoClaude = true;
+        if (line.includes('ARMUX_AI:no-claude') || line.includes('ARMUX_AI:no-codex')) {
+          sawMissing = true;
           continue;
         }
         let o = null;
@@ -856,25 +960,18 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
         } catch (err) {
           continue; // JSON 이 아닌 줄(셸 잡음)은 무시
         }
-        if (o.type === 'stream_event' && o.event) {
-          const ev = o.event;
-          if (ev.type === 'content_block_delta' && ev.delta) {
-            if (ev.delta.type === 'thinking_delta') emit('thinking', ev.delta.thinking || '');
-            else if (ev.delta.type === 'text_delta') emit('text', ev.delta.text || '');
-          } else if (ev.type === 'content_block_start' && ev.content_block) {
-            if (ev.content_block.type === 'tool_use') {
-              emit('step', `도구 실행: ${ev.content_block.name || '?'}`);
-            }
-          }
-        } else if (o.type === 'result') {
-          final = o;
-        }
+        if (kind === 'codex') handleCodex(o);
+        else handleClaude(o);
       }
     };
 
     const done = (err) => {
-      if (sawNoClaude) {
-        return resolve({ error: '이 서버에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치되어 있어야 합니다.' });
+      if (sawMissing) return resolve({ error: missingMsg(kind) });
+      if (kind === 'codex') {
+        if (answer) return resolve({ result: answer, sessionId: threadId });
+        return resolve({
+          error: err ? String(err.message || err) : '응답이 비어 있습니다. (codex 로그인 상태를 확인해 보세요)'
+        });
       }
       if (final) {
         if (final.is_error) return resolve({ error: String(final.result || '오류가 났습니다.') });
@@ -885,7 +982,7 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
 
     if (ssh.isLocal(sessionId)) {
       if (process.platform === 'win32') {
-        return resolve({ error: '로컬 터미널의 AI 질문은 아직 macOS/리눅스에서만 지원합니다.' });
+        return resolve({ error: '로컬 터미널의 AI 채팅은 아직 macOS/리눅스에서만 지원합니다.' });
       }
       const { spawn } = require('child_process');
       const child = spawn('bash', ['-lc', script]);
@@ -902,10 +999,38 @@ printf %s ${b64} | { base64 -d 2>/dev/null || base64 --decode; } | "$CLAUDE" -p 
       return;
     }
 
-    const sb64 = Buffer.from(script, 'utf8').toString('base64');
-    const remote = `S=${sb64}; { printf %s "$S" | base64 -d 2>/dev/null || printf %s "$S" | base64 --decode 2>/dev/null; } | bash -l`;
-    ssh.execStream(sessionId, remote, 300000, feed, (err) => done(err));
+    ssh.execStream(sessionId, wrapRemote(script), 300000, feed, (err) => done(err));
   });
+});
+
+/**
+ * 이 서버에 어떤 AI CLI 가 깔려 있는지 본다. (없는 것은 채팅 목록에 띄우지 않는다)
+ * 결과: { claude: boolean, codex: boolean }
+ */
+ipcMain.handle('ai:tools', async (e, { sessionId }) => {
+  const script = `
+${FIND_CLAUDE}
+${codexinfo.FIND_CODEX}
+printf 'ARMUX_TOOLS:%s:%s\\n' "$([ -n "$CLAUDE" ] && echo 1 || echo 0)" "$([ -n "$CODEX" ] && echo 1 || echo 0)"
+`.trim();
+  try {
+    let out = '';
+    if (ssh.isLocal(sessionId)) {
+      if (process.platform === 'win32') return { claude: false, codex: false };
+      out = await new Promise((resolve) => {
+        const { execFile } = require('child_process');
+        execFile('bash', ['-lc', script], { timeout: 15000 }, (err, so) => resolve(String(so || '')));
+      });
+    } else {
+      const res = await ssh.exec(sessionId, wrapRemote(script), 15000);
+      out = String(res.stdout || '');
+    }
+    const m = out.match(/ARMUX_TOOLS:([01]):([01])/);
+    if (!m) return { claude: false, codex: false };
+    return { claude: m[1] === '1', codex: m[2] === '1' };
+  } catch (err) {
+    return { claude: false, codex: false };
+  }
 });
 
 /* ------------------------------------ 웹 판 ------------------------------------ */
@@ -918,7 +1043,7 @@ ipcMain.handle('web:chromeInfo', () => ({
 ipcMain.handle('web:historySuggest', (e, { query }) => chromehistory.suggest(query));
 // 진짜 크롬(기본 브라우저)으로 열기
 ipcMain.on('web:openExternal', (e, url) => {
-  if (url) shell.openExternal(url);
+  openExternalSafe(url);
 });
 /*
  * 인증서를 확인할 수 없는 사이트(자체 서명·만료·사설 CA 등) 처리.

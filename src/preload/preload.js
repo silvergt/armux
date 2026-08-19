@@ -66,16 +66,16 @@ contextBridge.exposeInMainWorld('armux', {
     toggleDevTools: () => ipcRenderer.send('win:toggleDevTools')
   },
 
-  /** AI 질문 (원격 claude -p, 독립 창) */
+  /** AI 채팅 (원격 claude -p / codex exec) */
   ai: {
-    ask: (sessionId, prompt, resumeId) => ipcRenderer.invoke('ai:ask', { sessionId, prompt, resumeId }),
+    ask: (sessionId, prompt, resumeId, tool) =>
+      ipcRenderer.invoke('ai:ask', { sessionId, prompt, resumeId, tool }),
     /** 스트리밍판: onDelta 로 사고 과정/답변 조각이 온다 */
-    askStream: (reqId, sessionId, prompt, resumeId) =>
-      ipcRenderer.invoke('ai:askStream', { reqId, sessionId, prompt, resumeId }),
+    askStream: (reqId, sessionId, prompt, resumeId, tool) =>
+      ipcRenderer.invoke('ai:askStream', { reqId, sessionId, prompt, resumeId, tool }),
     onDelta: (cb) => ipcRenderer.on('ai:delta', (e, p) => cb(p)),
-    openWindow: (payload) => ipcRenderer.send('ai:openWindow', payload),
-    onContext: (cb) => ipcRenderer.on('ai:context', (e, p) => cb(p)),
-    togglePin: () => ipcRenderer.invoke('ai:togglePin')
+    /** 이 서버에 깔려 있는 AI CLI 목록 { claude, codex } */
+    tools: (sessionId) => ipcRenderer.invoke('ai:tools', { sessionId })
   },
 
   /** 웹 페인 (판 안의 브라우저) */
@@ -121,6 +121,12 @@ contextBridge.exposeInMainWorld('armux', {
   claude: {
     info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId }),
     installHooks: (sessionId) => ipcRenderer.invoke('claude:installHooks', { sessionId })
+  },
+
+  /** Codex(OpenAI) 계정 / 사용량 / 완료 알림 */
+  codex: {
+    info: (sessionId) => ipcRenderer.invoke('codex:info', { sessionId }),
+    installHooks: (sessionId) => ipcRenderer.invoke('codex:installHooks', { sessionId })
   },
 
   util: {

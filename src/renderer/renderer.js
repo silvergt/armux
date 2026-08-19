@@ -1,6 +1,6 @@
 'use strict';
 
-/* global Terminal, FitAddon, WebLinksAddon, SearchAddon, UnicodeGraphemesAddon, WebglAddon */
+/* global Terminal, FitAddon, SearchAddon, UnicodeGraphemesAddon, WebglAddon */
 
 /**
  * Armux Terminal 렌더러.
@@ -94,8 +94,6 @@ const FONT_STACKS = {
 };
 const FONT_STACK = FONT_STACKS[api.platform] || FONT_STACKS.linux;
 
-// 메인탭 전환 단축키 표시 (Ctrl+Alt+숫자)
-const MAIN_TAB_MOD = api.platform === 'darwin' ? '⌘⌃' : 'Alt';
 const isMacPlatform = api.platform === 'darwin';
 
 /** 이 이벤트가 "우리 단축키의 주 수정키"를 누른 상태인가 (mac ⌘ / 그 외 Ctrl) */
@@ -186,6 +184,124 @@ function detachLeaf(tab, leaf) {
  * @param {object} tab      소속 서브탭
  * @param {object} connect  { hostId, credId, profile } 접속 파라미터
  */
+/* ------------------------------ 터미널 안의 링크 ------------------------------ */
+
+/*
+ * 여러 줄에 걸쳐 잘린 URL 도 하나로 이어서 연다.
+ *
+ * xterm 기본 애드온은 "터미널이 스스로 접은 줄"(isWrapped) 만 이어 붙인다.
+ * 그런데 codex·gh 같은 TUI 는 긴 URL 을 자기가 직접 잘라서 여러 줄에 그리기
+ * 때문에 각 줄이 서로 남남인 줄로 남는다. 그래서 링크를 클릭하면 첫 줄 조각만
+ * 열려 "없는 주소" 가 됐다. 여기서는 그런 줄도 이어 붙인다:
+ *   "글자가 맨 끝 칸까지 꽉 찬 줄" + "공백 없이 바로 이어지는 다음 줄" = 한 줄
+ */
+
+// xterm 기본 애드온과 같은 규칙 (끝의 문장부호는 링크에서 뺀다)
+const TERM_URL_RE = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/g;
+const MAX_JOIN_ROWS = 16; // 위·아래로 이어 붙일 최대 줄 수 (폭주 방지)
+
+/** 주소가 진짜 URL 인지 (애드온과 같은 검사) */
+function isRealUrl(text) {
+  try {
+    const u = new URL(text);
+    const origin = u.password && u.username
+      ? `${u.protocol}//${u.username}:${u.password}@${u.host}`
+      : u.username
+        ? `${u.protocol}//${u.username}@${u.host}`
+        : `${u.protocol}//${u.host}`;
+    return text.toLocaleLowerCase().startsWith(origin.toLocaleLowerCase());
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 버퍼 한 줄을 글자 단위로 편다.
+ * 넓은 글자(한글 등)는 두 칸을 차지하므로 뒤칸(width 0)은 건너뛰고,
+ * 글자마다 실제 칸 번호(col)를 같이 들고 다녀야 링크 위치가 어긋나지 않는다.
+ */
+function rowGlyphs(term, row) {
+  const line = term.buffer.active.getLine(row);
+  if (!line) return null;
+  const cells = [];
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    const chars = cell.getChars() || ' ';
+    for (const ch of chars) cells.push({ ch, col: x });
+  }
+  let end = cells.length;
+  while (end > 0 && cells[end - 1].ch === ' ') end--; // 오른쪽 공백은 버린다
+  const trimmed = cells.slice(0, end);
+  return {
+    cells: trimmed,
+    // 글자가 마지막 칸까지 닿아 있다 = 여기서 잘렸을 가능성이 있다
+    reachesEnd: trimmed.length > 0 && trimmed[trimmed.length - 1].col >= line.length - 1
+  };
+}
+
+/** 윗줄(a)과 아랫줄(b)이 원래 한 줄이었는지 */
+function rowsJoin(term, a, b) {
+  const lineB = term.buffer.active.getLine(b);
+  if (!lineB) return false;
+  if (lineB.isWrapped) return true; // 터미널이 접은 줄 — 확실히 이어진다
+  const ga = rowGlyphs(term, a);
+  const gb = rowGlyphs(term, b);
+  if (!ga || !gb || !ga.reachesEnd || !gb.cells.length) return false;
+  // 다음 줄이 칸 0 부터 공백 없이 시작해야 "잘려서 넘어간 것" 으로 본다
+  return gb.cells[0].col === 0 && gb.cells[0].ch !== ' ';
+}
+
+/** row 가 속한 "원래 한 줄" 을 글자 배열로 만든다 ({ch,row,col}) */
+function logicalRowGlyphs(term, row) {
+  const buf = term.buffer.active;
+  let top = row;
+  let bottom = row;
+  for (let i = 0; i < MAX_JOIN_ROWS && top > 0 && rowsJoin(term, top - 1, top); i++) top--;
+  for (let i = 0; i < MAX_JOIN_ROWS && bottom < buf.length - 1 && rowsJoin(term, bottom, bottom + 1); i++) bottom++;
+
+  const out = [];
+  for (let r = top; r <= bottom; r++) {
+    const g = rowGlyphs(term, r);
+    if (!g) continue;
+    for (const c of g.cells) out.push({ ch: c.ch, row: r, col: c.col });
+  }
+  return out;
+}
+
+/** xterm 의 링크 제공자 (registerLinkProvider 용) */
+function makeUrlLinkProvider(term, onActivate) {
+  return {
+    provideLinks(y, callback) {
+      const row = y - 1; // y 는 1부터 세는 버퍼 줄 번호
+      const glyphs = logicalRowGlyphs(term, row);
+      if (!glyphs.length) return callback(undefined);
+
+      const text = glyphs.map((g) => g.ch).join('');
+      const links = [];
+      TERM_URL_RE.lastIndex = 0;
+      let m;
+      while ((m = TERM_URL_RE.exec(text))) {
+        const a = m.index;
+        const b = a + m[0].length - 1;
+        if (b >= glyphs.length) break;
+        // 지금 마우스가 있는 줄을 지나는 링크만 돌려준다
+        if (glyphs[a].row > row || glyphs[b].row < row) continue;
+        if (!isRealUrl(m[0])) continue;
+        links.push({
+          range: {
+            start: { x: glyphs[a].col + 1, y: glyphs[a].row + 1 },
+            end: { x: glyphs[b].col + 1, y: glyphs[b].row + 1 }
+          },
+          text: m[0],
+          activate: (ev, uri) => onActivate(uri)
+        });
+      }
+      callback(links.length ? links : undefined);
+    }
+  };
+}
+
 function createLeaf(tab, connect, options) {
   const opts = options || {};
   const leaf = {
@@ -249,12 +365,9 @@ function createLeaf(tab, connect, options) {
     /* 애드온 실패해도 기본 동작은 유지 */
   }
   try {
-    // 터미널 안의 링크 클릭 → 기본 브라우저로 연다
-    term.loadAddon(
-      new WebLinksAddon.WebLinksAddon((event, uri) => {
-        api.util.openExternal(uri);
-      })
-    );
+    // 터미널 안의 링크 클릭 → 기본 브라우저로 연다.
+    // 기본 애드온 대신 직접 만든 제공자를 쓴다 (여러 줄로 잘린 URL 을 잇기 위해).
+    term.registerLinkProvider(makeUrlLinkProvider(term, (uri) => api.util.openExternal(uri)));
   } catch (e) {
     /* noop */
   }
@@ -578,6 +691,8 @@ function setLeafMode(leaf, mode, url, webExtra) {
       leaf.aichat = window.AiChat.create({
         hostLabel: grp ? grp.host.name : '',
         getSessionId: () => leaf.sessionId || (grp ? anyReadySession(grp) : null),
+        // 이 서버에 실제로 깔려 있는 AI 만 고를 수 있게 한다 (없으면 목록에 띄우지 않는다)
+        getTools: () => (grp ? grp.aiTools : null),
         // 같은 서브탭의 다른 판들을 첨부 후보로 (터미널 화면 / 웹페이지 본문)
         getContextSources: () => {
           const tab = grp && grp.tabs.find((t) => t.id === leaf.tabId);
@@ -1619,7 +1734,7 @@ const APP_MENUS = [
   {
     label: '도움',
     items: [
-      ['AI 질문', isMacPlatform ? '⌘K' : 'Ctrl+K', () => openAiPanel(activeLeaf())],
+      ['AI 채팅', isMacPlatform ? '⌘K' : 'Ctrl+K', () => openAiPanel(activeLeaf())],
       ['tmux 사용법', '', () => openHelp('tmux')],
       ['단축키 모음', '', () => openHelp('shortcuts')]
     ]
@@ -2020,6 +2135,54 @@ async function refreshClaudeInfo(group, force) {
   }
 }
 
+/*
+ * Codex(OpenAI) 사용량.
+ * 조회는 그 서버의 `codex app-server` 에 물어보는 방식이라 Anthropic 쪽처럼
+ * 호출 제한에 걸리지 않는다. 그래서 backoff 없이 같은 주기로만 갱신한다.
+ */
+const CODEX_POLL_MS = 60000;
+
+async function refreshCodexInfo(group, force) {
+  if (!group) return;
+  const sessionId = anyReadySession(group);
+  if (!sessionId) return;
+  const now = Date.now();
+  if (!force && group.codexFetchedAt && now - group.codexFetchedAt < CODEX_POLL_MS) return;
+  if (group.codexFetching) return;
+
+  group.codexFetching = true;
+  try {
+    const info = await api.codex.info(sessionId);
+    // 한 번 실패해도 화면이 깜빡이지 않도록 직전 값을 유지한다
+    const prev = group.codexInfo;
+    if (info && info.loggedIn && !info.session && !info.week && prev && (prev.session || prev.week)) {
+      info.session = prev.session;
+      info.week = prev.week;
+      info.stale = true;
+    }
+    group.codexInfo = info;
+    group.codexFetchedAt = Date.now();
+    if (activeGroup() === group) renderClaudeStatus();
+  } catch (e) {
+    if (!group.codexInfo) group.codexInfo = { loggedIn: false };
+  } finally {
+    group.codexFetching = false;
+  }
+}
+
+/** 이 서버에 어떤 AI CLI 가 있는지 (AI 채팅의 선택 목록에 쓴다) */
+async function refreshAiTools(group) {
+  if (!group || group.aiToolsAt) return; // 그룹당 한 번이면 충분하다
+  const sessionId = anyReadySession(group);
+  if (!sessionId) return;
+  group.aiToolsAt = Date.now();
+  try {
+    group.aiTools = await api.ai.tools(sessionId);
+  } catch (e) {
+    group.aiToolsAt = 0; // 실패하면 다음에 다시
+  }
+}
+
 /** 초기화까지 남은 시간을 HH:MM 으로 */
 function untilReset(iso) {
   if (!iso) return null;
@@ -2029,10 +2192,13 @@ function untilReset(iso) {
   return `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
 }
 
-/** 0~100% 짜리 작은 막대 */
-function usageBar(label, bucket, showReset) {
+/**
+ * 0~100% 짜리 작은 막대.
+ * @param {string} tone 'claude'(주황 계열 기본) | 'codex'(초록) — 어느 서비스의 막대인지
+ */
+function usageBar(label, bucket, showReset, tone) {
   const wrap = document.createElement('span');
-  wrap.className = 'usage';
+  wrap.className = `usage${tone ? ` usage-${tone}` : ''}`;
 
   const name = document.createElement('span');
   name.className = 'usage-label';
@@ -2072,12 +2238,65 @@ function usageBar(label, bucket, showReset) {
   return wrap;
 }
 
+/** 한 서비스(claude/codex)의 계정 + 사용량 묶음을 만든다 */
+function usageGroupEl(kind, info, onRefresh) {
+  const wrap = document.createElement('span');
+  wrap.className = `svc svc-${kind}`;
+  wrap.onclick = onRefresh;
+
+  const who = document.createElement('span');
+  who.className = 'claude-who';
+  const mark = kind === 'codex' ? '◆' : '✳';
+  const name = kind === 'codex' ? 'Codex' : 'Claude';
+  who.textContent = `${mark} ${info.email || info.name || name}${info.plan ? ` (${info.plan})` : ''}`;
+  who.title =
+    `이 서버에 로그인된 ${kind === 'codex' ? 'Codex' : 'Claude Code'} 계정` +
+    `${info.stale ? ' (사용량은 마지막으로 받아온 값)' : ''}`;
+  wrap.appendChild(who);
+
+  if (info.session || info.week) {
+    // 두 서비스 모두 "짧은 주기 / 긴 주기" 두 칸으로 보여 준다
+    if (info.session) wrap.appendChild(usageBar('세션', info.session, true, kind));
+    if (info.week) wrap.appendChild(usageBar('주간', info.week, false, kind));
+  } else {
+    const note = document.createElement('span');
+    note.className = 'usage-label';
+    if (kind === 'claude') {
+      // 언제 다시 시도하는지까지 보여 준다("잠시" 만으로는 기다려야 할지 알 수 없다)
+      const waitMin = claudeGate.backoffUntil
+        ? Math.max(1, Math.ceil((claudeGate.backoffUntil - Date.now()) / 60000))
+        : 0;
+      if (info.rateLimited) {
+        note.textContent = waitMin ? `사용량 조회 제한 (${waitMin}분 뒤 재시도)` : '사용량 조회 제한됨';
+        note.title =
+          'Anthropic 사용량 API 가 호출 제한을 걸었습니다.\n' +
+          '계정 사용량이 아니라 조회 API 만 막힌 것이라 Claude 사용에는 영향이 없습니다.\n' +
+          '대기가 끝나면 자동으로 다시 받아옵니다.';
+      } else {
+        note.textContent = '사용량 조회 불가';
+        note.title = info.usageError
+          ? `사용량을 받아오지 못했습니다: ${info.usageError}`
+          : '사용량을 받아오지 못했습니다. 서버에서 api.anthropic.com 에 접속되는지 확인해 보세요.';
+      }
+    } else {
+      note.textContent = '사용량 조회 불가';
+      note.title = 'codex app-server 에서 사용량을 받아오지 못했습니다.';
+    }
+    wrap.appendChild(note);
+  }
+  return wrap;
+}
+
+/** 하단바: 이 서버에 로그인된 AI 계정들의 사용량 */
 function renderClaudeStatus() {
   const group = activeGroup();
-  const info = group && group.claudeInfo;
+  const claude = group && group.claudeInfo;
+  const codex = group && group.codexInfo;
   const box = el.statusClaude;
 
-  if (!info || !info.loggedIn) {
+  const hasClaude = Boolean(claude && claude.loggedIn);
+  const hasCodex = Boolean(codex && codex.loggedIn);
+  if (!hasClaude && !hasCodex) {
     box.classList.add('hidden');
     box.innerHTML = '';
     return;
@@ -2086,40 +2305,22 @@ function renderClaudeStatus() {
   box.classList.remove('hidden');
   box.innerHTML = '';
   box.title = '클릭하면 사용량을 지금 새로고침';
-  box.onclick = () => {
-    const g = activeGroup();
-    if (g) refreshClaudeInfo(g, true);
-  };
 
-  const who = document.createElement('span');
-  who.className = 'claude-who';
-  who.textContent = `✳ ${info.email || info.name || 'Claude'}${info.plan ? ` (${info.plan})` : ''}`;
-  who.title = `이 서버에 로그인된 Claude Code 계정${info.stale ? ' (사용량은 마지막으로 받아온 값)' : ''}`;
-  box.appendChild(who);
-
-  if (info.session || info.week) {
-    box.appendChild(usageBar('세션', info.session, true));
-    box.appendChild(usageBar('주간', info.week, false));
-  } else {
-    const note = document.createElement('span');
-    note.className = 'usage-label';
-    // 언제 다시 시도하는지까지 보여 준다("잠시" 만으로는 기다려야 할지 알 수 없다)
-    const waitMin = claudeGate.backoffUntil
-      ? Math.max(1, Math.ceil((claudeGate.backoffUntil - Date.now()) / 60000))
-      : 0;
-    if (info.rateLimited) {
-      note.textContent = waitMin ? `사용량 조회 제한 (${waitMin}분 뒤 재시도)` : '사용량 조회 제한됨';
-      note.title =
-        'Anthropic 사용량 API 가 호출 제한을 걸었습니다.\n' +
-        '계정 사용량이 아니라 조회 API 만 막힌 것이라 Claude 사용에는 영향이 없습니다.\n' +
-        '대기가 끝나면 자동으로 다시 받아옵니다.';
-    } else {
-      note.textContent = '사용량 조회 불가';
-      note.title = info.usageError
-        ? `사용량을 받아오지 못했습니다: ${info.usageError}`
-        : '사용량을 받아오지 못했습니다. 서버에서 api.anthropic.com 에 접속되는지 확인해 보세요.';
-    }
-    box.appendChild(note);
+  if (hasClaude) {
+    box.appendChild(
+      usageGroupEl('claude', claude, () => {
+        const g = activeGroup();
+        if (g) refreshClaudeInfo(g, true);
+      })
+    );
+  }
+  if (hasCodex) {
+    box.appendChild(
+      usageGroupEl('codex', codex, () => {
+        const g = activeGroup();
+        if (g) refreshCodexInfo(g, true);
+      })
+    );
   }
 }
 
@@ -2304,7 +2505,7 @@ function renderTabstrip() {
 
     const idx = document.createElement('span');
     idx.className = 'idx';
-    idx.textContent = gi < 9 ? `${MAIN_TAB_MOD}${gi + 1}` : '';
+    idx.textContent = gi < 9 ? `${gi + 1}` : ''; // 수정키는 툴팁에만, 배지는 숫자만
 
     const label = document.createElement('span');
     label.className = 'label';
@@ -2520,40 +2721,85 @@ function renderPanes() {
  * 별도 윈도우라 터미널 화면을 전혀 가리지 않고, 다른 모니터로 옮기거나
  * 항상 위에 고정할 수 있다. 질문은 그 판의 SSH 연결로 원격 claude -p 를 돌린다.
  */
+/**
+ * Ctrl/⌘+K — 지금 보고 있는 판의 내용을 컨텍스트로 삼아 AI 채팅을 연다.
+ *
+ * 예전에는 별도의 "AI 질문" 창을 띄웠지만, 하는 일이 AI 채팅과 같아서 하나로
+ * 합쳤다. 이 서브탭에 AI 채팅 판이 이미 있으면 그 판을 그대로 쓰고(대화가
+ * 이어진다), 없으면 지금 판을 위아래로 쪼개 아래쪽에 새로 만든다.
+ */
 async function openAiPanel(leaf) {
   if (!leaf) {
-    el.statusLeft.textContent = '터미널이나 웹 판에서 AI 질문을 쓸 수 있습니다.';
+    el.statusLeft.textContent = '터미널·웹·파일 판에서 AI 채팅을 열 수 있습니다.';
     return;
   }
   const group = state.groups.find((g) => g.id === leaf.groupId);
-  // 실행 세션: 이 판의 것, 없으면(웹 전용 그룹 등) 그룹에서 살아 있는 것을 빌린다
-  const sessionId =
-    (leaf.sessionId && leaf.status === 'ready' && leaf.sessionId) || (group ? anyReadySession(group) : null);
-  if (!sessionId) {
-    el.statusLeft.textContent = '접속된 세션이 있어야 AI 질문을 쓸 수 있습니다.';
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  if (!group || !tab) return;
+
+  // 이미 AI 채팅 판에서 눌렀다면 입력칸으로 보내기만 한다
+  if (leaf.mode === 'ai') {
+    if (leaf.aichat) leaf.aichat.focus();
     return;
   }
 
+  // 실행 세션: 이 판의 것, 없으면(웹 전용 판 등) 그룹에서 살아 있는 것을 빌린다
+  const sessionId =
+    (leaf.sessionId && leaf.status === 'ready' && leaf.sessionId) || anyReadySession(group);
+  if (!sessionId) {
+    el.statusLeft.textContent = '접속된 세션이 있어야 AI 채팅을 쓸 수 있습니다.';
+    return;
+  }
+
+  // 누른 판의 내용을 첨부거리로 모은다
   let ctx = '';
   let contextLabel = '';
   if (leaf.mode === 'web' && leaf.web) {
-    // 웹 판: 지금 보고 있는 페이지의 본문을 컨텍스트로
+    // 웹 판: 지금 보고 있는 페이지의 본문
     const txt = await leaf.web.pageText();
-    ctx = txt
-      ? `제목: ${leaf.web.title || ''}\n주소: ${leaf.web.url || ''}\n\n${txt}`.slice(0, 12000)
-      : '';
-    contextLabel = ctx ? `웹페이지 포함 (${(leaf.web.title || leaf.web.url || '').slice(0, 30)})` : '컨텍스트 없음';
+    ctx = txt ? `제목: ${leaf.web.title || ''}\n주소: ${leaf.web.url || ''}\n\n${txt}`.slice(0, 12000) : '';
+    contextLabel = `웹 — ${(leaf.web.title || leaf.web.url || '페이지').slice(0, 30)}`;
+  } else if (leaf.mode === 'file' && leaf.file) {
+    // 파일 판: 열어 둔 파일 내용 (뷰어가 알려 주는 경우에만)
+    const txt = leaf.file.getText ? leaf.file.getText() : '';
+    ctx = (txt || '').slice(0, 12000);
+    contextLabel = `파일 — ${leaf.title || '열린 파일'}`;
   } else {
+    // 터미널 판: 드래그로 고른 글자가 있으면 그것만, 없으면 화면 내용
     const sel = leaf.term && leaf.term.hasSelection() ? leaf.term.getSelection() : '';
     ctx = (sel || readScreenTail(leaf) || '').slice(-8000); // 너무 길면 뒤쪽만
-    contextLabel = sel ? '선택한 글자 포함' : '화면 내용 포함';
+    contextLabel = sel ? '선택한 글자' : `터미널 — ${leaf.title || group.host.name}`;
   }
-  api.ai.openWindow({
-    sshSessionId: sessionId,
-    hostLabel: group ? group.host.name : '',
-    context: ctx,
-    contextLabel
-  });
+
+  // 이 서브탭에 이미 있는 AI 채팅 판을 재사용한다
+  let aiLeaf = leavesOf(tab.root).find((l) => l.mode === 'ai');
+  if (!aiLeaf) {
+    aiLeaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 채팅 전용 판
+    // 누른 판을 위아래로 쪼개고 "아래쪽" 에 채팅을 넣는다 (보던 화면을 가리지 않게)
+    const split = {
+      kind: 'split',
+      id: nextId('s'),
+      dir: 'col',
+      children: [leaf, aiLeaf],
+      sizes: [0.6, 0.4]
+    };
+    replaceNode(tab, leaf, split);
+    layoutTab(tab);
+    setLeafMode(aiLeaf, 'ai');
+    applyPaneBody(aiLeaf);
+  }
+
+  aiLeaf.title = 'AI 채팅';
+  tab.activeLeafId = aiLeaf.id;
+  group.explorerSelected = false;
+  state.notesOpen = false;
+  render();
+  fitTab(tab);
+  if (aiLeaf.aichat) {
+    if (ctx) aiLeaf.aichat.attachContext(contextLabel, ctx);
+    aiLeaf.aichat.focus();
+  }
+  saveSession();
 }
 
 /**
@@ -3057,9 +3303,14 @@ api.ssh.onReady(({ id }) => {
   if (!leaf) return;
   leaf.status = 'ready';
   const grp = state.groups.find((g) => g.id === leaf.groupId);
-  if (grp) setTimeout(() => refreshClaudeInfo(grp, true), 800);
-  // Claude 상태 훅을 그 서버에 한 번 설치한다(정확한 스피너/알림용).
-  // 이미 실행 중인 Claude 에는 다음 실행부터 적용된다.
+  if (grp) {
+    setTimeout(() => refreshClaudeInfo(grp, true), 800);
+    setTimeout(() => refreshCodexInfo(grp, true), 1600); // 두 조회가 겹치지 않게 살짝 늦춘다
+    refreshAiTools(grp);
+  }
+  // 완료/대기 알림 훅을 그 서버에 한 번 설치한다.
+  // claude 는 ~/.claude/settings.json 의 훅, codex 는 ~/.codex/config.toml 의 notify 를 쓴다.
+  // 둘 다 이미 실행 중인 프로세스에는 다음 실행부터 적용된다.
   if (grp && !grp.hooksInstalled) {
     grp.hooksInstalled = true;
     setTimeout(() => {
@@ -3073,6 +3324,21 @@ api.ssh.onReady(({ id }) => {
         console.warn('[armux] Claude 상태 훅 설치 오류:', e && e.message);
       });
     }, 1200);
+  }
+  if (grp && !grp.codexHooksInstalled) {
+    grp.codexHooksInstalled = true;
+    setTimeout(() => {
+      api.codex.installHooks(id).then((ok) => {
+        if (!ok) {
+          // 대개 사용자가 이미 자기 notify 를 쓰고 있어서 건드리지 않은 경우다.
+          // (남의 설정을 덮어쓰지 않는 것이 맞으므로 실패로 두고 알리기만 한다)
+          console.warn('[armux] codex 완료 알림을 설치하지 못했습니다 — config.toml 의 notify 가 이미 쓰이는 중일 수 있습니다.');
+        }
+      }).catch((e) => {
+        grp.codexHooksInstalled = false;
+        console.warn('[armux] codex 알림 설치 오류:', e && e.message);
+      });
+    }, 2000);
   }
   api.ssh.resize(id, leaf.term.cols, leaf.term.rows);
   render();
@@ -3268,10 +3534,11 @@ window.addEventListener(
       }
     }
 
-    // AI 질문: Ctrl/⌘+K — 터미널 화면(선택 글자) 또는 웹페이지 본문을 컨텍스트로 묻는다
+    // AI 채팅: Ctrl/⌘+K — 지금 판의 내용(터미널 화면·선택 글자·웹 본문·파일)을
+    // 컨텍스트로 붙여서 이 판 아래에 AI 채팅을 연다
     if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
       const l = activeLeaf();
-      if (l && (l.mode === 'terminal' || l.mode === 'web')) {
+      if (l && (l.mode === 'terminal' || l.mode === 'web' || l.mode === 'file' || l.mode === 'ai')) {
         e.preventDefault();
         e.stopPropagation();
         openAiPanel(l);
@@ -3571,7 +3838,7 @@ async function setDialogMode(mode) {
     b.classList.toggle('hidden', mode === 'web' || (b === dlg.saveBtn && !dlgSelectedId) || (b === dlg.deleteBtn && !dlgSelectedId));
   }
   dlg.openWebBtn.classList.toggle('hidden', mode !== 'web');
-  dlg.localBtn.classList.toggle('hidden', mode === 'web');
+  // '로컬 터미널' 은 상단 탭에 있는 즉시 실행 버튼이라 모드와 무관하게 늘 보인다
   dlg.title.textContent = mode === 'web' ? '웹페이지 열기' : dlgTargetGroup ? `"${dlgTargetGroup.host.name}" 그룹에 서브탭 추가` : '새 SSH 접속';
 
   if (mode === 'web') {
@@ -3898,7 +4165,10 @@ async function doConnect() {
 // 접속한 서버들의 Claude 사용량을 주기적으로 갱신 (활성 그룹 위주)
 claudePollTimer = setInterval(() => {
   const g = activeGroup();
-  if (g) refreshClaudeInfo(g);
+  if (g) {
+    refreshClaudeInfo(g);
+    refreshCodexInfo(g);
+  }
   renderClaudeStatus(); // 초기화까지 남은 시간을 갱신
 }, 20000);
 

@@ -566,6 +566,13 @@ body.resizing-row * {
   cursor: pointer;
 }
 .ac-chip.hidden { visibility: hidden; }
+/* AI 선택 버튼 — 지금 어떤 모델로 말하는지 늘 보이게 */
+.ac-tool {
+  color: #c08b5c;
+}
+.ac-tool.ac-tool-codex {
+  color: #5cc08b;
+}
 .ac-hbtn {
   flex: none;
   height: 22px;
@@ -1548,7 +1555,7 @@ button {
   transform: scale(1.15);
 }
 
-/* 하단바: Claude 계정 / 사용량 */
+/* 하단바: AI 계정 / 사용량 (Claude · Codex) */
 #status-claude {
   display: flex;
   align-items: center;
@@ -1559,6 +1566,26 @@ button {
 }
 #status-claude.hidden {
   display: none;
+}
+/* 서비스 하나(Claude 또는 Codex)의 계정+막대 묶음 */
+.svc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+/* 두 서비스가 같이 보일 때 사이에 옅은 구분선 */
+.svc + .svc {
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.svc-codex .claude-who {
+  color: #5cc08b; /* codex 는 초록 계열 */
+}
+/* Claude·Codex 가 같이 보이면 하단바가 좁아지므로 계정 이름을 더 줄인다 */
+.svc .claude-who {
+  max-width: 180px;
 }
 .claude-who {
   color: #c08b5c;
@@ -1595,6 +1622,20 @@ button {
   background: linear-gradient(90deg, #e0b341, #e08b41);
 }
 .usage-fill.danger {
+  background: linear-gradient(90deg, #e06c75, #ff5f57);
+}
+/*
+ * Codex 막대는 초록으로 구분한다.
+ * 다만 70%/90% 를 넘으면 노랑·빨강으로 바뀌는 것은 두 서비스 공통이다
+ * (색으로 서비스를 구분하는 것보다 "위험" 을 알리는 쪽이 중요하다).
+ */
+.usage-codex .usage-fill {
+  background: linear-gradient(90deg, #3fbf7f, #7fd94f);
+}
+.usage-codex .usage-fill.warn {
+  background: linear-gradient(90deg, #e0b341, #e08b41);
+}
+.usage-codex .usage-fill.danger {
   background: linear-gradient(90deg, #e06c75, #ff5f57);
 }
 .usage-pct {
@@ -2183,6 +2224,13 @@ button {
   background: transparent;
   color: var(--fg-dim);
   font-size: 12px;
+}
+/* 모드 전환이 아니라 '누르면 바로 열리는' 버튼이라 점선으로 구분한다 */
+.modal-tab.action {
+  border-style: dashed;
+}
+.modal-tab.action:hover {
+  border-style: solid;
 }
 .modal-tab:hover {
   color: #fff;
