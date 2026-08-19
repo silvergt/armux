@@ -46,6 +46,7 @@ const el = {
   clock: document.getElementById('clock'),
   statusLeft: document.getElementById('status-left'),
   statusClaude: document.getElementById('status-claude'),
+  aiFab: document.getElementById('ai-fab'), // 하단바 오른쪽 끝의 AI 단추
   findbar: document.getElementById('findbar'),
   findInput: document.getElementById('find-input')
 };
@@ -1348,10 +1349,6 @@ function popOutLeaf(leaf) {
   const group = state.groups.find((g) => g.id === leaf.groupId);
   const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
   if (!group || !tab) return;
-  if (leaf.ephemeral) {
-    el.statusLeft.textContent = '임시 AI 패널은 꺼낼 수 없습니다. 먼저 "📌 판으로 고정" 을 누르세요.';
-    return;
-  }
   if (leavesOf(tab.root).length === 1) {
     el.statusLeft.textContent = '이미 이 서브탭에 하나뿐인 창입니다.';
     return;
@@ -1482,10 +1479,6 @@ async function confirmCloseTab(group, tab) {
 
 function closeTab(group, tab) {
   for (const l of leavesOf(tab.root)) disposeLeaf(l);
-  if (tab.stashedAiLeaf) {
-    disposeLeaf(tab.stashedAiLeaf); // 닫아 두었던 임시 AI 패널도 정리
-    tab.stashedAiLeaf = null;
-  }
   tab.container.remove();
 
   const idx = group.tabs.indexOf(tab);
@@ -1505,10 +1498,6 @@ function closeTab(group, tab) {
 function closeGroup(group) {
   for (const t of [...group.tabs]) {
     for (const l of leavesOf(t.root)) disposeLeaf(l);
-    if (t.stashedAiLeaf) {
-      disposeLeaf(t.stashedAiLeaf); // 닫아 두었던 임시 AI 패널도 함께 정리
-      t.stashedAiLeaf = null;
-    }
     t.container.remove();
   }
   if (group.explorer) {
@@ -1548,12 +1537,6 @@ function splitActive(dir) {
   const tab = activeTab();
   const leaf = activeLeaf();
   if (!tab || !leaf) return;
-  if (leaf.ephemeral) {
-    // 임시 AI 패널은 분할하지 않는다 (접속 정보가 없어 접속 창이 뜨던 자리다)
-    el.statusLeft.textContent =
-      '임시 AI 패널은 나눌 수 없습니다. "📌 판으로 고정" 을 누르면 보통 판이 됩니다.';
-    return;
-  }
 
   const group = state.groups.find((g) => g.id === tab.groupId);
   const connect = leaf.connect || group.connect || { hostId: group.host.id || null, credId: group.credId };
@@ -1591,12 +1574,6 @@ async function closeLeaf(leaf) {
     return;
   }
 
-  // 임시 AI 패널은 어느 경로로 닫든 같게 — 접어 두고 내용은 보관한다
-  if (leaf.ephemeral) {
-    closeAiPanel(leaf);
-    return;
-  }
-
   // 아직 고르는 중이거나 붙은 셸이 없는 판은 없앨 것이 없으므로 묻지 않는다
   if (leaf.mode !== 'launcher' && leaf.sessionId) {
     const ok = await api.util.confirm(
@@ -1628,6 +1605,7 @@ function focusLeaf(leaf) {
   render();
   fitTab(tab);
   checkActivitySoon(); // 보이는 판이 바뀌었으니 상태 표시를 다시 맞춘다
+  if (aiPopOpen()) syncAiPopHost(); // 다른 서버로 옮겼으면 팝업 머리도 바뀐다
   // 고르기 화면인 판은 목록이 방향키를 받아야 하므로 그쪽으로 포커스를 준다
   if (leaf.mode === 'launcher' && leaf.launcher) leaf.launcher.focus();
   else leaf.term.focus();
@@ -2243,7 +2221,7 @@ const APP_MENUS = [
   {
     label: '도움',
     items: [
-      ['AI 채팅', isMacPlatform ? '⌘K' : 'Ctrl+K', () => openAiPanel(activeLeaf())],
+      ['AI 채팅', isMacPlatform ? '⌘K' : 'Ctrl+K', () => toggleAiPop()],
       ['tmux 사용법', '', () => openHelp('tmux')],
       ['단축키 모음', '', () => openHelp('shortcuts')]
     ]
@@ -2418,15 +2396,6 @@ function toggleNotes() {
 
 function serializeNode(node) {
   if (!node) return null;
-  /*
-   * Ctrl/⌘+K 로 연 임시 AI 패널은 저장하지 않는다. 다음에 앱을 열었을 때
-   * 되살아나 있으면 "임시" 가 아니게 된다. 분할째로 접고 형제만 남긴다.
-   */
-  if (node.kind === 'split') {
-    const keep = node.children.filter((c) => !(c.kind === 'leaf' && c.ephemeral));
-    if (keep.length === 1) return serializeNode(keep[0]);
-    if (keep.length === 0) return null;
-  }
   if (node.kind === 'leaf') {
     if (node.mode === 'web') {
       const ti = node.web && node.web.tabsInfo ? node.web.tabsInfo : null;
@@ -2604,6 +2573,13 @@ let claudePollTimer = null;
  */
 const claudeGate = { backoffUntil: 0, lastCallAt: 0 };
 
+/*
+ * 아직 사용량이 안 뜬 서버는 더 자주 다시 확인한다.
+ * 처음 조회할 때 셸이 덜 뜬 상태였거나, 그 서버만 잠깐 네트워크가 안 됐거나,
+ * 그 사이에 claude 에 로그인했을 수 있기 때문이다.
+ */
+const CLAUDE_RETRY_MS = 300000; // 5분
+
 /** 그룹의 살아 있는 세션 하나를 고른다 (조회용 exec 채널을 열 연결) */
 function anyReadySession(group) {
   for (const t of group.tabs) {
@@ -2622,7 +2598,13 @@ async function refreshClaudeInfo(group, force) {
   // 제한 대기 중에는 새로고침(force)이라도 부르지 않는다. 부르면 제한만 계속 갱신된다.
   if (claudeGate.backoffUntil && now < claudeGate.backoffUntil) return;
   if (now - claudeGate.lastCallAt < CLAUDE_FORCE_FLOOR_MS) return; // 연타/동시 접속 방지
-  if (!force && group.claudeFetchedAt && now - group.claudeFetchedAt < CLAUDE_POLL_MS) return;
+  /*
+   * 사용량이 이미 보이는 서버는 1분마다, 아직 못 받은 서버는 5분마다 다시 본다.
+   * (못 받은 쪽을 1분마다 두드리면 안 되는 서버에 계속 exec 를 여는 셈이 된다)
+   */
+  const shown = Boolean(group.claudeInfo && group.claudeInfo.loggedIn);
+  const every = shown ? CLAUDE_POLL_MS : CLAUDE_RETRY_MS;
+  if (!force && group.claudeFetchedAt && now - group.claudeFetchedAt < every) return;
   if (group.claudeFetching) return;
 
   group.claudeFetching = true;
@@ -2637,18 +2619,22 @@ async function refreshClaudeInfo(group, force) {
       info.stale = true;
       info.staleAt = prev.staleAt || group.claudeFetchedAt || Date.now();
     }
-    // 제한(또는 그 밖의 조회 실패)이면 10분 쉬었다가 다시 부른다. 성공하면 곧바로 해제.
-    if (info && (info.rateLimited || info.usageFailed)) {
-      claudeGate.backoffUntil = Date.now() + CLAUDE_BACKOFF_MS;
-    } else {
-      claudeGate.backoffUntil = 0;
-    }
+    /*
+     * 전체 대기는 "호출 제한(rate limit)" 일 때만 건다.
+     * 제한은 계정 단위라 어느 서버에서 부르든 같지만, 그 밖의 실패(그 서버에서
+     * api.anthropic.com 이 안 된다든지)는 그 서버 사정이다. 예전에는 이것까지
+     * 전체 대기를 걸어서, 밖으로 못 나가는 서버 하나가 10분마다 대기를 다시
+     * 걸며 다른 모든 서버의 사용량 막대를 통째로 막고 있었다.
+     */
+    if (info && info.rateLimited) claudeGate.backoffUntil = Date.now() + CLAUDE_BACKOFF_MS;
+    else if (info && info.loggedIn && !info.usageFailed) claudeGate.backoffUntil = 0;
     group.claudeInfo = info;
     group.claudeFetchedAt = Date.now();
     if (activeGroup() === group) renderClaudeStatus();
   } catch (e) {
     // 조회 자체가 실패해도 이미 받아 둔 계정 정보는 지우지 않는다
     if (!group.claudeInfo) group.claudeInfo = { loggedIn: false };
+    group.claudeFetchedAt = Date.now(); // 다음 재확인 주기를 여기서부터 센다
   } finally {
     group.claudeFetching = false;
   }
@@ -2666,7 +2652,10 @@ async function refreshCodexInfo(group, force) {
   const sessionId = anyReadySession(group);
   if (!sessionId) return;
   const now = Date.now();
-  if (!force && group.codexFetchedAt && now - group.codexFetchedAt < CODEX_POLL_MS) return;
+  // 이미 보이는 서버는 1분마다, 아직 못 받은 서버는 5분마다 (조회가 원격에서
+  // codex app-server 를 띄우는 일이라 자주 두드릴 일이 아니다)
+  const every = group.codexInfo && group.codexInfo.loggedIn ? CODEX_POLL_MS : CLAUDE_RETRY_MS;
+  if (!force && group.codexFetchedAt && now - group.codexFetchedAt < every) return;
   if (group.codexFetching) return;
 
   group.codexFetching = true;
@@ -2684,6 +2673,7 @@ async function refreshCodexInfo(group, force) {
     if (activeGroup() === group) renderClaudeStatus();
   } catch (e) {
     if (!group.codexInfo) group.codexInfo = { loggedIn: false };
+    group.codexFetchedAt = Date.now(); // 다음 재확인 주기를 여기서부터 센다
   } finally {
     group.codexFetching = false;
   }
@@ -3246,149 +3236,142 @@ function renderPanes() {
  * 별도 윈도우라 터미널 화면을 전혀 가리지 않고, 다른 모니터로 옮기거나
  * 항상 위에 고정할 수 있다. 질문은 그 판의 SSH 연결로 원격 claude -p 를 돌린다.
  */
-/**
- * Ctrl/⌘+K — 지금 보고 있는 판의 내용을 컨텍스트로 삼아 AI 채팅을 연다.
+/* ------------------------------ 떠 있는 AI 채팅 ------------------------------ */
+
+/*
+ * Ctrl/⌘+K 로 여는 AI 채팅.
  *
- * 예전에는 별도의 "AI 질문" 창을 띄웠지만, 하는 일이 AI 채팅과 같아서 하나로
- * 합쳤다. 이 서브탭에 AI 채팅 판이 이미 있으면 그 판을 그대로 쓰고(대화가
- * 이어진다), 없으면 지금 판을 위아래로 쪼개 아래쪽에 새로 만든다.
+ * 예전에는 판을 하나 더 만들어 끼워 넣었는데, 판에서 직접 연 AI 채팅과
+ * 겉모습이 같아 구분이 되지 않았다(같아 보이는데 되는 게 달랐다).
+ * 그래서 아예 판이 아니라 "하단바 오른쪽 AI 단추에서 올라오는 팝업" 으로 만든다.
+ *   - 화면 배치(분할 트리)를 건드리지 않는다. 터미널 위에 겹쳐 뜬다.
+ *   - 닫아도 없애지 않고 숨기기만 한다. 답을 기다리는 중이었다면 그대로 계속되고,
+ *     다시 열면 이어진다.
+ *   - 대화 상대는 "지금 보고 있는 서버" 다. 탭을 옮기면 그 서버로 물어본다.
  */
-async function openAiPanel(leaf) {
-  if (!leaf) {
-    el.statusLeft.textContent = '터미널·웹·파일 판에서 AI 채팅을 열 수 있습니다.';
+let aiPop = null; // { el, chat }
+
+function ensureAiPop() {
+  if (aiPop) return aiPop;
+  const box = document.createElement('div');
+  box.className = 'ai-pop hidden';
+
+  const chat = window.AiChat.create({
+    hostLabel: '',
+    getSessionId: () => {
+      const g = activeGroup();
+      return g ? anyReadySession(g) : null;
+    },
+    getTools: () => {
+      const g = activeGroup();
+      return g ? g.aiTools : null;
+    },
+    // 첨부 후보는 "지금 보고 있는 서브탭" 의 판들
+    getContextSources: () => {
+      const t = activeTab();
+      if (!t) return [];
+      const g = activeGroup();
+      const out = [];
+      for (const l of leavesOf(t.root)) {
+        if (l.mode === 'terminal' && l.status === 'ready') {
+          out.push({
+            label: `터미널 — ${l.title || (g ? g.host.name : '')}`,
+            get: async () => (readScreenTail(l) || '').slice(-8000)
+          });
+        } else if (l.mode === 'web' && l.web) {
+          out.push({
+            label: `웹 — ${(l.web.title || l.web.url || '페이지').slice(0, 40)}`,
+            get: async () => {
+              const txt = await l.web.pageText();
+              return txt ? `제목: ${l.web.title || ''}\n주소: ${l.web.url || ''}\n\n${txt}` : '';
+            }
+          });
+        } else if (l.mode === 'file' && l.file && l.file.getText) {
+          out.push({ label: `파일 — ${l.title || '열린 파일'}`, get: async () => l.file.getText() });
+        }
+      }
+      return out;
+    },
+    // 숨겨 둔 사이에 무슨 일이 있었는지 단추로 알린다
+    onBusy: (busy) => {
+      el.aiFab.classList.toggle('busy', busy);
+      if (busy) el.aiFab.classList.remove('unread');
+    },
+    onAnswer: () => {
+      if (aiPop && aiPop.el.classList.contains('hidden')) el.aiFab.classList.add('unread');
+    },
+    onClose: () => setAiPop(false)
+  });
+
+  box.appendChild(chat.el);
+  document.body.appendChild(box);
+  aiPop = { el: box, chat };
+  return aiPop;
+}
+
+const aiPopOpen = () => Boolean(aiPop && !aiPop.el.classList.contains('hidden'));
+
+/** 팝업 머리에 "지금 보고 있는 서버" 를 적어 준다 */
+function syncAiPopHost() {
+  if (!aiPop) return;
+  const g = activeGroup();
+  aiPop.chat.setHost(g ? g.host.name : '');
+}
+
+/** 팝업 열기/닫기. 닫아도 내용은 그대로 두고 감추기만 한다. */
+function setAiPop(open) {
+  const pop = ensureAiPop();
+  pop.el.classList.toggle('hidden', !open);
+  el.aiFab.classList.toggle('on', open);
+  if (open) {
+    el.aiFab.classList.remove('unread');
+    syncAiPopHost();
+    pop.chat.focus();
+  } else {
+    const l = activeLeaf();
+    if (l && l.mode === 'terminal' && l.term) l.term.focus();
+  }
+}
+
+/**
+ * Ctrl/⌘+K (또는 하단바 AI 단추) — 팝업을 여닫는다.
+ * 열 때는 지금 보고 있는 판의 내용을 컨텍스트로 붙여 준다.
+ */
+async function toggleAiPop() {
+  if (aiPopOpen()) {
+    setAiPop(false);
     return;
   }
-  const group = state.groups.find((g) => g.id === leaf.groupId);
-  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
-  if (!group || !tab) return;
-
-  /*
-   * 여닫기 토글.
-   * 이 서브탭에 임시 패널이 이미 떠 있으면(어느 판을 보고 있든) 닫는다.
-   * 대화는 버리지 않고 서브탭에 보관해 두었다가 다시 열 때 이어 준다.
-   */
-  const openPanel = leavesOf(tab.root).find((l) => l.mode === 'ai' && l.ephemeral);
-  if (openPanel) {
-    closeAiPanel(openPanel);
+  const group = activeGroup();
+  if (!group) {
+    el.statusLeft.textContent = '먼저 서버에 접속해 주세요.';
     return;
   }
-
-  // 직접 만든(고정된) AI 판에서 눌렀다면 입력칸으로 보내기만 한다
-  if (leaf.mode === 'ai') {
-    if (leaf.aichat) leaf.aichat.focus();
-    return;
-  }
-
-  // 실행 세션: 이 판의 것, 없으면(웹 전용 판 등) 그룹에서 살아 있는 것을 빌린다
-  const sessionId =
-    (leaf.sessionId && leaf.status === 'ready' && leaf.sessionId) || anyReadySession(group);
-  if (!sessionId) {
+  if (!anyReadySession(group)) {
     el.statusLeft.textContent = '접속된 세션이 있어야 AI 채팅을 쓸 수 있습니다.';
     return;
   }
+  setAiPop(true);
 
-  // 누른 판의 내용을 첨부거리로 모은다
+  // 보고 있던 판의 내용을 첨부거리로 모은다 (없으면 그냥 빈 채로 연다)
+  const leaf = activeLeaf();
+  if (!leaf || leaf.mode === 'ai') return;
   let ctx = '';
-  let contextLabel = '';
+  let label = '';
   if (leaf.mode === 'web' && leaf.web) {
-    // 웹 판: 지금 보고 있는 페이지의 본문
     const txt = await leaf.web.pageText();
     ctx = txt ? `제목: ${leaf.web.title || ''}\n주소: ${leaf.web.url || ''}\n\n${txt}`.slice(0, 12000) : '';
-    contextLabel = `웹 — ${(leaf.web.title || leaf.web.url || '페이지').slice(0, 30)}`;
-  } else if (leaf.mode === 'file' && leaf.file) {
-    // 파일 판: 열어 둔 파일 내용 (뷰어가 알려 주는 경우에만)
-    const txt = leaf.file.getText ? leaf.file.getText() : '';
-    ctx = (txt || '').slice(0, 12000);
-    contextLabel = `파일 — ${leaf.title || '열린 파일'}`;
-  } else {
-    // 터미널 판: 드래그로 고른 글자가 있으면 그것만, 없으면 화면 내용
+    label = `웹 — ${(leaf.web.title || leaf.web.url || '페이지').slice(0, 30)}`;
+  } else if (leaf.mode === 'file' && leaf.file && leaf.file.getText) {
+    ctx = (leaf.file.getText() || '').slice(0, 12000);
+    label = `파일 — ${leaf.title || '열린 파일'}`;
+  } else if (leaf.mode === 'terminal') {
+    // 드래그로 고른 글자가 있으면 그것만, 없으면 화면 내용
     const sel = leaf.term && leaf.term.hasSelection() ? leaf.term.getSelection() : '';
-    ctx = (sel || readScreenTail(leaf) || '').slice(-8000); // 너무 길면 뒤쪽만
-    contextLabel = sel ? '선택한 글자' : `터미널 — ${leaf.title || group.host.name}`;
+    ctx = (sel || readScreenTail(leaf) || '').slice(-8000);
+    label = sel ? '선택한 글자' : `터미널 — ${leaf.title || group.host.name}`;
   }
-
-  // 이 서브탭에 이미 있는 AI 채팅 판을 재사용한다
-  let aiLeaf = leavesOf(tab.root).find((l) => l.mode === 'ai');
-  if (!aiLeaf) {
-    // 닫아 두었던 임시 패널이 있으면 그대로 되살린다 (대화가 이어진다)
-    const revive = tab.stashedAiLeaf || null;
-    aiLeaf = revive || createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 채팅 전용 판
-    tab.stashedAiLeaf = null;
-    // 누른 판을 위아래로 쪼개고 "아래쪽" 에 채팅을 넣는다 (보던 화면을 가리지 않게)
-    const split = {
-      kind: 'split',
-      id: nextId('s'),
-      dir: 'col',
-      children: [leaf, aiLeaf],
-      sizes: [0.6, 0.4]
-    };
-    replaceNode(tab, leaf, split);
-    layoutTab(tab);
-    aiLeaf.ephemeral = true; // Ctrl/⌘+K 로 연 임시 패널
-    if (revive) {
-      renderPaneHeader(aiLeaf);
-      applyPaneBody(aiLeaf);
-    } else {
-      setLeafMode(aiLeaf, 'ai');
-      applyPaneBody(aiLeaf);
-    }
-  }
-
-  aiLeaf.title = 'AI 채팅';
-  tab.activeLeafId = aiLeaf.id;
-  group.explorerSelected = false;
-  state.notesOpen = false;
-  render();
-  fitTab(tab);
-  if (aiLeaf.aichat) {
-    if (ctx) aiLeaf.aichat.attachContext(contextLabel, ctx);
-    aiLeaf.aichat.focus();
-  }
-  saveSession();
-}
-
-/** 임시 AI 패널을 보통 판으로 바꾼다 (분할·이동·전환이 열린다) */
-function pinAiPanel(leaf) {
-  if (!leaf || !leaf.ephemeral) return;
-  leaf.ephemeral = false;
-  // 보통 판이 되었으니 이 그룹의 접속 정보를 물려받아 분할·터미널 전환이 되게 한다
-  const group = state.groups.find((g) => g.id === leaf.groupId);
-  if (group && (!leaf.connect || !Object.keys(leaf.connect).length)) {
-    leaf.connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
-  }
-  renderPaneHeader(leaf);
-  render();
-  el.statusLeft.textContent = '이 AI 채팅을 보통 판으로 고정했습니다.';
-  saveSession();
-}
-
-/**
- * 임시 AI 패널 닫기 (물어보지 않는다 — 임시니까).
- * 대화 내용은 버리지 않고 이 서브탭에 보관해 두었다가, Ctrl/⌘+K 로 다시 열면
- * 그대로 이어 준다. 서랍을 여닫는 느낌이 되도록.
- */
-function closeAiPanel(leaf) {
-  const group = state.groups.find((g) => g.id === leaf.groupId);
-  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
-  if (!group || !tab) return;
-  /*
-   * 옆 판을 먼저 닫아서 이 패널만 남았다면 접을 곳이 없다.
-   * 그대로 두면 닫히지도 않는 패널에 갇히므로, 이때는 보통 판으로 바꿔 준다.
-   * (그 뒤로는 일반 판처럼 ✕ 로 닫을 수 있다)
-   */
-  if (leavesOf(tab.root).length === 1) {
-    pinAiPanel(leaf);
-    return;
-  }
-  detachLeaf(tab, leaf);
-  if (leaf.el && leaf.el.parentElement) leaf.el.remove(); // 화면에서만 뗀다
-  tab.stashedAiLeaf = leaf; // 내용은 그대로 보관
-  const next = firstLeaf(tab.root);
-  tab.activeLeafId = next ? next.id : null;
-  layoutTab(tab);
-  render();
-  if (next) focusLeaf(next);
-  saveSession();
+  if (ctx) aiPop.chat.attachContext(label, ctx);
 }
 
 /**
@@ -3465,46 +3448,6 @@ function renderPaneHeader(leaf) {
   if (!header) return;
   header.innerHTML = '';
 
-  /*
-   * Ctrl/⌘+K 로 연 임시 AI 패널.
-   * 보통 판과 겉모습이 같으면 "분할했는데 접속 창이 뜬다" 같은 혼란이 생긴다.
-   * 그래서 머리를 다르게 만들고(단축키 안내 + 고정/닫기만), 끌어서 옮기지도
-   * 분할하지도 못하게 한다. "판으로 고정" 을 누르면 보통 판이 된다.
-   */
-  if (leaf.ephemeral) {
-    header.classList.add('pane-header-temp');
-    const title = document.createElement('span');
-    title.className = 'pane-title temp-title';
-    title.textContent = `✳ AI 채팅 · 임시`;
-    title.title = '임시 패널입니다. Ctrl/⌘+K 를 다시 누르면 닫힙니다.';
-
-    const hint = document.createElement('span');
-    hint.className = 'temp-hint';
-    hint.textContent = isMacPlatform ? '⌘K 로 닫기' : 'Ctrl+K 로 닫기';
-
-    const tools = document.createElement('span');
-    tools.className = 'pane-tools';
-    const btn = (label, tip, fn, cls) => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.title = tip;
-      b.setAttribute('aria-label', tip);
-      if (cls) b.className = cls;
-      b.addEventListener('mousedown', (e) => e.stopPropagation());
-      b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        fn(e);
-      });
-      return b;
-    };
-    tools.append(
-      btn('📌 판으로 고정', '이 패널을 보통 판으로 바꿉니다 (분할·이동이 가능해집니다)', () => pinAiPanel(leaf), 'wide'),
-      btn('✕', '닫기', () => closeAiPanel(leaf), 'danger')
-    );
-    header.append(title, hint, tools);
-    return; // 손잡이(드래그)도 달지 않는다
-  }
-  header.classList.remove('pane-header-temp');
 
   /* --- 왼쪽: 손잡이 · 상태 · 이름 --- */
   const grip = document.createElement('span');
@@ -3836,6 +3779,12 @@ function hideContextMenu() {
 }
 window.showContextMenu = showContextMenu; // 메모장 등 다른 모듈에서도 사용
 window.hideContextMenu = hideContextMenu;
+el.aiFab.addEventListener('mousedown', (e) => e.stopPropagation());
+el.aiFab.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleAiPop();
+});
+
 document.addEventListener('click', hideContextMenu);
 window.addEventListener('blur', hideContextMenu);
 
@@ -4150,7 +4099,7 @@ api.onMenu(async (cmd, arg) => {
       if (arg && arg.key) setOption(arg.key, arg.on);
       break;
     case 'ai':
-      openAiPanel(activeLeaf());
+      toggleAiPop();
       break;
     case 'about':
       openAbout();
@@ -4221,16 +4170,13 @@ window.addEventListener(
       }
     }
 
-    // AI 채팅: Ctrl/⌘+K — 지금 판의 내용(터미널 화면·선택 글자·웹 본문·파일)을
-    // 컨텍스트로 붙여서 이 판 아래에 AI 채팅을 연다
+    // AI 채팅: Ctrl/⌘+K — 하단바 AI 단추에서 올라오는 팝업을 여닫는다.
+    // 열 때는 지금 판의 내용(터미널 화면·선택 글자·웹 본문·파일)이 함께 붙는다.
     if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
-      const l = activeLeaf();
-      if (l && (l.mode === 'terminal' || l.mode === 'web' || l.mode === 'file' || l.mode === 'ai')) {
-        e.preventDefault();
-        e.stopPropagation();
-        openAiPanel(l);
-        return;
-      }
+      e.preventDefault();
+      e.stopPropagation();
+      toggleAiPop();
+      return;
     }
 
     // 파일 탐색기: mac ⌘+`  / win Ctrl+`
@@ -4851,10 +4797,21 @@ async function doConnect() {
 
 // 접속한 서버들의 Claude 사용량을 주기적으로 갱신 (활성 그룹 위주)
 claudePollTimer = setInterval(() => {
+  /*
+   * 보고 있는 그룹을 먼저, 그다음 나머지 접속된 그룹도 훑는다.
+   * 예전에는 보고 있는 그룹만 갱신해서, 탭을 옮기면 그 서버의 막대가
+   * 한참 뒤에야 뜨거나 아예 안 뜬 채로 남았다.
+   * 한 번에 하나씩만 부른다 — 안쪽의 15초 문턱이 나머지를 다음 차례로 미룬다.
+   */
   const g = activeGroup();
   if (g) {
     refreshClaudeInfo(g);
     refreshCodexInfo(g);
+  }
+  for (const other of state.groups) {
+    if (other === g) continue;
+    refreshClaudeInfo(other);
+    refreshCodexInfo(other);
   }
   renderClaudeStatus(); // 초기화까지 남은 시간을 갱신
 }, 20000);

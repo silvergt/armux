@@ -77,7 +77,9 @@ function normalize(raw) {
  * @param {string} sessionId 살아 있는 터미널 세션 (그 연결에 exec 채널을 하나 더 연다)
  */
 async function fetchInfo(sessionId) {
-  const { stdout } = await ssh.exec(sessionId, PROBE, 20000);
+  // curl 두 번(각 8초 상한) + 로그인 셸 시작까지 더하면 20초를 넘기는 서버가 있다.
+  // 시간 초과로 던지면 화면에는 "정보 없음" 으로만 보이므로 넉넉히 준다.
+  const { stdout } = await ssh.exec(sessionId, PROBE, 30000);
   // API 응답이 여러 줄로 정렬되어 올 수 있으므로 첫 '{' 부터 마지막 '}' 까지를 통째로 파싱한다
   const text = String(stdout);
   const start = text.indexOf('{');

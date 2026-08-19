@@ -80,6 +80,15 @@ window.AiChat = (function () {
     newBtn.textContent = '새 대화';
     newBtn.title = '지금 대화를 기록으로 넘기고 새로 시작';
     head.append(title, chip, toolBtn, histBtn, newBtn);
+    // 떠 있는 팝업으로 쓸 때만 닫기 단추를 단다 (판 안에서는 판 헤더의 ✕ 를 쓴다)
+    if (opts.onClose) {
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'ac-hbtn ac-close';
+      closeBtn.textContent = '✕';
+      closeBtn.title = '닫기 (대화는 그대로 남습니다)';
+      closeBtn.addEventListener('click', () => opts.onClose());
+      head.appendChild(closeBtn);
+    }
 
     /* --------------------------------- 로그 --------------------------------- */
     const log = document.createElement('div');
@@ -351,6 +360,7 @@ window.AiChat = (function () {
 
       state.busy = true;
       sendBtn.disabled = true;
+      if (opts.onBusy) opts.onBusy(true);
       const reqId = `c${Date.now()}_${reqSeq++}`;
       const wait = addMsg('wait', '생각 중…');
       // 사고 과정(thinking)·진행 단계는 접이식 상자에, 답변은 실시간 타이핑으로
@@ -425,6 +435,8 @@ window.AiChat = (function () {
         pendingReqs.delete(reqId);
         state.busy = false;
         sendBtn.disabled = false;
+        if (opts.onBusy) opts.onBusy(false);
+        if (opts.onAnswer) opts.onAnswer(); // 숨겨져 있었다면 단추에 표시가 뜬다
         input.focus();
       }
     }
@@ -436,6 +448,12 @@ window.AiChat = (function () {
     input.addEventListener('input', autosize);
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();
+      // 팝업으로 떠 있을 때는 Esc 로 접는다 (내용은 남는다)
+      if (e.key === 'Escape' && opts.onClose && !e.isComposing) {
+        e.preventDefault();
+        opts.onClose();
+        return;
+      }
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
         e.preventDefault();
         send();
@@ -451,6 +469,11 @@ window.AiChat = (function () {
         returnToLive();
         input.focus();
       },
+      /** 머리에 보여 줄 서버 이름 (팝업은 보고 있는 탭에 따라 상대가 바뀐다) */
+      setHost: (name) => {
+        title.textContent = `✳ AI 채팅${name ? ` — ${name}` : ''}`;
+      },
+      isBusy: () => state.busy,
       /** Ctrl/⌘+K 등 바깥에서 컨텍스트를 걸어 준다 */
       attachContext: (label, text) => {
         returnToLive();

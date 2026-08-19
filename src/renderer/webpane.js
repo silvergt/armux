@@ -465,6 +465,12 @@ window.WebPane = (function () {
       state.active = i;
       const t = state.tabs[i];
       for (const other of state.tabs) other.view.classList.toggle('hidden', other !== t);
+      /*
+       * 주소가 없는 탭이면 webview 도 감춘다.
+       * about:blank 인 webview 는 흰 바탕이라 시작 화면(주소 입력 + 즐겨찾기) 위를
+       * 덮어 버린다. 둘 다 position:absolute 인데 webview 가 나중에 붙어 위에 그려진다.
+       */
+      if (!t.url) t.view.classList.add('hidden');
       hideError();
       // 주소 없는 탭이면 시작 화면
       start.classList.toggle('hidden', Boolean(t.url));
@@ -523,6 +529,7 @@ window.WebPane = (function () {
       if (!t) t = newTab(null);
       t.url = url;
       urlInput.value = url;
+      t.view.classList.remove('hidden'); // 빈 탭이라 감춰 두었으면 이제 보여 준다
       start.classList.add('hidden');
       hideError();
       syncFav();

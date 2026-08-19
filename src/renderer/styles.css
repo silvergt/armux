@@ -1747,7 +1747,7 @@ button {
 .usage {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   white-space: nowrap;
   min-width: 0;
   flex: 0 1 auto;
@@ -1801,7 +1801,8 @@ button {
 .usage-pct {
   color: var(--fg);
   font-variant-numeric: tabular-nums;
-  min-width: 32px;
+  /* "100%" 가 들어갈 만큼만. 넓으면 오른쪽 정렬 때문에 막대와 사이가 벌어져 보인다 */
+  min-width: 27px;
   text-align: right;
 }
 
@@ -1825,7 +1826,6 @@ button {
   .svc + .svc { padding-left: 6px; }
   .svc .claude-who { max-width: 96px; }
   .usage-track { flex-basis: 48px; }
-  .usage-reset { display: none; }
 }
 @media (max-width: 840px) {
   .svc-name { display: none; } /* 표식(✳/◆)만 남긴다 — 어느 쪽인지는 색으로도 안다 */
@@ -1833,10 +1833,11 @@ button {
   .usage-track { flex-basis: 40px; }
   .usage-pct { min-width: 26px; }
 }
-@media (max-width: 680px) {
-  /* 여기서부터는 왼쪽 상태 글자를 접어 막대에 자리를 내준다 */
+@media (max-width: 700px) {
+  /* 여기서부터는 왼쪽 상태 글자를 접고, 초기화 남은 시간도 접는다 */
   #status-left { flex: 0 1 auto; max-width: 120px; }
-  .usage-track { flex-basis: 30px; }
+  .usage-reset { display: none; }
+  .usage-track { flex-basis: 32px; }
 }
 
 /* --------------------------------- 상단 시계 -------------------------------- */
@@ -2883,6 +2884,8 @@ body.is-mac #mac-spacer {
 .web-view.hidden { display: none; }
 .web-start {
   position: absolute; inset: 0; overflow: auto;
+  /* webview 보다 위에 그려져야 한다 (홈 단추로 페이지 위에 덮어 열 때) */
+  z-index: 2;
   background: #16181c; color: #d5d8de;
   display: flex; justify-content: center;
 }
@@ -2927,34 +2930,88 @@ body.is-mac #mac-spacer {
   background: #3a2226;
 }
 
-/* ------------------------- Ctrl/⌘+K 로 연 임시 AI 패널 ------------------------- */
+/* ------------------------ 하단바 AI 단추 + 떠 있는 채팅 ------------------------ */
+
+#status-rspace {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* 작은 정사각형 초록 단추. 여기서 채팅이 올라온다. */
+#ai-fab {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #2f7d55;
+  color: #eafff3;
+  border: 1px solid #3f9e6c;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  position: relative;
+}
+#ai-fab:hover { background: #3a9668; }
+#ai-fab.on { background: #4bb37f; border-color: #78d3a6; color: #04140c; }
+
+/* 답을 기다리는 중 — 단추가 숨 쉰다 */
+#ai-fab.busy { animation: aifab-pulse 1.2s ease-in-out infinite; }
+@keyframes aifab-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(75, 179, 127, 0.55); }
+  50% { box-shadow: 0 0 0 4px rgba(75, 179, 127, 0); }
+}
+/* 접어 둔 사이에 답이 도착함 */
+#ai-fab.unread::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffcf5a;
+  border: 1px solid #16181c;
+}
 
 /*
- * 보통 판과 겉모습이 같으면 "같아 보이는데 되는 게 다르다" 가 된다.
- * 위쪽에 강조선을 긋고 머리 색을 달리해 서랍처럼 보이게 한다.
+ * 하단바 단추 위로 올라오는 채팅 팝업.
+ * 판(분할 트리)이 아니라 화면 위에 겹쳐 뜬다 — 그래서 배치가 흐트러지지 않고,
+ * 닫아도 없애지 않고 감추기만 하므로 하던 대화가 그대로 이어진다.
  */
-.pane-header.pane-header-temp {
-  background: #17222e;
-  border-top: 2px solid var(--accent);
-  gap: 8px;
-}
-.pane-header-temp .temp-title {
-  color: #9fd0ff;
-  flex: 0 0 auto;
-}
-.pane-header-temp .temp-hint {
-  color: #5b6673;
-  font-size: 10px;
-  flex: 1 1 auto;
-  min-width: 0;
+.ai-pop {
+  position: fixed;
+  right: 8px;
+  bottom: 26px;
+  z-index: 60;
+  width: min(440px, calc(100vw - 16px));
+  height: min(560px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid #3f9e6c;
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  animation: aipop-in 0.12s ease-out;
 }
-.pane-header-temp .pane-tools button {
-  font-size: 11px;
-  padding: 1px 7px;
+.ai-pop.hidden { display: none; }
+@keyframes aipop-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
+/* .aichat 은 position:absolute; inset:0 이라 팝업(고정 위치)을 그대로 채운다 */
+/* 팝업 머리는 단추와 같은 초록 계열로 — 어디서 나온 창인지 보이게 */
+.ai-pop .ac-head {
+  background: #16241d;
+  border-bottom: 1px solid #2b4638;
+}
+.ai-pop .ac-close { color: #9fd8bb; }
+.ai-pop .ac-close:hover { color: #fff; }
 
 /* --------------------------- 새 판: 무엇을 열지 고르기 --------------------------- */
 
