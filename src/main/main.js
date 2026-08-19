@@ -861,11 +861,19 @@ function buildAskScript(tool, promptB64, resumeId, stream) {
     //   codex exec resume <스레드id> <옵션들> -     ← resume 이 그 옵션들을 모른다
     const resume = resumeId ? ` resume ${safeId(resumeId)}` : '';
     // 채팅용이므로 읽기 전용 모래상자로 돌린다(실수로 파일을 고치지 않게).
+    /*
+     * codex 는 "그 대화가 없다" 를 stderr 로 낸다(stdout 은 JSONL 전용).
+     * 그래서 stderr 를 따로 받아 두었다가, 그 경우에만 표식을 한 줄 남긴다.
+     * (stderr 를 통째로 stdout 에 합치면 모델 갱신 경고 같은 잡음이 섞인다)
+     */
     return `
 ${codexinfo.FIND_CODEX}
 if [ -z "$CODEX" ]; then echo 'ARMUX_AI:no-codex'; exit 0; fi
 cd "$HOME" 2>/dev/null
-${decode} | "$CODEX" exec --json --skip-git-repo-check -s read-only${resume} - 2>/dev/null
+ERR=$(mktemp 2>/dev/null || echo "$HOME/.armux-codex-err.$$")
+${decode} | "$CODEX" exec --json --skip-git-repo-check -s read-only${resume} - 2>"$ERR"
+grep -qiE 'no rollout found|thread not found|no such thread' "$ERR" && echo 'ARMUX_AI:resume-gone'
+rm -f "$ERR"
 `.trim();
   }
   const resume = resumeId ? `--resume ${safeId(resumeId)} ` : '';
@@ -965,11 +973,11 @@ ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, t
   // 이어 말하기가 통하지 않으면(그 서버에 그 대화가 없다) 새 대화로 한 번 더 시도한다
   const first = await runAskStream(e, { reqId, sessionId, prompt, resumeId, tool });
   if (!first.resumeFailed) return first;
-  const again = await runAskStream(e, { reqId, sessionId, prompt, resumeId: null, tool });
+  const again = await runAskStream(e, { reqId, sessionId, prompt, resumeId: null, tool, retry: true });
   return { ...again, restarted: true }; // 화면에 "새 대화로 다시 보냈다" 고 알린다
 });
 
-async function runAskStream(e, { reqId, sessionId, prompt, resumeId, tool }) {
+async function runAskStream(e, { reqId, sessionId, prompt, resumeId, tool, retry }) {
   const kind = tool === 'codex' ? 'codex' : 'claude';
   const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
   const script = buildAskScript(kind, b64, resumeId, true);
@@ -988,6 +996,8 @@ async function runAskStream(e, { reqId, sessionId, prompt, resumeId, tool }) {
     const emit = (dkind, text) => {
       if (!sender.isDestroyed()) sender.send('ai:delta', { reqId, kind: dkind, text });
     };
+    // 다시 보내는 것이면 첫 시도에서 흘러갔을 조각을 화면에서 먼저 지운다
+    if (retry) emit('reset', '');
 
     const handleClaude = (o) => {
       if (o.type === 'stream_event' && o.event) {
@@ -1046,11 +1056,17 @@ async function runAskStream(e, { reqId, sessionId, prompt, resumeId, tool }) {
           continue;
         }
         /*
-         * 이어 말하기 id 는 "그 서버의" 대화 id 다. 다른 서버로 옮겨 물어보면
-         * 그쪽에는 그런 대화가 없어 JSON 이 아니라 한 줄 오류만 나온다.
-         * 이때는 새 대화로 한 번 더 시도한다(아래 attempt 재시도).
+         * 이어 말하기 id 는 "그 서버의" 대화 id 다. 그 서버에 그런 대화가 없으면
+         * JSON 이 아니라 한 줄 오류만 나온다. 이때만 새 대화로 다시 시도한다.
+         *   claude: No conversation found with session ID: ...
+         *   codex : thread/resume failed: no rollout found for thread id ...
+         * (그 밖의 실패까지 다시 보내면 시간이 두 배로 들고, 하던 대화가
+         *  까닭 없이 새로 시작될 수 있다)
          */
-        if (/No conversation found|no session found|session not found|찾을 수 없/i.test(line)) {
+        if (
+          line.includes('ARMUX_AI:resume-gone') || // codex (stderr 를 검사해 남긴 표식)
+          /No conversation found|session not found/i.test(line) // claude (stdout 으로 나온다)
+        ) {
           resumeGone = true;
           continue;
         }
@@ -1068,9 +1084,7 @@ async function runAskStream(e, { reqId, sessionId, prompt, resumeId, tool }) {
     const done = (err) => {
       if (sawMissing) return resolve({ error: missingMsg(kind) });
       // 이어 말하기가 통하지 않았다 — 부른 쪽이 새 대화로 다시 시도한다
-      if (resumeGone || (resumeId && !final && !answer)) {
-        return resolve({ resumeFailed: true });
-      }
+      if (resumeGone) return resolve({ resumeFailed: true });
       if (kind === 'codex') {
         if (answer) return resolve({ result: answer, sessionId: threadId });
         return resolve({

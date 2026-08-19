@@ -349,10 +349,7 @@ window.AiChat = (function () {
      * 그 서버의 연결이 끊겼으면 지금 보고 있는 서버로 옮기고 새 대화로 시작한다.
      */
     function resolveTarget() {
-      if (opts.getTarget) return opts.getTarget(state.bindKey);
-      // 판 안 채팅처럼 대상이 하나뿐인 경우
-      const sid = opts.getSessionId && opts.getSessionId();
-      return sid ? { sessionId: sid, key: 'pane', label: opts.hostLabel || '' } : null;
+      return opts.getTarget ? opts.getTarget(state.bindKey) : null;
     }
 
     /** 머리에 "이 대화가 매인 서버" 를 적는다 */
@@ -375,8 +372,11 @@ window.AiChat = (function () {
 
       // 대화가 매여 있던 서버가 사라져 다른 서버로 넘어가는 경우
       if (state.bindKey && target.key !== state.bindKey) {
+        // 새 대화로 넘어가도 방금 붙인 첨부는 이번 질문에 그대로 써야 한다
+        const keepPending = state.pending;
         if (liveWrap.querySelector('.ac-msg')) startNewConversation();
         else state.resumeId = null;
+        if (keepPending) setPending(keepPending.label, keepPending.text);
         divider(`${target.label || '다른 서버'} 로 옮겨 새 대화를 시작합니다`);
       }
       state.bindKey = target.key;
@@ -435,6 +435,15 @@ window.AiChat = (function () {
 
       pendingReqs.set(reqId, (p) => {
         if (wait.parentNode) wait.remove();
+        if (p.kind === 'reset') {
+          // 새 대화로 다시 보내는 중 — 첫 시도에서 흘러온 조각은 버린다
+          if (bubble) bubble.remove();
+          if (think) think.remove();
+          bubble = null;
+          think = null;
+          thinkBody = null;
+          return;
+        }
         if (p.kind === 'thinking') {
           ensureThink();
           thinkBody.textContent += p.text;
@@ -510,17 +519,6 @@ window.AiChat = (function () {
         returnToLive();
         input.focus();
       },
-      /** 머리에 보여 줄 서버 이름 (팝업은 보고 있는 탭에 따라 상대가 바뀐다) */
-      /**
-       * 머리에 보여 줄 서버 이름.
-       * 이미 어느 서버에 매인 대화라면 바꾸지 않는다 — 지금 보고 있는 탭이 아니라
-       * "이 대화가 오가는 서버" 를 보여 줘야 헷갈리지 않는다.
-       */
-      setHost: (name) => {
-        if (state.bindKey) return;
-        paintTitle(name);
-      },
-      isBusy: () => state.busy,
       /** Ctrl/⌘+K 등 바깥에서 컨텍스트를 걸어 준다 */
       attachContext: (label, text) => {
         returnToLive();
