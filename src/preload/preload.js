@@ -135,6 +135,15 @@ contextBridge.exposeInMainWorld('armux', {
     sync: (opts) => ipcRenderer.send('settings:sync', opts)
   },
 
+  /** 포트 포워딩 (서버에서 열린 포트를 내 PC 로) */
+  ports: {
+    listRemote: (sessionId) => ipcRenderer.invoke('ports:listRemote', { sessionId }),
+    start: (sessionId, remotePort, remoteHost, localPort) =>
+      ipcRenderer.invoke('ports:start', { sessionId, remotePort, remoteHost, localPort }),
+    stop: (id) => ipcRenderer.invoke('ports:stop', { id }),
+    list: (sessionId) => ipcRenderer.invoke('ports:list', { sessionId })
+  },
+
   /** 원격 서버의 Claude Code 로그인/사용량 정보 */
   claude: {
     info: (sessionId) => ipcRenderer.invoke('claude:info', { sessionId }),

@@ -13,6 +13,7 @@ const updater = require('./updater');
 const chromehistory = require('./chromehistory');
 const webfav = require('./webfav');
 const claudehooks = require('./claudehooks');
+const portforward = require('./portforward');
 const codexinfo = require('./codexinfo');
 const codexhooks = require('./codexhooks');
 
@@ -455,7 +456,10 @@ function pruneEmpty(obj) {
 
 ipcMain.on('ssh:write', (e, { id, data }) => ssh.write(id, data));
 ipcMain.on('ssh:resize', (e, { id, cols, rows }) => ssh.resize(id, cols, rows));
-ipcMain.on('ssh:close', (e, { id }) => ssh.close(id));
+ipcMain.on('ssh:close', (e, { id }) => {
+  portforward.stopForSession(id); // 끊긴 연결에 매달린 전달을 남겨 두지 않는다
+  ssh.close(id);
+});
 
 /* --------------------------------- IPC: SFTP --------------------------------- */
 
@@ -776,6 +780,31 @@ ipcMain.on('settings:sync', (e, opts) => {
     if (item && typeof opts[key] === 'boolean') item.checked = opts[key];
   }
 });
+
+/* -------------------------------- 포트 포워딩 -------------------------------- */
+
+/*
+ * 서버에서 열린 포트를 내 PC 로 끌어온다 (VS Code 의 포트 전달과 같은 원리).
+ * 리스너는 127.0.0.1 에만 열리므로 다른 기기에서는 들어올 수 없다.
+ */
+ipcMain.handle('ports:listRemote', async (e, { sessionId }) => {
+  try {
+    return { ports: await portforward.listRemote(sessionId) };
+  } catch (err) {
+    return { ports: [], error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ports:start', async (e, { sessionId, remotePort, remoteHost, localPort }) => {
+  try {
+    return await portforward.start(sessionId, Number(remotePort), remoteHost, localPort);
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ports:stop', (e, { id }) => portforward.stop(id));
+ipcMain.handle('ports:list', (e, { sessionId }) => portforward.list(sessionId));
 
 /* ------------------------------- 앱 밖 알림 · 절전 ------------------------------- */
 
@@ -1227,6 +1256,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  portforward.stopAll();
   ssh.closeAll();
   sftp.closeAll();
   if (!isMac) app.quit();
@@ -1244,6 +1274,7 @@ app.on('before-quit', (e) => {
 });
 
 app.on('will-quit', () => {
+  portforward.stopAll();
   ssh.closeAll();
   sftp.closeAll();
   ephemeralCreds.clear();

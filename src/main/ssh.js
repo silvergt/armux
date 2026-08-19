@@ -245,4 +245,22 @@ function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
-module.exports = { open, openLocal, exec, execStream, write, resize, close, closeAll, count, isLocal };
+/**
+ * 포트 포워딩용 채널 하나를 연다 (ssh -L 이 하는 일).
+ * 이미 붙어 있는 연결에 실어 보내므로 새로 접속하지 않는다.
+ */
+function forwardOut(sessionId, remoteHost, remotePort, srcHost, srcPort) {
+  return new Promise((resolve, reject) => {
+    const s = sessions.get(sessionId);
+    if (!s) return reject(new Error('세션이 없습니다.'));
+    if (s.local) return reject(new Error('로컬 터미널에서는 지원하지 않는 기능입니다.'));
+    s.client.forwardOut(srcHost || '127.0.0.1', srcPort || 0, remoteHost, remotePort, (err, stream) => {
+      if (err) reject(err);
+      else resolve(stream);
+    });
+  });
+}
+
+module.exports = { open, openLocal, exec, execStream, write, resize, close, closeAll, count, isLocal,
+  forwardOut
+};

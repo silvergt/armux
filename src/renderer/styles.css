@@ -1548,6 +1548,9 @@ button {
   z-index: 200;
   display: flex;
   flex-direction: column;
+  /* 항목이 많아도 잘리지 않게 (포트가 수십 개인 서버) */
+  max-height: 60vh;
+  overflow-y: auto;
 }
 .ex-menu.hidden {
   display: none;
@@ -2935,6 +2938,55 @@ body.is-mac #mac-spacer {
 #status-rspace {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+}
+
+/* 포트 전달 단추 (AI 단추 왼쪽) */
+#port-fab {
+  height: 18px;
+  min-width: 18px;
+  padding: 0 4px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  font-size: 10px;
+  line-height: 1;
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+}
+#port-fab:hover { color: #fff; border-color: var(--accent); }
+#port-fab.on { color: #9fd0ff; border-color: #4da3ff; background: #16324a; }
+
+/* 포트 번호 직접 입력 */
+.port-ask-back {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.port-ask {
+  width: 300px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--chrome);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--fg);
+  font-size: 12px;
+}
+.port-ask-row {
+  display: flex;
+  gap: 6px;
   justify-content: flex-end;
 }
 
