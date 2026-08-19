@@ -739,6 +739,14 @@ function setLeafMode(leaf, mode, url, webExtra) {
     leaf.mode = 'explorer';
   } else {
     leaf.mode = 'terminal';
+    /*
+     * 고르기 화면에서 웹·메모 등을 골랐던 판은 셸이 없다.
+     * 나중에 터미널로 바꾸면 그때 붙여 준다(빈 검은 화면이 아니라).
+     */
+    if (!leaf.sessionId && leaf.status !== 'connecting') {
+      const c = leaf.connect || {};
+      if (c.local || c.hostId || c.credId || c.profile) startSession(leaf);
+    }
   }
 
   // 터미널이 아닌 화면으로 옮기면 열려 있던 파일 뷰어는 정리
@@ -750,7 +758,8 @@ function setLeafMode(leaf, mode, url, webExtra) {
 
   renderPaneHeader(leaf);
   render();
-  if (leaf.mode === 'web') leaf.web.focus();
+  if (leaf.mode === 'launcher') leaf.launcher.focus();
+  else if (leaf.mode === 'web') leaf.web.focus();
   else if (leaf.mode === 'ai') leaf.aichat.focus();
   else if (leaf.mode === 'notes') leaf.notes.focus();
   else if (leaf.mode === 'explorer') {
@@ -1134,6 +1143,21 @@ function evaluateActivity() {
         const now = Date.now();
         const live = leaf.mode === 'terminal' && leaf.status === 'ready';
 
+        // 이 판이 tmux 안인지, 어떤 세션인지 기억해 둔다.
+        // 절전에서 깨어나 다시 붙을 때 같은 세션으로 돌려놓기 위해서다.
+        if (live) rememberTmux(leaf);
+
+        /*
+         * 훅이 한 번이라도 온 판은 훅만 믿는다.
+         *
+         * 훅이 "시작(busy)" 을 알려 주면 wasThinking 이 켜지는데, 그 직후에는
+         * 아직 작업 상태줄이 그려지지 않아 아래 화면 검사가 "안 보인다" 로
+         * 읽는다. 그러면 2.5초 뒤 "작업 중 → 끝남" 으로 잘못 판정해서, 일을
+         * 시작하자마자 초록 느낌표가 떴다. 끝났다는 신호는 Stop 훅이 정확히
+         * 주므로 화면 추측은 훅이 없는 판(훅 설치 전, 다른 도구)에만 쓴다.
+         */
+        if (leaf.hooksActive) continue;
+
         // Claude 의 작업 상태줄(맨 앞 스피너 글리프 + "esc to interrupt")이
         // 화면 아래 15줄 안에 보이는가. 상태줄은 항상 입력 상자 바로 위에 있다.
         const seen = live && bottomNonEmptyLines(leaf, 15).some(isClaudeWorkingLine);
@@ -1150,10 +1174,6 @@ function evaluateActivity() {
           if (!looking) raiseAlert(leaf);
         }
         leaf.wasThinking = thinking;
-
-        // 이 판이 tmux 안인지, 어떤 세션인지 기억해 둔다.
-        // 절전에서 깨어나 다시 붙을 때 같은 세션으로 돌려놓기 위해서다.
-        if (live) rememberTmux(leaf);
       }
     }
   }
@@ -1206,14 +1226,21 @@ function makeTabShell(group, insertAfterIndex) {
 }
 
 /** 서브탭(가로 줄) 하나를 만든다. 안에 새 세션 페인 1개로 시작. */
-function createTab(group, connect) {
+/**
+ * 서브탭 하나 추가.
+ * @param {boolean} chooser true 면 셸을 바로 붙이지 않고 "무엇을 열지" 부터 묻는다.
+ */
+function createTab(group, connect, chooser) {
   const tab = makeTabShell(group);
-  const leaf = createLeaf(tab, connect);
+  const leaf = chooser
+    ? createLeaf(tab, connect, { mode: 'orphan', silent: true })
+    : createLeaf(tab, connect);
   tab.root = leaf;
   tab.activeLeafId = leaf.id;
 
   layoutTab(tab);
   render();
+  if (chooser) showLauncher(leaf);
   focusLeaf(leaf);
   return tab;
 }
@@ -1340,7 +1367,7 @@ function addSubTab(group) {
     openConnectDialog({ group }); // 자격증명이 없으면 다시 물어본다
     return;
   }
-  createTab(group, connect);
+  createTab(group, connect, true); // 무엇을 열지 먼저 고른다
 }
 
 /** 서브탭 닫기 전에 확인 (메인탭과 동일하게) */
@@ -1422,7 +1449,8 @@ function splitActive(dir) {
     return;
   }
 
-  const newLeaf = createLeaf(tab, connect);
+  // 셸을 바로 붙이지 않는다. 무엇을 열지 고른 뒤에 그때 붙인다.
+  const newLeaf = createLeaf(tab, connect, { mode: 'orphan', silent: true });
   const split = {
     kind: 'split',
     id: nextId('s'),
@@ -1435,6 +1463,7 @@ function splitActive(dir) {
 
   layoutTab(tab);
   render();
+  showLauncher(newLeaf);
   focusLeaf(newLeaf);
 }
 
@@ -1449,11 +1478,14 @@ async function closeLeaf(leaf) {
     return;
   }
 
-  const ok = await api.util.confirm(
-    '이 분할 창을 닫을까요?',
-    `${group.host.username}@${group.host.host} · 이 창의 셸 세션이 종료됩니다.`
-  );
-  if (!ok) return;
+  // 아직 고르는 중이거나 붙은 셸이 없는 판은 없앨 것이 없으므로 묻지 않는다
+  if (leaf.mode !== 'launcher' && leaf.sessionId) {
+    const ok = await api.util.confirm(
+      '이 분할 창을 닫을까요?',
+      `${group.host.username}@${group.host.host} · 이 창의 셸 세션이 종료됩니다.`
+    );
+    if (!ok) return;
+  }
 
   detachLeaf(tab, leaf);
   disposeLeaf(leaf);
@@ -1477,7 +1509,9 @@ function focusLeaf(leaf) {
   render();
   fitTab(tab);
   checkActivitySoon(); // 보이는 판이 바뀌었으니 상태 표시를 다시 맞춘다
-  leaf.term.focus();
+  // 고르기 화면인 판은 목록이 방향키를 받아야 하므로 그쪽으로 포커스를 준다
+  if (leaf.mode === 'launcher' && leaf.launcher) leaf.launcher.focus();
+  else leaf.term.focus();
 }
 
 /** 방향키로 이웃 페인으로 이동 (화면 좌표 기준으로 가장 가까운 페인 선택) */
@@ -1542,11 +1576,13 @@ const loadPinPref = () => localStorage.getItem(PIN_KEY) === '1';
 let dockWidth = Number(localStorage.getItem(DOCK_KEY)) || 320;
 
 /** 그룹의 탐색기 인스턴스를 준비한다 (접속 정보가 있어야 만들 수 있다) */
-function ensureExplorer(group) {
+function ensureExplorer(group, quiet) {
   if (group.explorer) return group.explorer;
+  if (group.isLocal) return null; // 로컬 터미널은 SFTP 가 없다
   const connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
   if (!connect.hostId && !connect.credId) {
-    el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
+    // quiet 은 "사용자가 누른 게 아니라 미리 붙여 두는 중" 이라는 뜻이다
+    if (!quiet) el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
     return null;
   }
   group.explorer = window.Explorer.create({
@@ -1636,6 +1672,7 @@ async function closeFilePane(group, tab, leaf) {
 function applyPaneBody(leaf) {
   const termHost = leaf.el.querySelector('.pane-term');
   if (termHost) termHost.classList.toggle('hidden', leaf.mode !== 'terminal');
+  if (leaf.launcher) leaf.launcher.el.classList.toggle('hidden', leaf.mode !== 'launcher');
   if (leaf.web) leaf.web.el.classList.toggle('hidden', leaf.mode !== 'web');
   if (leaf.file) leaf.file.el.classList.toggle('hidden', leaf.mode !== 'file');
   if (leaf.notes) leaf.notes.el.classList.toggle('hidden', leaf.mode !== 'notes');
@@ -1683,6 +1720,180 @@ function leaveExplorer(group) {
   render();
   const l = activeLeaf();
   if (l) l.term.focus();
+}
+
+/* --------------------------------- 새 판 고르기 --------------------------------- */
+
+/*
+ * 판이나 서브탭을 새로 열면 곧바로 셸에 붙는 대신 "무엇을 열지" 를 먼저 묻는다.
+ * 웹페이지나 메모만 보려던 경우에도 매번 셸이 하나씩 붙던 것을 없애기 위해서다.
+ * 목록은 판 헤더의 "전환" 과 같고, 터미널이 맨 위이자 기본 선택이다.
+ * 방향키·Enter·숫자키, 그리고 마우스 클릭으로 고를 수 있다.
+ */
+function launcherItems(group) {
+  const items = [
+    { key: 'terminal', icon: '⌨', label: '터미널', desc: group && group.isLocal ? '이 PC 의 셸' : '이 서버의 셸' },
+    { key: 'web', icon: '🌐', label: '웹페이지', desc: '판 안에서 열리는 브라우저' },
+    { key: 'ai', icon: '✳', label: 'AI 채팅', desc: 'Claude · Codex 에게 물어보기' },
+    { key: 'notes', icon: '📝', label: '메모', desc: '간단한 기록' }
+  ];
+  // 로컬 터미널 그룹은 SFTP 가 없어 파일 탐색기를 쓸 수 없다
+  if (!group || !group.isLocal) {
+    items.push({ key: 'explorer', icon: '📁', label: '파일', desc: '원격 파일 탐색기 (SFTP)' });
+  }
+  return items;
+}
+
+/** 새로 만든 빈 판에 고르기 화면을 띄운다 */
+function showLauncher(leaf) {
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const items = launcherItems(group);
+  let sel = 0; // 터미널이 기본
+
+  const body = leaf.el.querySelector('.pane-body');
+  const root = document.createElement('div');
+  root.className = 'launcher';
+  root.tabIndex = 0; // 방향키를 받으려면 포커스를 가질 수 있어야 한다
+
+  const head = document.createElement('div');
+  head.className = 'launcher-head';
+  head.textContent = '이 판에서 무엇을 열까요?';
+
+  const list = document.createElement('div');
+  list.className = 'launcher-list';
+
+  const hint = document.createElement('div');
+  hint.className = 'launcher-hint';
+  hint.textContent = '↑↓ 로 고르고 Enter · 숫자키로 바로 선택 · Esc 로 닫기';
+
+  const rows = items.map((item, i) => {
+    const b = document.createElement('button');
+    b.className = 'launcher-item';
+    b.innerHTML = '';
+    const num = document.createElement('span');
+    num.className = 'launcher-num';
+    num.textContent = String(i + 1);
+    const icon = document.createElement('span');
+    icon.className = 'launcher-icon';
+    icon.textContent = item.icon;
+    const text = document.createElement('span');
+    text.className = 'launcher-text';
+    const name = document.createElement('span');
+    name.className = 'launcher-label';
+    name.textContent = item.label;
+    const desc = document.createElement('span');
+    desc.className = 'launcher-desc';
+    desc.textContent = item.desc;
+    text.append(name, desc);
+    b.append(num, icon, text);
+    /*
+     * mouseenter 가 아니라 mousemove 를 쓴다.
+     * 마우스가 가만히 있는 자리에 이 화면이 뜨면 mouseenter 가 저절로 일어나
+     * 기본 선택(터미널)이 엉뚱한 항목으로 바뀌어 버린다. mousemove 는 사람이
+     * 실제로 마우스를 움직였을 때만 온다.
+     */
+    b.addEventListener('mousemove', () => {
+      if (sel === i) return;
+      sel = i;
+      paint();
+    });
+    b.addEventListener('mousedown', (e) => e.preventDefault()); // 포커스를 뺏기지 않게
+    b.addEventListener('click', () => choose(i));
+    list.appendChild(b);
+    return b;
+  });
+
+  const paint = () => rows.forEach((b, i) => b.classList.toggle('sel', i === sel));
+  paint();
+
+  root.append(head, list, hint);
+  body.appendChild(root);
+  leaf.launcher = { el: root, focus: () => root.focus() };
+  leaf.mode = 'launcher';
+  applyPaneBody(leaf);
+  renderPaneHeader(leaf);
+
+  function choose(i) {
+    const item = items[i];
+    if (!item) return;
+    closeLauncher(leaf);
+    if (item.key === 'terminal') {
+      leaf.mode = 'terminal';
+      applyPaneBody(leaf);
+      renderPaneHeader(leaf);
+      // 이 판은 셸 없이 만들어졌으므로 지금 붙인다
+      if (!leaf.sessionId) startSession(leaf);
+      else leaf.term.focus();
+      render();
+      fitLeaf(leaf);
+    } else {
+      setLeafMode(leaf, item.key);
+    }
+    saveSession();
+  }
+
+  root.addEventListener('keydown', (e) => {
+    e.stopPropagation(); // 앱 전역 단축키로 새지 않게
+    if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+      e.preventDefault();
+      sel = (sel + 1) % items.length;
+      paint();
+    } else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
+      e.preventDefault();
+      sel = (sel - 1 + items.length) % items.length;
+      paint();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      choose(sel);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelLauncher(leaf);
+    } else if (/^[1-9]$/.test(e.key)) {
+      const i = Number(e.key) - 1;
+      if (i < items.length) {
+        e.preventDefault();
+        choose(i);
+      }
+    }
+  });
+
+  root.focus();
+}
+
+/** 고르기 화면만 걷어낸다 (판은 그대로 두고) */
+function closeLauncher(leaf) {
+  if (!leaf.launcher) return;
+  leaf.launcher.el.remove();
+  leaf.launcher = null;
+}
+
+/**
+ * Esc — 고르지 않고 닫는다.
+ * 방금 만든 빈 판이라 없앨 것이 없으므로 확인 없이 접는다.
+ * 다만 이 판 하나뿐인 서브탭이 그룹의 마지막 서브탭이면, 닫을 곳이 없으므로
+ * 그냥 고르기 화면을 유지한다.
+ */
+function cancelLauncher(leaf) {
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  if (!group || !tab) return;
+
+  const alone = leavesOf(tab.root).length === 1;
+  if (alone && group.tabs.length === 1) return; // 마지막 하나 — 닫을 수 없다
+
+  closeLauncher(leaf);
+  if (alone) {
+    closeTab(group, tab); // 빈 서브탭이므로 확인 없이 (closeTab 은 묻지 않는 쪽)
+    return;
+  }
+  detachLeaf(tab, leaf);
+  disposeLeaf(leaf);
+  const next = firstLeaf(tab.root);
+  tab.activeLeafId = next ? next.id : null;
+  layoutTab(tab);
+  render();
+  if (next) focusLeaf(next);
+  saveSession();
 }
 
 /** 왼쪽 고정 패널(dock) 표시 갱신 */
@@ -3063,8 +3274,9 @@ function renderPaneHeader(leaf) {
   grip.textContent = '⠿';
   grip.title = '끌어서 다른 판과 자리 바꾸기';
 
-  const mark = statusMark(leaf.status, leaf.alert);
-  mark.classList.add('pane-mark');
+  // 고르기 화면인 판은 아직 붙은 셸이 없으므로 상태 점을 달지 않는다
+  const mark = leaf.mode === 'launcher' ? null : statusMark(leaf.status, leaf.alert);
+  if (mark) mark.classList.add('pane-mark');
 
   const title = document.createElement('span');
   title.className = 'pane-title';
@@ -3078,10 +3290,12 @@ function renderPaneHeader(leaf) {
           ? '메모'
         : leaf.mode === 'explorer'
           ? `파일 — ${group ? group.host.name : ''}`
+        : leaf.mode === 'launcher'
+          ? '새 판'
           : leaf.title || (group ? group.host.name : '');
   title.title = title.textContent;
 
-  header.append(grip, mark, title);
+  header.append(grip, ...(mark ? [mark] : []), title);
 
   /* --- 오른쪽: 도구 --- */
   const tools = document.createElement('span');
@@ -3514,6 +3728,13 @@ api.ssh.onReady(({ id }) => {
     setTimeout(() => refreshClaudeInfo(grp, true), 800);
     setTimeout(() => refreshCodexInfo(grp, true), 1600); // 두 조회가 겹치지 않게 살짝 늦춘다
     refreshAiTools(grp);
+    /*
+     * 파일 탐색기를 미리 붙여 둔다.
+     * 예전에는 📁 를 누른 뒤에야 SFTP 를 열어서 몇 초를 기다려야 했다.
+     * 화면에 붙이지는 않으므로(고정 상태가 아니면 DOM 밖에 있다) 눌렀을 때
+     * 이미 목록이 준비되어 있다.
+     */
+    if (!grp.explorer) setTimeout(() => ensureExplorer(grp, true), 500);
   }
   // 완료/대기 알림 훅을 그 서버에 한 번 설치한다.
   // claude 는 ~/.claude/settings.json 의 훅, codex 는 ~/.codex/config.toml 의 notify 를 쓴다.
