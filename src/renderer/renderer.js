@@ -787,7 +787,11 @@ function setLeafMode(leaf, mode, url, webExtra) {
     if (!leaf.aichat) {
       leaf.aichat = window.AiChat.create({
         hostLabel: grp ? grp.host.name : '',
-        getSessionId: () => leaf.sessionId || (grp ? anyReadySession(grp) : null),
+        // 판 안 채팅은 그 판이 속한 서버에 매인다 (판을 옮길 일이 없다)
+        getTarget: () => {
+          const sid = leaf.sessionId || (grp ? anyReadySession(grp) : null);
+          return sid ? { sessionId: sid, key: grp ? grp.id : 'pane', label: grp ? grp.host.name : '' } : null;
+        },
         // 이 서버에 실제로 깔려 있는 AI 만 고를 수 있게 한다 (없으면 목록에 띄우지 않는다)
         getTools: () => (grp ? grp.aiTools : null),
         // 같은 서브탭의 다른 판들을 첨부 후보로 (터미널 화면 / 웹페이지 본문)
@@ -3258,9 +3262,22 @@ function ensureAiPop() {
 
   const chat = window.AiChat.create({
     hostLabel: '',
-    getSessionId: () => {
+    /*
+     * 이번 질문을 어느 서버에서 실행할지.
+     * 대화가 이미 어떤 서버에서 시작됐다면 계속 그 서버로 보낸다 — 이어 말하기
+     * id 가 그 서버에 있기 때문이다. (탭을 옮겨 가며 물어보면 그쪽에 없는 id 로
+     * --resume 을 걸어 "오류가 났습니다" 가 났다)
+     * 그 서버가 끊겼으면 지금 보고 있는 서버로 옮긴다 — 그때는 새 대화가 된다.
+     */
+    getTarget: (bindKey) => {
+      const bound = bindKey ? state.groups.find((g) => g.id === bindKey) : null;
+      const boundSession = bound ? anyReadySession(bound) : null;
+      if (bound && boundSession) {
+        return { sessionId: boundSession, key: bound.id, label: bound.host.name };
+      }
       const g = activeGroup();
-      return g ? anyReadySession(g) : null;
+      const sid = g ? anyReadySession(g) : null;
+      return sid ? { sessionId: sid, key: g.id, label: g.host.name } : null;
     },
     getTools: () => {
       const g = activeGroup();

@@ -962,6 +962,14 @@ ipcMain.handle('ai:ask', async (e, { sessionId, prompt, resumeId, tool }) => {
  * 둘 다 같은 delta 모양으로 바꿔서 보내므로 화면 쪽은 구분할 필요가 없다.
  */
 ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, tool }) => {
+  // 이어 말하기가 통하지 않으면(그 서버에 그 대화가 없다) 새 대화로 한 번 더 시도한다
+  const first = await runAskStream(e, { reqId, sessionId, prompt, resumeId, tool });
+  if (!first.resumeFailed) return first;
+  const again = await runAskStream(e, { reqId, sessionId, prompt, resumeId: null, tool });
+  return { ...again, restarted: true }; // 화면에 "새 대화로 다시 보냈다" 고 알린다
+});
+
+async function runAskStream(e, { reqId, sessionId, prompt, resumeId, tool }) {
   const kind = tool === 'codex' ? 'codex' : 'claude';
   const b64 = Buffer.from(String(prompt || ''), 'utf8').toString('base64');
   const script = buildAskScript(kind, b64, resumeId, true);
@@ -975,6 +983,7 @@ ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, t
     let answer = ''; // codex 의 마지막 agent_message
     let threadId = null; // codex 의 thread_id
     let sawMissing = false;
+    let resumeGone = false; // 이어 말하기 id 가 그 서버에 없다
 
     const emit = (dkind, text) => {
       if (!sender.isDestroyed()) sender.send('ai:delta', { reqId, kind: dkind, text });
@@ -1036,6 +1045,15 @@ ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, t
           sawMissing = true;
           continue;
         }
+        /*
+         * 이어 말하기 id 는 "그 서버의" 대화 id 다. 다른 서버로 옮겨 물어보면
+         * 그쪽에는 그런 대화가 없어 JSON 이 아니라 한 줄 오류만 나온다.
+         * 이때는 새 대화로 한 번 더 시도한다(아래 attempt 재시도).
+         */
+        if (/No conversation found|no session found|session not found|찾을 수 없/i.test(line)) {
+          resumeGone = true;
+          continue;
+        }
         let o = null;
         try {
           o = JSON.parse(line);
@@ -1049,6 +1067,10 @@ ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, t
 
     const done = (err) => {
       if (sawMissing) return resolve({ error: missingMsg(kind) });
+      // 이어 말하기가 통하지 않았다 — 부른 쪽이 새 대화로 다시 시도한다
+      if (resumeGone || (resumeId && !final && !answer)) {
+        return resolve({ resumeFailed: true });
+      }
       if (kind === 'codex') {
         if (answer) return resolve({ result: answer, sessionId: threadId });
         return resolve({
@@ -1083,7 +1105,7 @@ ipcMain.handle('ai:askStream', async (e, { reqId, sessionId, prompt, resumeId, t
 
     ssh.execStream(sessionId, wrapRemote(script), 300000, feed, (err) => done(err));
   });
-});
+}
 
 /**
  * 이 서버에 어떤 AI CLI 가 깔려 있는지 본다. (없는 것은 채팅 목록에 띄우지 않는다)

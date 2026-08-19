@@ -35,13 +35,21 @@ window.AiChat = (function () {
 
   /**
    * @param {object} opts
-   *   getSessionId()      질문을 실행할 SSH/로컬 세션 id
+   *   getTarget(bindKey)  이번 질문을 실행할 곳 { sessionId, key, label }
+   *                       key 는 "어느 서버인지" 를 나타내는 값이다. 대화가 매인
+   *                       서버가 바뀌면(=key 가 달라지면) 새 대화로 시작한다.
    *   getContextSources() [{ label, get: async () => text }] — 첨부 가능한 판 목록
    *   hostLabel           머리에 보여 줄 대상 이름
    */
   function create(opts) {
     const state = {
       tool: 'claude', // 'claude' | 'codex' — 어느 CLI 로 물어볼지 (기본 claude)
+      /*
+       * 이어 말하기 id 는 "그 서버에 있는" 대화 id 다. 그래서 대화가 어느 서버에
+       * 매여 있는지도 같이 들고 있어야 한다. 서버를 옮겨 다니며 물어보면
+       * 그쪽에 없는 id 로 --resume 을 걸어 오류가 났다.
+       */
+      bindKey: null, // 이 대화가 매인 서버 (getTarget 이 주는 값)
       resumeId: null, // 이어 말하기용 대화 id (claude --resume / codex exec resume)
       busy: false,
       pending: null, // 다음 질문에 붙일 첨부
@@ -202,6 +210,7 @@ window.AiChat = (function () {
       liveWrap.appendChild(empty);
       log.replaceChildren(liveWrap);
       state.resumeId = null;
+      state.bindKey = null; // 다음 질문을 보내는 서버에 새로 매인다
       clearPending();
       updateHist();
       input.focus();
@@ -334,17 +343,44 @@ window.AiChat = (function () {
     });
     chip.addEventListener('click', clearPending); // 첨부 취소
 
+    /*
+     * 이번 질문을 실행할 서버를 정한다.
+     * 대화가 이미 어느 서버에 매여 있으면 계속 그 서버로 보낸다(맥락이 거기 있다).
+     * 그 서버의 연결이 끊겼으면 지금 보고 있는 서버로 옮기고 새 대화로 시작한다.
+     */
+    function resolveTarget() {
+      if (opts.getTarget) return opts.getTarget(state.bindKey);
+      // 판 안 채팅처럼 대상이 하나뿐인 경우
+      const sid = opts.getSessionId && opts.getSessionId();
+      return sid ? { sessionId: sid, key: 'pane', label: opts.hostLabel || '' } : null;
+    }
+
+    /** 머리에 "이 대화가 매인 서버" 를 적는다 */
+    function paintTitle(label) {
+      title.textContent = `✳ AI 채팅${label ? ` — ${label}` : ''}`;
+    }
+
     /* --------------------------------- 전송 --------------------------------- */
 
     async function send() {
       const q = input.value.trim();
       if (!q || state.busy) return;
-      const sessionId = opts.getSessionId && opts.getSessionId();
-      if (!sessionId) {
-        addMsg('err', '연결된 세션이 없습니다. 이 그룹의 터미널이 접속된 뒤에 다시 시도하세요.');
+      const target = resolveTarget();
+      if (!target || !target.sessionId) {
+        addMsg('err', '연결된 세션이 없습니다. 터미널이 접속된 뒤에 다시 시도하세요.');
         return;
       }
+      const sessionId = target.sessionId;
       returnToLive(); // 보관 대화를 보던 중이면 현재 대화로 돌아온다
+
+      // 대화가 매여 있던 서버가 사라져 다른 서버로 넘어가는 경우
+      if (state.bindKey && target.key !== state.bindKey) {
+        if (liveWrap.querySelector('.ac-msg')) startNewConversation();
+        else state.resumeId = null;
+        divider(`${target.label || '다른 서버'} 로 옮겨 새 대화를 시작합니다`);
+      }
+      state.bindKey = target.key;
+      paintTitle(target.label);
       input.value = '';
       autosize();
       addMsg('user', state.pending ? `[📎 ${state.pending.label}]\n${q}` : q);
@@ -424,6 +460,11 @@ window.AiChat = (function () {
         if (think) think.open = false; // 끝나면 접는다
         if (res.error) addMsg('err', res.error);
         else {
+          if (res.restarted) {
+            // 그 서버에 이전 대화가 없어 새 대화로 다시 보냈다
+            divider('이전 대화를 이어가지 못해 새 대화로 물어봤습니다');
+            state.resumeId = null;
+          }
           state.resumeId = res.sessionId || state.resumeId;
           if (!bubble) bubble = addMsg('ai', res.result || '(빈 응답)');
           else bubble.setMarkdown(bubble.md || res.result || '(빈 응답)'); // 마지막 조각까지 반영
@@ -470,8 +511,14 @@ window.AiChat = (function () {
         input.focus();
       },
       /** 머리에 보여 줄 서버 이름 (팝업은 보고 있는 탭에 따라 상대가 바뀐다) */
+      /**
+       * 머리에 보여 줄 서버 이름.
+       * 이미 어느 서버에 매인 대화라면 바꾸지 않는다 — 지금 보고 있는 탭이 아니라
+       * "이 대화가 오가는 서버" 를 보여 줘야 헷갈리지 않는다.
+       */
       setHost: (name) => {
-        title.textContent = `✳ AI 채팅${name ? ` — ${name}` : ''}`;
+        if (state.bindKey) return;
+        paintTitle(name);
       },
       isBusy: () => state.busy,
       /** Ctrl/⌘+K 등 바깥에서 컨텍스트를 걸어 준다 */
