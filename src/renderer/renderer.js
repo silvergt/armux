@@ -1097,7 +1097,8 @@ function clearAlertsInTab(tab) {
 }
 
 const tabHasAlert = (tab) => leavesOf(tab.root).some((l) => l.alert);
-const groupHasAlert = (group) => group.tabs.some(tabHasAlert);
+const groupHasAlert = (group) =>
+  group.tabs.some(tabHasAlert) || Boolean(group.aiUnread); // AI 답이 도착한 탭도 알린다
 
 /** 지금 눈에 보이는 화면을 글자로 읽어 온다 (스크롤백이 아니라 현재 화면) */
 function readScreenTail(leaf) {
@@ -1391,7 +1392,12 @@ function createGroup(hostInfo, connect) {
     activeTabId: null,
     explorer: null, // SFTP 탐색기 인스턴스 (그룹=호스트 당 하나)
     explorerPinned: loadPinPref(), // true 면 왼쪽에 고정 패널로 항상 표시
-    explorerSelected: false // 고정하지 않았을 때, 탐색기 탭이 선택된 상태인지
+    explorerSelected: false, // 고정하지 않았을 때, 탐색기 탭이 선택된 상태인지
+    // AI 팝업은 메인탭마다 따로 (대화도, 열려 있는지도)
+    aiPop: null,
+    aiOpen: false,
+    aiUnread: false,
+    aiBusy: false
   };
   state.groups.push(group);
   state.activeGroupId = group.id;
@@ -1411,7 +1417,12 @@ function createLocalGroup() {
     activeTabId: null,
     explorer: null,
     explorerPinned: false, // SFTP 가 없으므로 탐색기는 쓰지 않는다
-    explorerSelected: false
+    explorerSelected: false,
+    // AI 팝업은 메인탭마다 따로 (대화도, 열려 있는지도)
+    aiPop: null,
+    aiOpen: false,
+    aiUnread: false,
+    aiBusy: false
   };
   state.groups.push(group);
   state.activeGroupId = group.id;
@@ -1431,7 +1442,12 @@ function createWebGroup(url) {
     activeTabId: null,
     explorer: null,
     explorerPinned: false,
-    explorerSelected: false
+    explorerSelected: false,
+    // AI 팝업은 메인탭마다 따로 (대화도, 열려 있는지도)
+    aiPop: null,
+    aiOpen: false,
+    aiUnread: false,
+    aiBusy: false
   };
   state.groups.push(group);
   state.activeGroupId = group.id;
@@ -1507,6 +1523,11 @@ function closeGroup(group) {
   if (group.explorer) {
     group.explorer.dispose();
     group.explorer = null;
+  }
+  if (group.aiPop) {
+    group.aiPop.chat.dispose(); // 이 탭 전용 AI 팝업도 함께 정리
+    group.aiPop.el.remove();
+    group.aiPop = null;
   }
   const idx = state.groups.indexOf(group);
   state.groups.splice(idx, 1);
@@ -1609,7 +1630,6 @@ function focusLeaf(leaf) {
   render();
   fitTab(tab);
   checkActivitySoon(); // 보이는 판이 바뀌었으니 상태 표시를 다시 맞춘다
-  if (aiPopOpen()) syncAiPopHost(); // 다른 서버로 옮겼으면 팝업 머리도 바뀐다
   // 고르기 화면인 판은 목록이 방향키를 받아야 하므로 그쪽으로 포커스를 준다
   if (leaf.mode === 'launcher' && leaf.launcher) leaf.launcher.focus();
   else leaf.term.focus();
@@ -2497,7 +2517,12 @@ async function restoreSession() {
       activeTabId: null,
       explorer: null,
       explorerPinned: Boolean(gs.explorerPinned),
-      explorerSelected: false
+      explorerSelected: false,
+      // AI 팝업은 메인탭마다 따로 (대화도, 열려 있는지도)
+      aiPop: null,
+      aiOpen: false,
+      aiUnread: false,
+      aiBusy: false
     };
     state.groups.push(group);
     state.activeGroupId = group.id;
@@ -2971,6 +2996,7 @@ function render() {
   renderPanes();
   renderStatus();
   renderClaudeStatus();
+  syncAiPops(); // 메인탭마다 팝업이 따로다 — 지금 탭 것만 보인다
   el.emptyState.classList.toggle('hidden', state.groups.length > 0);
   saveSession();
 }
@@ -3253,46 +3279,35 @@ function renderPanes() {
  *     다시 열면 이어진다.
  *   - 대화 상대는 "지금 보고 있는 서버" 다. 탭을 옮기면 그 서버로 물어본다.
  */
-let aiPop = null; // { el, chat }
+/*
+ * 팝업은 메인탭(그룹)마다 따로 있다.
+ * 탭마다 서버가 다르니 대화도, 열려 있는지 여부도 따로다.
+ * 만든 팝업은 그 그룹에 붙여 두고(group.aiPop), 지금 보고 있는 그룹의 것만 화면에 둔다.
+ */
+function ensureAiPop(group) {
+  if (!group) return null;
+  if (group.aiPop) return group.aiPop;
 
-function ensureAiPop() {
-  if (aiPop) return aiPop;
   const box = document.createElement('div');
   box.className = 'ai-pop hidden';
 
   const chat = window.AiChat.create({
-    hostLabel: '',
-    /*
-     * 이번 질문을 어느 서버에서 실행할지.
-     * 대화가 이미 어떤 서버에서 시작됐다면 계속 그 서버로 보낸다 — 이어 말하기
-     * id 가 그 서버에 있기 때문이다. (탭을 옮겨 가며 물어보면 그쪽에 없는 id 로
-     * --resume 을 걸어 "오류가 났습니다" 가 났다)
-     * 그 서버가 끊겼으면 지금 보고 있는 서버로 옮긴다 — 그때는 새 대화가 된다.
-     */
-    getTarget: (bindKey) => {
-      const bound = bindKey ? state.groups.find((g) => g.id === bindKey) : null;
-      const boundSession = bound ? anyReadySession(bound) : null;
-      if (bound && boundSession) {
-        return { sessionId: boundSession, key: bound.id, label: bound.host.name };
-      }
-      const g = activeGroup();
-      const sid = g ? anyReadySession(g) : null;
-      return sid ? { sessionId: sid, key: g.id, label: g.host.name } : null;
+    hostLabel: group.host.name,
+    // 이 팝업은 이 그룹 전용이라 대화 상대가 바뀌지 않는다
+    getTarget: () => {
+      const sid = anyReadySession(group);
+      return sid ? { sessionId: sid, key: group.id, label: group.host.name } : null;
     },
-    getTools: () => {
-      const g = activeGroup();
-      return g ? g.aiTools : null;
-    },
-    // 첨부 후보는 "지금 보고 있는 서브탭" 의 판들
+    getTools: () => group.aiTools,
+    // 첨부 후보는 이 그룹에서 보고 있는 서브탭의 판들
     getContextSources: () => {
-      const t = activeTab();
+      const t = group.tabs.find((x) => x.id === group.activeTabId) || group.tabs[0];
       if (!t) return [];
-      const g = activeGroup();
       const out = [];
       for (const l of leavesOf(t.root)) {
         if (l.mode === 'terminal' && l.status === 'ready') {
           out.push({
-            label: `터미널 — ${l.title || (g ? g.host.name : '')}`,
+            label: `터미널 — ${l.title || group.host.name}`,
             get: async () => (readScreenTail(l) || '').slice(-8000)
           });
         } else if (l.mode === 'web' && l.web) {
@@ -3309,66 +3324,89 @@ function ensureAiPop() {
       }
       return out;
     },
-    // 숨겨 둔 사이에 무슨 일이 있었는지 단추로 알린다
+    // 접어 둔 사이에 무슨 일이 있었는지 알린다
     onBusy: (busy) => {
-      el.aiFab.classList.toggle('busy', busy);
-      if (busy) el.aiFab.classList.remove('unread');
+      group.aiBusy = busy;
+      if (busy) group.aiUnread = false;
+      syncAiFab();
     },
     onAnswer: () => {
-      if (aiPop && aiPop.el.classList.contains('hidden')) el.aiFab.classList.add('unread');
+      // 그 탭의 팝업이 접혀 있었으면 "볼 것이 있다" 고 표시해 둔다
+      if (!group.aiOpen) group.aiUnread = true;
+      syncAiFab();
+      scheduleRender(); // 다른 탭이면 메인탭 배지로도 알린다
     },
-    onClose: () => setAiPop(false)
+    onClose: () => setAiPop(false, group)
   });
 
   box.appendChild(chat.el);
   document.body.appendChild(box);
-  aiPop = { el: box, chat };
-  return aiPop;
+  group.aiPop = { el: box, chat };
+  return group.aiPop;
 }
 
-const aiPopOpen = () => Boolean(aiPop && !aiPop.el.classList.contains('hidden'));
-
-/** 팝업 머리에 "지금 보고 있는 서버" 를 적어 준다 */
-function syncAiPopHost() {
-  if (!aiPop) return;
+const aiPopOpen = () => {
   const g = activeGroup();
-  aiPop.chat.setHost(g ? g.host.name : '');
+  return Boolean(g && g.aiOpen && g.aiPop);
+};
+
+/** 하단바 AI 단추를 지금 보고 있는 탭의 상태에 맞춘다 */
+function syncAiFab() {
+  const g = activeGroup();
+  el.aiFab.classList.toggle('on', Boolean(g && g.aiOpen));
+  el.aiFab.classList.toggle('busy', Boolean(g && g.aiBusy));
+  el.aiFab.classList.toggle('unread', Boolean(g && g.aiUnread && !g.aiOpen));
+}
+
+/**
+ * 화면에는 "지금 보고 있는 탭" 의 팝업만 둔다.
+ * 다른 탭의 팝업은 감춰만 두므로 하던 대화도, 기다리던 답도 그대로다.
+ */
+function syncAiPops() {
+  for (const g of state.groups) {
+    if (!g.aiPop) continue;
+    const show = g === activeGroup() && g.aiOpen;
+    g.aiPop.el.classList.toggle('hidden', !show);
+  }
+  syncAiFab();
 }
 
 /** 팝업 열기/닫기. 닫아도 내용은 그대로 두고 감추기만 한다. */
-function setAiPop(open) {
-  const pop = ensureAiPop();
-  pop.el.classList.toggle('hidden', !open);
-  el.aiFab.classList.toggle('on', open);
-  if (open) {
-    el.aiFab.classList.remove('unread');
-    syncAiPopHost();
+function setAiPop(open, group) {
+  const g = group || activeGroup();
+  if (!g) return;
+  const pop = ensureAiPop(g);
+  if (!pop) return;
+  g.aiOpen = Boolean(open);
+  if (g.aiOpen) g.aiUnread = false;
+  syncAiPops();
+  if (g.aiOpen && g === activeGroup()) {
     pop.chat.focus();
-  } else {
+  } else if (!g.aiOpen) {
     const l = activeLeaf();
     if (l && l.mode === 'terminal' && l.term) l.term.focus();
   }
 }
 
 /**
- * Ctrl/⌘+K (또는 하단바 AI 단추) — 팝업을 여닫는다.
- * 열 때는 지금 보고 있는 판의 내용을 컨텍스트로 붙여 준다.
+ * Ctrl/⌘+K (또는 하단바 AI 단추) — 지금 보고 있는 탭의 팝업을 여닫는다.
+ * 열 때는 그 탭에서 보고 있던 판의 내용을 컨텍스트로 붙여 준다.
  */
 async function toggleAiPop() {
-  if (aiPopOpen()) {
-    setAiPop(false);
-    return;
-  }
   const group = activeGroup();
   if (!group) {
     el.statusLeft.textContent = '먼저 서버에 접속해 주세요.';
+    return;
+  }
+  if (group.aiOpen) {
+    setAiPop(false, group);
     return;
   }
   if (!anyReadySession(group)) {
     el.statusLeft.textContent = '접속된 세션이 있어야 AI 채팅을 쓸 수 있습니다.';
     return;
   }
-  setAiPop(true);
+  setAiPop(true, group);
 
   // 보고 있던 판의 내용을 첨부거리로 모은다 (없으면 그냥 빈 채로 연다)
   const leaf = activeLeaf();
@@ -3388,7 +3426,7 @@ async function toggleAiPop() {
     ctx = (sel || readScreenTail(leaf) || '').slice(-8000);
     label = sel ? '선택한 글자' : `터미널 — ${leaf.title || group.host.name}`;
   }
-  if (ctx) aiPop.chat.attachContext(label, ctx);
+  if (ctx && group.aiPop) group.aiPop.chat.attachContext(label, ctx);
 }
 
 /**
