@@ -1348,6 +1348,10 @@ function popOutLeaf(leaf) {
   const group = state.groups.find((g) => g.id === leaf.groupId);
   const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
   if (!group || !tab) return;
+  if (leaf.ephemeral) {
+    el.statusLeft.textContent = '임시 AI 패널은 꺼낼 수 없습니다. 먼저 "📌 판으로 고정" 을 누르세요.';
+    return;
+  }
   if (leavesOf(tab.root).length === 1) {
     el.statusLeft.textContent = '이미 이 서브탭에 하나뿐인 창입니다.';
     return;
@@ -1478,6 +1482,10 @@ async function confirmCloseTab(group, tab) {
 
 function closeTab(group, tab) {
   for (const l of leavesOf(tab.root)) disposeLeaf(l);
+  if (tab.stashedAiLeaf) {
+    disposeLeaf(tab.stashedAiLeaf); // 닫아 두었던 임시 AI 패널도 정리
+    tab.stashedAiLeaf = null;
+  }
   tab.container.remove();
 
   const idx = group.tabs.indexOf(tab);
@@ -1536,6 +1544,12 @@ function splitActive(dir) {
   const tab = activeTab();
   const leaf = activeLeaf();
   if (!tab || !leaf) return;
+  if (leaf.ephemeral) {
+    // 임시 AI 패널은 분할하지 않는다 (접속 정보가 없어 접속 창이 뜨던 자리다)
+    el.statusLeft.textContent =
+      '임시 AI 패널은 나눌 수 없습니다. "📌 판으로 고정" 을 누르면 보통 판이 됩니다.';
+    return;
+  }
 
   const group = state.groups.find((g) => g.id === tab.groupId);
   const connect = leaf.connect || group.connect || { hostId: group.host.id || null, credId: group.credId };
@@ -2394,6 +2408,15 @@ function toggleNotes() {
 
 function serializeNode(node) {
   if (!node) return null;
+  /*
+   * Ctrl/⌘+K 로 연 임시 AI 패널은 저장하지 않는다. 다음에 앱을 열었을 때
+   * 되살아나 있으면 "임시" 가 아니게 된다. 분할째로 접고 형제만 남긴다.
+   */
+  if (node.kind === 'split') {
+    const keep = node.children.filter((c) => !(c.kind === 'leaf' && c.ephemeral));
+    if (keep.length === 1) return serializeNode(keep[0]);
+    if (keep.length === 0) return null;
+  }
   if (node.kind === 'leaf') {
     if (node.mode === 'web') {
       const ti = node.web && node.web.tabsInfo ? node.web.tabsInfo : null;
@@ -2730,13 +2753,19 @@ function usageGroupEl(kind, info, onRefresh) {
   wrap.className = `svc svc-${kind}`;
   wrap.onclick = onRefresh;
 
+  // 표식(✳/◆)과 계정 이름을 따로 둔다. 창이 좁아지면 이름만 접고 표식은 남긴다.
   const who = document.createElement('span');
   who.className = 'claude-who';
-  const mark = kind === 'codex' ? '◆' : '✳';
-  const name = kind === 'codex' ? 'Codex' : 'Claude';
-  who.textContent = `${mark} ${info.email || info.name || name}${info.plan ? ` (${info.plan})` : ''}`;
+  const glyph = document.createElement('span');
+  glyph.className = 'svc-mark';
+  glyph.textContent = kind === 'codex' ? '◆' : '✳';
+  const label = document.createElement('span');
+  label.className = 'svc-name';
+  const fallback = kind === 'codex' ? 'Codex' : 'Claude';
+  label.textContent = `${info.email || info.name || fallback}${info.plan ? ` (${info.plan})` : ''}`;
+  who.append(glyph, label);
   who.title =
-    `이 서버에 로그인된 ${kind === 'codex' ? 'Codex' : 'Claude Code'} 계정` +
+    `${kind === 'codex' ? 'Codex' : 'Claude Code'} — ${label.textContent}` +
     `${info.stale ? ' (사용량은 마지막으로 받아온 값)' : ''}`;
   wrap.appendChild(who);
 
@@ -3223,7 +3252,18 @@ async function openAiPanel(leaf) {
   const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
   if (!group || !tab) return;
 
-  // 이미 AI 채팅 판에서 눌렀다면 입력칸으로 보내기만 한다
+  /*
+   * 여닫기 토글.
+   * 이 서브탭에 임시 패널이 이미 떠 있으면(어느 판을 보고 있든) 닫는다.
+   * 대화는 버리지 않고 서브탭에 보관해 두었다가 다시 열 때 이어 준다.
+   */
+  const openPanel = leavesOf(tab.root).find((l) => l.mode === 'ai' && l.ephemeral);
+  if (openPanel) {
+    closeAiPanel(openPanel);
+    return;
+  }
+
+  // 직접 만든(고정된) AI 판에서 눌렀다면 입력칸으로 보내기만 한다
   if (leaf.mode === 'ai') {
     if (leaf.aichat) leaf.aichat.focus();
     return;
@@ -3260,7 +3300,10 @@ async function openAiPanel(leaf) {
   // 이 서브탭에 이미 있는 AI 채팅 판을 재사용한다
   let aiLeaf = leavesOf(tab.root).find((l) => l.mode === 'ai');
   if (!aiLeaf) {
-    aiLeaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 채팅 전용 판
+    // 닫아 두었던 임시 패널이 있으면 그대로 되살린다 (대화가 이어진다)
+    const revive = tab.stashedAiLeaf || null;
+    aiLeaf = revive || createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 채팅 전용 판
+    tab.stashedAiLeaf = null;
     // 누른 판을 위아래로 쪼개고 "아래쪽" 에 채팅을 넣는다 (보던 화면을 가리지 않게)
     const split = {
       kind: 'split',
@@ -3271,8 +3314,14 @@ async function openAiPanel(leaf) {
     };
     replaceNode(tab, leaf, split);
     layoutTab(tab);
-    setLeafMode(aiLeaf, 'ai');
-    applyPaneBody(aiLeaf);
+    aiLeaf.ephemeral = true; // Ctrl/⌘+K 로 연 임시 패널
+    if (revive) {
+      renderPaneHeader(aiLeaf);
+      applyPaneBody(aiLeaf);
+    } else {
+      setLeafMode(aiLeaf, 'ai');
+      applyPaneBody(aiLeaf);
+    }
   }
 
   aiLeaf.title = 'AI 채팅';
@@ -3288,8 +3337,43 @@ async function openAiPanel(leaf) {
   saveSession();
 }
 
+/** 임시 AI 패널을 보통 판으로 바꾼다 (분할·이동·전환이 열린다) */
+function pinAiPanel(leaf) {
+  if (!leaf || !leaf.ephemeral) return;
+  leaf.ephemeral = false;
+  // 보통 판이 되었으니 이 그룹의 접속 정보를 물려받아 분할·터미널 전환이 되게 한다
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  if (group && (!leaf.connect || !Object.keys(leaf.connect).length)) {
+    leaf.connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
+  }
+  renderPaneHeader(leaf);
+  render();
+  el.statusLeft.textContent = '이 AI 채팅을 보통 판으로 고정했습니다.';
+  saveSession();
+}
+
 /**
- * 판 헤더 버튼 아이콘./**
+ * 임시 AI 패널 닫기 (물어보지 않는다 — 임시니까).
+ * 대화 내용은 버리지 않고 이 서브탭에 보관해 두었다가, Ctrl/⌘+K 로 다시 열면
+ * 그대로 이어 준다. 서랍을 여닫는 느낌이 되도록.
+ */
+function closeAiPanel(leaf) {
+  const group = state.groups.find((g) => g.id === leaf.groupId);
+  const tab = group && group.tabs.find((t) => t.id === leaf.tabId);
+  if (!group || !tab) return;
+  if (leavesOf(tab.root).length === 1) return; // 혼자 남았으면 닫을 곳이 없다
+  detachLeaf(tab, leaf);
+  if (leaf.el && leaf.el.parentElement) leaf.el.remove(); // 화면에서만 뗀다
+  tab.stashedAiLeaf = leaf; // 내용은 그대로 보관
+  const next = firstLeaf(tab.root);
+  tab.activeLeafId = next ? next.id : null;
+  layoutTab(tab);
+  render();
+  if (next) focusLeaf(next);
+  saveSession();
+}
+
+/**
  * 판 헤더 버튼 아이콘.
  * 선 두께를 굵게 잡아 22px 버튼 안에서도 형태가 또렷하게 보이도록 했다.
  *   popout  — 상자에서 화살표가 밖으로 (새 서브탭으로 꺼내기)
@@ -3362,6 +3446,47 @@ function renderPaneHeader(leaf) {
   const header = leaf.el.querySelector('.pane-header');
   if (!header) return;
   header.innerHTML = '';
+
+  /*
+   * Ctrl/⌘+K 로 연 임시 AI 패널.
+   * 보통 판과 겉모습이 같으면 "분할했는데 접속 창이 뜬다" 같은 혼란이 생긴다.
+   * 그래서 머리를 다르게 만들고(단축키 안내 + 고정/닫기만), 끌어서 옮기지도
+   * 분할하지도 못하게 한다. "판으로 고정" 을 누르면 보통 판이 된다.
+   */
+  if (leaf.ephemeral) {
+    header.classList.add('pane-header-temp');
+    const title = document.createElement('span');
+    title.className = 'pane-title temp-title';
+    title.textContent = `✳ AI 채팅 · 임시`;
+    title.title = '임시 패널입니다. Ctrl/⌘+K 를 다시 누르면 닫힙니다.';
+
+    const hint = document.createElement('span');
+    hint.className = 'temp-hint';
+    hint.textContent = isMacPlatform ? '⌘K 로 닫기' : 'Ctrl+K 로 닫기';
+
+    const tools = document.createElement('span');
+    tools.className = 'pane-tools';
+    const btn = (label, tip, fn, cls) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.title = tip;
+      b.setAttribute('aria-label', tip);
+      if (cls) b.className = cls;
+      b.addEventListener('mousedown', (e) => e.stopPropagation());
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        fn(e);
+      });
+      return b;
+    };
+    tools.append(
+      btn('📌 판으로 고정', '이 패널을 보통 판으로 바꿉니다 (분할·이동이 가능해집니다)', () => pinAiPanel(leaf), 'wide'),
+      btn('✕', '닫기', () => closeAiPanel(leaf), 'danger')
+    );
+    header.append(title, hint, tools);
+    return; // 손잡이(드래그)도 달지 않는다
+  }
+  header.classList.remove('pane-header-temp');
 
   /* --- 왼쪽: 손잡이 · 상태 · 이름 --- */
   const grip = document.createElement('span');
@@ -3660,6 +3785,22 @@ function showContextMenu(x, y, items, opts) {
       hideContextMenu();
       item[1]();
     });
+    // 네 번째 원소가 함수면 항목 오른쪽에 ✕(삭제) 를 단다.
+    // 삭제는 항목을 고르는 것과 다른 동작이므로 메뉴를 닫지 않는다.
+    if (typeof item[3] === 'function') {
+      b.classList.add('has-remove');
+      const x = document.createElement('span');
+      x.className = 'ctx-remove';
+      x.textContent = '✕';
+      x.title = '삭제';
+      x.addEventListener('mousedown', (e) => e.stopPropagation());
+      x.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        item[3]();
+      });
+      b.appendChild(x);
+    }
     ctxMenu.appendChild(b);
   }
   ctxMenu.classList.remove('hidden'); // 크기를 재려면 먼저 보이게 해야 한다
@@ -3675,6 +3816,7 @@ function hideContextMenu() {
   ctxMenu.classList.add('hidden');
 }
 window.showContextMenu = showContextMenu; // 메모장 등 다른 모듈에서도 사용
+window.hideContextMenu = hideContextMenu;
 document.addEventListener('click', hideContextMenu);
 window.addEventListener('blur', hideContextMenu);
 

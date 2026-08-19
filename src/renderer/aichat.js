@@ -233,18 +233,37 @@ window.AiChat = (function () {
       window.showContextMenu(r.right, r.bottom + 4, items, { alignRight: true });
     });
 
-    histBtn.addEventListener('mousedown', (ev) => ev.stopPropagation());
-    histBtn.addEventListener('click', (ev) => {
-      ev.stopPropagation(); // document 까지 가면 열리자마자 닫힌다
+    /** 보관 목록을 펼친다. 각 줄 오른쪽 ✕ 로 지울 수 있다. */
+    function openHistoryMenu(anchorEl) {
       const items = [];
       if (state.viewing) items.push(['↩ 현재 대화로 돌아가기', () => returnToLive()]);
       for (let i = archives.length - 1; i >= 0; i--) {
         const a = archives[i];
-        items.push([`${timeLabel(a.at)} · ${a.title}`, () => viewArchive(a)]);
+        items.push([
+          `${timeLabel(a.at)} · ${a.title}`,
+          () => viewArchive(a),
+          '',
+          () => {
+            // 지우던 대화를 보고 있었다면 현재 대화로 돌아온다
+            if (state.viewing === a) returnToLive();
+            const at = archives.indexOf(a);
+            if (at >= 0) archives.splice(at, 1);
+            updateHist();
+            // 지운 뒤에도 이어서 지울 수 있게 목록을 다시 펼친다
+            if (archives.length || state.viewing) openHistoryMenu(anchorEl);
+            else window.hideContextMenu();
+          }
+        ]);
       }
       if (!archives.length) items.push(['보관된 대화가 없습니다', () => {}]);
-      const r = ev.currentTarget.getBoundingClientRect();
+      const r = anchorEl.getBoundingClientRect();
       window.showContextMenu(r.right, r.bottom + 4, items, { alignRight: true });
+    }
+
+    histBtn.addEventListener('mousedown', (ev) => ev.stopPropagation());
+    histBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation(); // document 까지 가면 열리자마자 닫힌다
+      openHistoryMenu(ev.currentTarget);
     });
 
     /* -------------------------------- 입력 줄 -------------------------------- */
