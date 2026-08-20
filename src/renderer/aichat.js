@@ -25,6 +25,12 @@ window.AiChat = (function () {
     });
   }
 
+  // 전체보기는 앱 전체 설정이라, 열려 있는 모든 채팅의 단추 표시를 같이 바꾼다
+  const chatMaxPainters = [];
+  function paintAllMaxButtons(on) {
+    for (const f of chatMaxPainters) f(on);
+  }
+
   /** 12:34 · 오늘이 아니면 3/15 12:34 */
   function timeLabel(ts) {
     const d = new Date(ts);
@@ -89,6 +95,20 @@ window.AiChat = (function () {
     newBtn.title = '지금 대화를 기록으로 넘기고 새로 시작';
     head.append(title, chip, toolBtn, histBtn, newBtn);
     // 떠 있는 팝업으로 쓸 때만 닫기 단추를 단다 (판 안에서는 판 헤더의 ✕ 를 쓴다)
+    // 전체보기 (팝업일 때만) — 창을 화면 가득 넓혔다 되돌린다
+    if (opts.onToggleMax) {
+      const maxBtn = document.createElement('button');
+      maxBtn.className = 'ac-hbtn ac-max';
+      const paintMax = (on) => {
+        maxBtn.textContent = on ? '❐' : '⛶';
+        maxBtn.title = on ? '원래 크기로' : '전체보기';
+      };
+      paintMax(Boolean(opts.isMax && opts.isMax()));
+      maxBtn.addEventListener('click', () => paintMax(opts.onToggleMax()));
+      head.appendChild(maxBtn);
+      // 창이 여러 개여도 표시가 어긋나지 않게 (전체보기는 앱 전체 설정이다)
+      chatMaxPainters.push(paintMax);
+    }
     if (opts.onClose) {
       const closeBtn = document.createElement('button');
       closeBtn.className = 'ac-hbtn ac-close';
@@ -529,5 +549,5 @@ window.AiChat = (function () {
     };
   }
 
-  return { create };
+  return { create, paintAllMaxButtons };
 })();

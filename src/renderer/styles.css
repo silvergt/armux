@@ -3111,6 +3111,54 @@ body.is-mac #mac-spacer {
   animation: aipop-in 0.12s ease-out;
 }
 .ai-pop.hidden { display: none; }
+/* 전체보기 — 화면을 거의 가득 채운다 (하단바는 가리지 않는다) */
+.ai-pop.maximized {
+  width: calc(100vw - 16px);
+  height: calc(100vh - 60px);
+}
+
+/*
+ * 크기 조절 손잡이.
+ * 오른쪽 아래에 고정된 창이라 왼쪽·위쪽 가장자리를 잡아 늘린다.
+ */
+.ai-pop-grip {
+  position: absolute;
+  z-index: 2;
+  /* 트랙패드에서 끌 때 브라우저가 스크롤로 가로채지 않게 (맥에서 특히) */
+  touch-action: none;
+}
+.ai-pop-grip.g-left {
+  left: 0;
+  top: 10px;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+.ai-pop-grip.g-top {
+  top: 0;
+  left: 10px;
+  right: 0;
+  /* 머리의 단추는 30px 높이 안에 세로 가운데(=y 5~25)로 놓이므로 4px 로 둔다.
+     더 두꺼우면 ✕·전체보기 단추 윗변을 눌렀을 때 크기 조절이 시작된다. */
+  height: 4px;
+  cursor: ns-resize;
+}
+.ai-pop-grip.g-corner {
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+.ai-pop-grip:hover {
+  background: var(--accent);
+  opacity: 0.35;
+}
+/* 전체보기 중에는 늘릴 수 없으므로 손잡이도 숨긴다 */
+.ai-pop.maximized .ai-pop-grip { display: none; }
+
+.ai-pop .ac-max { color: #9fd8bb; }
+.ai-pop .ac-max:hover { color: #fff; }
 @keyframes aipop-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }

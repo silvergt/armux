@@ -3552,6 +3552,137 @@ el.portFab.addEventListener('click', (e) => {
  * 탭마다 서버가 다르니 대화도, 열려 있는지 여부도 따로다.
  * 만든 팝업은 그 그룹에 붙여 두고(group.aiPop), 지금 보고 있는 그룹의 것만 화면에 둔다.
  */
+/*
+ * 팝업 크기.
+ * 하단바 오른쪽 단추 위에 붙어 있으므로 왼쪽 위 방향으로 늘린다.
+ * 크기와 "전체보기" 는 앱 전체에서 하나로 본다 — 탭마다 다르면 오히려 헷갈린다.
+ */
+const AIPOP_KEY = 'aiPopSize';
+const AIPOP_MIN_W = 300;
+const AIPOP_MIN_H = 240;
+const aiPopSize = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(AIPOP_KEY) || '{}');
+    return { w: Number(v.w) || 440, h: Number(v.h) || 560, max: Boolean(v.max) };
+  } catch (e) {
+    return { w: 440, h: 560, max: false };
+  }
+})();
+const saveAiPopSize = () => localStorage.setItem(AIPOP_KEY, JSON.stringify(aiPopSize));
+
+/** 지금 창 크기 안에 들어오도록 자른다 */
+const aiPopMaxW = () => Math.max(AIPOP_MIN_W, window.innerWidth - 16);
+const aiPopMaxH = () => Math.max(AIPOP_MIN_H, window.innerHeight - 60);
+
+/** 크기 설정을 열려 있는 모든 팝업에 반영한다 */
+function applyAiPopSize() {
+  for (const g of state.groups) {
+    if (!g.aiPop) continue;
+    const box = g.aiPop.el;
+    box.classList.toggle('maximized', aiPopSize.max);
+    if (aiPopSize.max) {
+      box.style.width = '';
+      box.style.height = '';
+    } else {
+      box.style.width = `${Math.min(aiPopSize.w, aiPopMaxW())}px`;
+      box.style.height = `${Math.min(aiPopSize.h, aiPopMaxH())}px`;
+    }
+  }
+}
+
+/** 전체보기 켜고 끄기. 지금 상태를 돌려준다 (단추 표시용) */
+function toggleAiPopMax() {
+  aiPopSize.max = !aiPopSize.max;
+  saveAiPopSize();
+  applyAiPopSize();
+  window.AiChat.paintAllMaxButtons(aiPopSize.max);
+  return aiPopSize.max;
+}
+
+/**
+ * 가장자리를 끌어 크기를 바꾼다.
+ *
+ * 마우스 이벤트 대신 포인터 이벤트 + 포인터 캡처를 쓴다.
+ *   - 캡처를 잡으면 창 밖에서 손을 떼도 pointerup 이 반드시 이 요소로 온다.
+ *     (mouseup 만 쓰면 창 밖에서 놓았을 때 놓친 채로 계속 끌린다 — 맥·윈도우 공통)
+ *   - 판 안 브라우저(webview) 위를 지날 때 이벤트를 빼앗기지 않도록 투명한
+ *     덮개도 함께 깔아 둔다. 앱의 다른 크기 조절과 같은 방식이다.
+ */
+function bindAiPopResize(box) {
+  const grab = (handle, dirs, cursor) => {
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return; // 왼쪽 단추로만 (오른쪽 클릭은 메뉴)
+      if (aiPopSize.max) return; // 전체보기 중에는 크기를 바꾸지 않는다
+      e.preventDefault();
+      e.stopPropagation();
+
+      const r = box.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = r.width;
+      const startH = r.height;
+
+      const shield = document.createElement('div');
+      shield.className = 'drag-shield';
+      shield.style.cursor = cursor;
+      document.body.appendChild(shield);
+
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* 캡처를 못 잡아도 아래 덮개로 대부분 잡힌다 */
+      }
+
+      const onMove = (ev) => {
+        // 오른쪽 아래에 고정된 창이라 왼쪽·위로 끌수록 커진다
+        if (dirs.includes('w')) {
+          aiPopSize.w = Math.max(AIPOP_MIN_W, Math.min(startW + (startX - ev.clientX), aiPopMaxW()));
+        }
+        if (dirs.includes('n')) {
+          aiPopSize.h = Math.max(AIPOP_MIN_H, Math.min(startH + (startY - ev.clientY), aiPopMaxH()));
+        }
+        applyAiPopSize();
+      };
+      const onUp = () => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.removeEventListener('pointercancel', onUp);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        try {
+          handle.releasePointerCapture(e.pointerId);
+        } catch (err) {
+          /* 이미 풀렸으면 그만 */
+        }
+        shield.remove();
+        saveAiPopSize();
+      };
+
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointercancel', onUp); // 창 전환 등으로 취소될 때
+      // 포인터 이벤트를 못 쓰는 상황(합성 이벤트 등) 대비
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  };
+
+  const mk = (cls, dirs, cursor) => {
+    const h = document.createElement('div');
+    h.className = `ai-pop-grip ${cls}`;
+    box.appendChild(h);
+    grab(h, dirs, cursor);
+  };
+  mk('g-left', 'w', 'ew-resize');
+  mk('g-top', 'n', 'ns-resize');
+  mk('g-corner', 'wn', 'nwse-resize');
+}
+
+// 창 크기가 줄면 팝업도 화면 안으로 들어오게 다시 맞춘다
+window.addEventListener('resize', () => {
+  if (state.groups.some((g) => g.aiPop)) applyAiPopSize();
+});
+
 function ensureAiPop(group) {
   if (!group) return null;
   if (group.aiPop) return group.aiPop;
@@ -3585,12 +3716,16 @@ function ensureAiPop(group) {
       syncAiFab();
       scheduleRender(); // 다른 탭이면 메인탭 배지로도 알린다
     },
-    onClose: () => setAiPop(false, group)
+    onClose: () => setAiPop(false, group),
+    onToggleMax: () => toggleAiPopMax(),
+    isMax: () => aiPopSize.max
   });
 
   box.appendChild(chat.el);
+  bindAiPopResize(box);
   document.body.appendChild(box);
   group.aiPop = { el: box, chat };
+  applyAiPopSize(); // 저장해 둔 크기(또는 전체보기)를 그대로 쓴다
   return group.aiPop;
 }
 
