@@ -377,6 +377,57 @@ window.AiChat = (function () {
       title.textContent = `✳ AI 채팅${label ? ` — ${label}` : ''}`;
     }
 
+    /*
+     * 파일을 끌어다 놓으면 그 내용을 다음 질문에 붙인다.
+     * 여기는 서버로 올릴 필요가 없다 — 글자만 읽어 프롬프트에 넣으면 되기 때문이다.
+     * (그림은 글자로 읽을 수 없으므로 안내만 한다)
+     */
+    const TEXTY = /\.(txt|md|log|json|ya?ml|toml|ini|conf|csv|tsv|py|js|ts|tsx|jsx|sh|bash|zsh|sql|c|h|cpp|go|rs|rb|java|kt|swift|php|html?|css|scss|xml|env|ipynb|Dockerfile|Makefile)$/i;
+
+    root.addEventListener('dragover', (e) => {
+      if (!Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      root.classList.add('ac-drop');
+    });
+    root.addEventListener('dragleave', (e) => {
+      if (e.target === root) root.classList.remove('ac-drop');
+    });
+    root.addEventListener('drop', async (e) => {
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (!files.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      root.classList.remove('ac-drop');
+
+      const parts = [];
+      const skipped = [];
+      for (const f of files.slice(0, 5)) {
+        if (!TEXTY.test(f.name)) {
+          skipped.push(f.name);
+          continue;
+        }
+        try {
+          const text = await f.text();
+          parts.push(`--- ${f.name} ---\n${text.slice(0, 20000)}`);
+        } catch (err) {
+          skipped.push(f.name);
+        }
+      }
+      if (parts.length) {
+        const label = files.length === 1 ? files[0].name : `파일 ${parts.length}개`;
+        setPending(label, parts.join('\n\n'));
+        input.focus();
+      }
+      if (skipped.length) {
+        chip.classList.remove('hidden');
+        chip.textContent = `글자로 읽을 수 없는 파일은 뺐습니다: ${skipped.slice(0, 2).join(', ')}`;
+        setTimeout(() => {
+          if (!state.pending) clearPending();
+        }, 2600);
+      }
+    });
+
     /* --------------------------------- 전송 --------------------------------- */
 
     async function send() {

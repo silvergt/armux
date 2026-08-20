@@ -186,6 +186,68 @@ function detachLeaf(tab, leaf) {
  * @param {object} tab      소속 서브탭
  * @param {object} connect  { hostId, credId, profile } 접속 파라미터
  */
+/* --------------------- 끌어다 놓은 파일 · 붙여넣은 그림 --------------------- */
+
+/*
+ * Claude Code 는 서버에서 돌아가므로 내 PC 의 경로를 그대로 넣어 봐야 못 읽는다.
+ * 그래서 파일을 서버로 올린 다음 "서버 경로" 를 프롬프트에 적어 준다.
+ * (경로만 있으면 Claude Code 는 이미지도 읽는다)
+ */
+
+/** 이 판이 속한 그룹의 접속 정보 (SFTP 를 열 때 쓴다) */
+function connectOf(leaf) {
+  const g = state.groups.find((x) => x.id === leaf.groupId);
+  if (!g) return null;
+  return g.connect || { hostId: g.host.id || null, credId: g.credId };
+}
+
+/** 올린 경로들을 터미널에 적어 준다 (따옴표로 감싸 공백이 있어도 한 덩이가 되게) */
+function typePathsIntoTerminal(leaf, files) {
+  if (!files.length || !leaf.sessionId || leaf.status !== 'ready') return;
+  const quoted = files.map((f) => (/[^\w./\-가-힣]/.test(f.remote) ? `'${f.remote.replace(/'/g, "'\\''")}'` : f.remote));
+  api.ssh.write(leaf.sessionId, `${quoted.join(' ')} `);
+  leaf.term.focus();
+}
+
+/** 내 PC 파일들을 서버로 올리고 경로를 적어 준다 */
+async function dropFilesIntoTerminal(leaf, paths) {
+  const connect = connectOf(leaf);
+  if (!connect || !leaf.sessionId || leaf.status !== 'ready') return;
+  el.statusLeft.textContent = `파일 ${paths.length}개를 서버로 올리는 중…`;
+  const res = await api.drop.upload(leaf.sessionId, connect, paths);
+  if (res.error || !res.files.length) {
+    el.statusLeft.textContent = `올리지 못했습니다: ${res.error || '올릴 파일이 없습니다'}`;
+    return;
+  }
+  typePathsIntoTerminal(leaf, res.files);
+  el.statusLeft.textContent = `${res.files.map((f) => f.name).join(', ')} → ${res.dir} (한 시간 뒤 자동 삭제)`;
+}
+
+/** 클립보드 그림을 서버로 올리고 경로를 적어 준다. 그림이 없으면 false */
+async function pasteImageIntoTerminal(leaf) {
+  const connect = connectOf(leaf);
+  if (!connect || !leaf.sessionId || leaf.status !== 'ready') return false;
+  const res = await api.drop.pasteImage(leaf.sessionId, connect);
+  if (!res.hasImage) return false;
+  if (res.error || !res.files || !res.files.length) {
+    el.statusLeft.textContent = `그림을 올리지 못했습니다: ${res.error || '알 수 없는 이유'}`;
+    return true; // 그림이긴 했으므로 글자 붙여넣기로 넘기지 않는다
+  }
+  typePathsIntoTerminal(leaf, res.files);
+  el.statusLeft.textContent = `스크린샷 → ${res.files[0].remote} (한 시간 뒤 자동 삭제)`;
+  return true;
+}
+
+/** 드롭 이벤트에서 내 PC 파일 경로들을 뽑는다 */
+function localPathsFrom(e) {
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+  return files.map((f) => api.util.pathForFile(f)).filter(Boolean);
+}
+
+/** 이 드롭이 "OS 에서 끌어온 파일" 인가 (판 이동 드래그와 구분) */
+const isFileDrop = (e) =>
+  Boolean(e.dataTransfer) && Array.from(e.dataTransfer.types || []).includes('Files');
+
 /* ------------------------------ 터미널 안의 링크 ------------------------------ */
 
 /*
@@ -4043,10 +4105,21 @@ function bindPaneDrag(leaf, header) {
   pane.dataset.dropBound = '1';
 
   pane.addEventListener('dragover', (e) => {
+    // OS 에서 끌어온 파일이면 "여기 놓으면 서버로 올라간다" 는 표시를 준다
+    if (isFileDrop(e)) {
+      if (leaf.mode !== 'terminal' || leaf.status !== 'ready') return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      pane.classList.add('file-drop');
+      return;
+    }
     if (!canDropHere(e, leaf)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     showDropHint(leaf, dropZoneOf(pane, e));
+  });
+  pane.addEventListener('dragleave', (e) => {
+    if (e.target === pane) pane.classList.remove('file-drop');
   });
   pane.addEventListener('dragleave', (e) => {
     // 자식 요소로 옮겨 다닐 때도 dragleave 가 오므로, 판 밖으로 나갔을 때만 지운다
@@ -4054,6 +4127,16 @@ function bindPaneDrag(leaf, header) {
     clearDropHints();
   });
   pane.addEventListener('drop', (e) => {
+    pane.classList.remove('file-drop');
+    // OS 파일: 서버로 올리고 그 경로를 프롬프트에 적어 준다
+    if (isFileDrop(e)) {
+      if (leaf.mode !== 'terminal' || leaf.status !== 'ready') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const paths = localPathsFrom(e);
+      if (paths.length) dropFilesIntoTerminal(leaf, paths);
+      return;
+    }
     if (!canDropHere(e, leaf)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -4604,7 +4687,15 @@ window.addEventListener(
       if (key === 'v' && leaf && leaf.status === 'ready') {
         e.preventDefault();
         e.stopPropagation();
-        api.util.clipboardRead().then((text) => text && api.ssh.write(leaf.sessionId, text));
+        /*
+         * 클립보드에 그림(스크린샷)이 있으면 서버로 올리고 경로를 적어 준다.
+         * Claude Code 는 서버에서 돌아가 내 PC 클립보드를 볼 수 없기 때문이다.
+         * 그림이 아니면 지금까지처럼 글자를 그대로 붙여넣는다.
+         */
+        pasteImageIntoTerminal(leaf).then((wasImage) => {
+          if (wasImage) return;
+          api.util.clipboardRead().then((text) => text && api.ssh.write(leaf.sessionId, text));
+        });
         return;
       }
     }

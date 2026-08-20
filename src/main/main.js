@@ -14,6 +14,7 @@ const chromehistory = require('./chromehistory');
 const webfav = require('./webfav');
 const claudehooks = require('./claudehooks');
 const portforward = require('./portforward');
+const dropfiles = require('./dropfiles');
 const codexinfo = require('./codexinfo');
 const codexhooks = require('./codexhooks');
 
@@ -793,6 +794,45 @@ ipcMain.on('settings:sync', (e, opts) => {
   for (const [id, key] of Object.entries(map)) {
     const item = menu.getMenuItemById(id);
     if (item && typeof opts[key] === 'boolean') item.checked = opts[key];
+  }
+});
+
+/* ---------------------- 끌어다 놓은 파일 · 붙여넣은 그림 ---------------------- */
+
+/*
+ * Claude Code 는 서버에서 돌아가므로 내 PC 의 경로·클립보드를 볼 수 없다.
+ * 그래서 파일을 서버로 옮기고 "서버 경로" 를 돌려준다. 자세한 규칙은
+ * dropfiles.js 위쪽 주석 참고 (보관 폴더와 지우기 규칙).
+ */
+ipcMain.handle('drop:upload', async (e, { sessionId, connect, localPaths }) => {
+  try {
+    // 저장된 호스트 id·임시 자격증명을 실제 접속 프로필로 푼다 (SFTP 를 열려면 필요)
+    return await dropfiles.upload(sessionId, resolveCredentials(connect || {}), localPaths || []);
+  } catch (err) {
+    return { dir: '', files: [], error: String((err && err.message) || err) };
+  }
+});
+
+/** 클립보드에 그림이 있으면 서버로 올린다 (없으면 hasImage:false) */
+ipcMain.handle('drop:pasteImage', async (e, { sessionId, connect }) => {
+  try {
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return { hasImage: false };
+    const png = img.toPNG();
+    if (!png || !png.length) return { hasImage: false };
+    const res = await dropfiles.uploadImage(sessionId, resolveCredentials(connect || {}), png);
+    return { hasImage: true, ...res };
+  } catch (err) {
+    return { hasImage: false, error: String((err && err.message) || err) };
+  }
+});
+
+/** 접속했을 때 오래된 파일을 미리 정리해 둔다 */
+ipcMain.handle('drop:tidy', async (e, { sessionId }) => {
+  try {
+    return { dir: await dropfiles.prepare(sessionId) };
+  } catch (err) {
+    return { dir: '' };
   }
 });
 

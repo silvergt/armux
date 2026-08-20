@@ -3172,6 +3172,37 @@ body.is-mac #mac-spacer {
 .ai-pop .ac-close { color: #9fd8bb; }
 .ai-pop .ac-close:hover { color: #fff; }
 
+/* 파일을 끌어다 놓는 중 — 어디에 놓이는지 보이게 */
+.pane.file-drop::after {
+  content: '여기에 놓으면 서버로 올라갑니다';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(77, 163, 255, 0.12);
+  border: 2px dashed var(--accent);
+  border-radius: 6px;
+  color: #cfe6ff;
+  font-size: 12px;
+  pointer-events: none;
+}
+.aichat.ac-drop::after {
+  content: '여기에 놓으면 질문에 첨부됩니다';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(77, 163, 255, 0.12);
+  border: 2px dashed var(--accent);
+  color: #cfe6ff;
+  font-size: 12px;
+  pointer-events: none;
+}
+
 /* --------------------------- 새 판: 무엇을 열지 고르기 --------------------------- */
 
 .launcher {

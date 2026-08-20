@@ -135,6 +135,14 @@ contextBridge.exposeInMainWorld('armux', {
     sync: (opts) => ipcRenderer.send('settings:sync', opts)
   },
 
+  /** 끌어다 놓은 파일 · 붙여넣은 그림을 서버로 (Claude Code 가 읽을 수 있게) */
+  drop: {
+    upload: (sessionId, connect, localPaths) =>
+      ipcRenderer.invoke('drop:upload', { sessionId, connect, localPaths }),
+    pasteImage: (sessionId, connect) => ipcRenderer.invoke('drop:pasteImage', { sessionId, connect }),
+    tidy: (sessionId) => ipcRenderer.invoke('drop:tidy', { sessionId })
+  },
+
   /** 포트 포워딩 (서버에서 열린 포트를 내 PC 로) */
   ports: {
     start: (sessionId, remotePort, remoteHost, localPort) =>
