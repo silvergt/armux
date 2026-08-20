@@ -3328,14 +3328,13 @@ function renderPanes() {
 
 /*
  * 서버에서 열린 포트를 내 PC 로 끌어온다 (VS Code 의 포트 전달과 같은 원리).
- * 하단바의 ⇄ 를 누르면 그 서버에서 듣고 있는 포트를 훑어 목록으로 보여 주고,
- * 고르면 전달을 시작한 뒤 웹 판에서 바로 연다.
+ *
+ * 예전에는 서버에서 듣고 있는 포트를 훑어 목록으로 보여 줬는데, 작업자
+ * 프로세스가 많은 서버에서는 수십 개가 쏟아져 정작 찾는 개발 서버가 묻혔다.
+ * 어차피 몇 번을 띄웠는지는 본인이 안다. 그래서 번호를 직접 넣는 방식으로 바꿨다.
  */
 
-/*
- * render() 는 자주 불리므로 개수 세기는 몰아서 한 번만 한다.
- * (메인 프로세스에 묻는 일이라 매번 하면 낭비다)
- */
+/** render() 가 자주 불리므로 개수 세기는 몰아서 한 번만 한다 */
 let portFabTimer = null;
 function schedulePortFabSync() {
   if (portFabTimer) return;
@@ -3359,22 +3358,6 @@ async function syncPortFab() {
   }
   el.portFab.textContent = n ? `⇄ ${n}` : '⇄';
   el.portFab.classList.toggle('on', n > 0);
-}
-
-/** 전달을 시작하고 웹 판에서 연다 */
-async function startForward(sessionId, port) {
-  el.statusLeft.textContent = `${port} 번 포트를 전달하는 중…`;
-  const res = await api.ports.start(sessionId, port, '127.0.0.1');
-  if (res.error) {
-    el.statusLeft.textContent = `포트 전달 실패: ${res.error}`;
-    return null;
-  }
-  const same = res.localPort === res.remotePort;
-  el.statusLeft.textContent = same
-    ? `서버의 ${res.remotePort} 번을 ${res.url} 로 열었습니다.`
-    : `서버의 ${res.remotePort} 번을 ${res.url} 로 열었습니다 (그 번호가 이미 쓰이는 중이라 바꿨습니다).`;
-  syncPortFab();
-  return res;
 }
 
 /** 전달된 주소를 웹 판에서 연다 (지금 판을 쪼개 오른쪽에) */
@@ -3407,8 +3390,11 @@ function openForwardedUrl(url) {
   saveSession();
 }
 
-/** ⇄ 단추 메뉴 — 전달 중인 것과 서버에서 열린 포트를 함께 보여 준다 */
-async function openPortMenu(anchorEl) {
+/**
+ * ⇄ 단추 — 포트 번호를 넣어 전달하고, 전달 중인 것을 끊는 작은 창.
+ * 열려 있는 동안 목록은 그때그때 다시 그린다.
+ */
+async function openPortDialog() {
   const g = activeGroup();
   const sid = g ? anyReadySession(g) : null;
   if (!sid) {
@@ -3416,115 +3402,136 @@ async function openPortMenu(anchorEl) {
     return;
   }
 
-  const r = anchorEl.getBoundingClientRect();
-  window.showContextMenu(r.right, r.top - 8, [['포트를 찾는 중…', () => {}]], { alignRight: true });
+  const back = document.createElement('div');
+  back.className = 'port-ask-back';
+  const box = document.createElement('div');
+  box.className = 'port-ask';
 
-  const [active, remote] = await Promise.all([
-    api.ports.list(sid).catch(() => []),
-    api.ports.listRemote(sid).catch(() => ({ ports: [] }))
-  ]);
-  const detected = (remote && remote.ports) || [];
-  const forwarded = new Set(active.map((f) => f.remotePort));
+  const title = document.createElement('div');
+  title.className = 'port-ask-title';
+  title.textContent = `포트 전달 — ${g.host.name}`;
+  const hint = document.createElement('div');
+  hint.className = 'port-ask-hint';
+  hint.textContent = '서버에서 띄운 포트 번호를 넣으면 이 PC 에서 열 수 있습니다.';
 
-  const items = [];
-  if (active.length) {
-    for (const f of active) {
-      items.push([
-        `✓ ${f.remotePort} → localhost:${f.localPort}`,
-        () => openForwardedUrl(f.url),
-        '',
-        async () => {
-          await api.ports.stop(f.id);
-          syncPortFab();
-          openPortMenu(anchorEl); // 이어서 정리할 수 있게 다시 펼친다
-        }
-      ]);
+  const row = document.createElement('div');
+  row.className = 'port-ask-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'field';
+  input.placeholder = '예: 8332';
+  input.spellcheck = false;
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn btn-primary';
+  addBtn.textContent = '전달';
+  row.append(input, addBtn);
+
+  const listTitle = document.createElement('div');
+  listTitle.className = 'port-ask-subtitle';
+  listTitle.textContent = '전달 중';
+  const list = document.createElement('div');
+  list.className = 'port-list';
+
+  const foot = document.createElement('div');
+  foot.className = 'port-ask-foot';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'btn';
+  closeBtn.textContent = '닫기';
+  foot.appendChild(closeBtn);
+
+  box.append(title, hint, row, listTitle, list, foot);
+  back.appendChild(box);
+  document.body.appendChild(back);
+  input.focus();
+
+  const close = () => {
+    back.remove();
+    const l = activeLeaf();
+    if (l && l.mode === 'terminal' && l.term) l.term.focus();
+  };
+
+  /** 전달 중인 목록을 다시 그린다 */
+  async function paint() {
+    const items = await api.ports.list(sid).catch(() => []);
+    list.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'port-empty';
+      empty.textContent = '아직 없습니다.';
+      list.appendChild(empty);
+      return;
     }
-    items.push(['-']);
+    for (const f of items) {
+      const item = document.createElement('div');
+      item.className = 'port-item';
+      const label = document.createElement('span');
+      label.className = 'port-item-label';
+      label.textContent = `${f.remotePort} → localhost:${f.localPort}`;
+      const open = document.createElement('button');
+      open.className = 'btn';
+      open.textContent = '열기';
+      open.addEventListener('click', () => {
+        close();
+        openForwardedUrl(f.url);
+      });
+      const stop = document.createElement('button');
+      stop.className = 'btn btn-danger';
+      stop.textContent = '끊기';
+      stop.addEventListener('click', async () => {
+        await api.ports.stop(f.id);
+        syncPortFab();
+        paint();
+      });
+      item.append(label, open, stop);
+      list.appendChild(item);
+    }
   }
 
-  const fresh = detected.filter((d) => !forwarded.has(d.port));
-  if (fresh.length) {
-    for (const d of fresh.slice(0, 40)) { // 메뉴가 스크롤되므로 넉넉히 보여 준다
-      items.push([
-        `${d.port}${d.proc ? `  ${d.proc}` : ''}`,
-        async () => {
-          const res = await startForward(sid, d.port);
-          if (res) openForwardedUrl(res.url);
-        }
-      ]);
+  async function add() {
+    const port = Number(String(input.value).trim());
+    if (!(port >= 1 && port <= 65535)) {
+      hint.textContent = '1 부터 65535 사이의 번호를 넣어 주세요.';
+      hint.classList.add('bad');
+      input.focus();
+      return;
     }
-  } else if (!active.length) {
-    items.push(['서버에서 듣고 있는 포트가 없습니다', () => {}]);
-  }
-
-  items.push(['-']);
-  items.push([
-    '포트 번호 직접 입력…',
-    async () => {
-      const port = await askPortNumber();
-      if (!port) return;
-      const res = await startForward(sid, port);
-      if (res) openForwardedUrl(res.url);
+    addBtn.disabled = true;
+    const res = await api.ports.start(sid, port, '127.0.0.1');
+    addBtn.disabled = false;
+    if (res.error) {
+      hint.textContent = `전달하지 못했습니다: ${res.error}`;
+      hint.classList.add('bad');
+      return;
     }
-  ]);
-
-  window.showContextMenu(r.right, r.top - 8 - Math.min(items.length, 14) * 26, items, { alignRight: true });
-}
-
-/** 포트 번호를 직접 받는 작은 입력창 */
-function askPortNumber() {
-  return new Promise((resolve) => {
-    const back = document.createElement('div');
-    back.className = 'port-ask-back';
-    const box = document.createElement('div');
-    box.className = 'port-ask';
-    const label = document.createElement('div');
-    label.textContent = '전달할 서버의 포트 번호';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'field';
-    input.placeholder = '예: 8332';
-    input.spellcheck = false;
-    const row = document.createElement('div');
-    row.className = 'port-ask-row';
-    const cancel = document.createElement('button');
-    cancel.className = 'btn';
-    cancel.textContent = '취소';
-    const okBtn = document.createElement('button');
-    okBtn.className = 'btn btn-primary';
-    okBtn.textContent = '전달';
-    row.append(cancel, okBtn);
-    box.append(label, input, row);
-    back.appendChild(box);
-    document.body.appendChild(back);
+    hint.classList.remove('bad');
+    hint.textContent =
+      res.localPort === res.remotePort
+        ? `${res.url} 에서 열 수 있습니다.`
+        : `${res.url} 에서 열 수 있습니다 (${res.remotePort} 번은 이 PC 에서 쓰는 중이라 바꿨습니다).`;
+    input.value = '';
     input.focus();
+    syncPortFab();
+    paint();
+  }
 
-    const done = (v) => {
-      back.remove();
-      resolve(v);
-    };
-    const submit = () => {
-      const n = Number(String(input.value).trim());
-      done(n >= 1 && n <= 65535 ? n : null);
-    };
-    okBtn.addEventListener('click', submit);
-    cancel.addEventListener('click', () => done(null));
-    back.addEventListener('click', (e) => {
-      if (e.target === back) done(null);
-    });
-    input.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') submit();
-      if (e.key === 'Escape') done(null);
-    });
+  addBtn.addEventListener('click', add);
+  closeBtn.addEventListener('click', close);
+  back.addEventListener('click', (e) => {
+    if (e.target === back) close();
   });
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && !e.isComposing) add();
+    if (e.key === 'Escape') close();
+  });
+
+  paint();
 }
 
 el.portFab.addEventListener('mousedown', (e) => e.stopPropagation());
 el.portFab.addEventListener('click', (e) => {
   e.stopPropagation();
-  openPortMenu(e.currentTarget);
+  openPortDialog();
 });
 
 /* ------------------------------ 떠 있는 AI 채팅 ------------------------------ */

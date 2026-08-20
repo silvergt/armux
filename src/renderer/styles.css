@@ -2962,7 +2962,7 @@ body.is-mac #mac-spacer {
 #port-fab:hover { color: #fff; border-color: var(--accent); }
 #port-fab.on { color: #9fd0ff; border-color: #4da3ff; background: #16324a; }
 
-/* 포트 번호 직접 입력 */
+/* 포트 전달 창 (번호 입력 + 전달 중 목록) */
 .port-ask-back {
   position: fixed;
   inset: 0;
@@ -2973,7 +2973,8 @@ body.is-mac #mac-spacer {
   justify-content: center;
 }
 .port-ask {
-  width: 300px;
+  width: 360px;
+  max-height: 70vh;
   padding: 16px;
   border-radius: 10px;
   background: var(--chrome);
@@ -2984,10 +2985,68 @@ body.is-mac #mac-spacer {
   color: var(--fg);
   font-size: 12px;
 }
+.port-ask-title {
+  color: #fff;
+  font-size: 13px;
+}
+.port-ask-hint {
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+.port-ask-hint.bad {
+  color: #ffb0b0;
+}
+.port-ask-subtitle {
+  color: var(--fg-dim);
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+/* 번호 입력 줄: 입력칸이 남는 자리를 다 쓴다 */
 .port-ask-row {
   display: flex;
   gap: 6px;
+}
+.port-ask-row .field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.port-ask-foot {
+  display: flex;
   justify-content: flex-end;
+}
+
+/* 전달 중 목록 */
+.port-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.port-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #171b22;
+}
+.port-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.port-item .btn {
+  padding: 1px 8px;
+  font-size: 11px;
+}
+.port-empty {
+  color: var(--fg-dim);
+  padding: 4px 2px;
 }
 
 /* 작은 정사각형 초록 단추. 여기서 채팅이 올라온다. */

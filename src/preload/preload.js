@@ -137,7 +137,6 @@ contextBridge.exposeInMainWorld('armux', {
 
   /** 포트 포워딩 (서버에서 열린 포트를 내 PC 로) */
   ports: {
-    listRemote: (sessionId) => ipcRenderer.invoke('ports:listRemote', { sessionId }),
     start: (sessionId, remotePort, remoteHost, localPort) =>
       ipcRenderer.invoke('ports:start', { sessionId, remotePort, remoteHost, localPort }),
     stop: (id) => ipcRenderer.invoke('ports:stop', { id }),

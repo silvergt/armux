@@ -802,14 +802,6 @@ ipcMain.on('settings:sync', (e, opts) => {
  * 서버에서 열린 포트를 내 PC 로 끌어온다 (VS Code 의 포트 전달과 같은 원리).
  * 리스너는 127.0.0.1 에만 열리므로 다른 기기에서는 들어올 수 없다.
  */
-ipcMain.handle('ports:listRemote', async (e, { sessionId }) => {
-  try {
-    return { ports: await portforward.listRemote(sessionId) };
-  } catch (err) {
-    return { ports: [], error: String((err && err.message) || err) };
-  }
-});
-
 ipcMain.handle('ports:start', async (e, { sessionId, remotePort, remoteHost, localPort }) => {
   try {
     return await portforward.start(sessionId, Number(remotePort), remoteHost, localPort);

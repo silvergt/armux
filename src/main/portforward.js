@@ -17,67 +17,9 @@
 const net = require('net');
 const ssh = require('./ssh');
 
-/** 서버에서 실행할 조회 스크립트 (ss 우선, 없으면 netstat) */
-const LIST_PROBE = `
-if command -v ss >/dev/null 2>&1; then
-  ss -ltnpH 2>/dev/null | tr -s ' ' | while read -r st rq sq local peer rest; do
-    [ -n "$local" ] || continue
-    p=\${local##*:}
-    a=\${local%:*}
-    n=$(printf '%s' "$rest" | sed -n 's/.*(("\\([^"]*\\)".*/\\1/p')
-    printf '%s|%s|%s\\n' "$p" "$a" "$n"
-  done
-elif command -v netstat >/dev/null 2>&1; then
-  netstat -ltnp 2>/dev/null | tr -s ' ' | while read -r proto rq sq local foreign st rest; do
-    case "$proto" in tcp|tcp6) ;; *) continue ;; esac
-    p=\${local##*:}
-    a=\${local%:*}
-    n=$(printf '%s' "$rest" | sed 's#.*/##; s/:.*//')
-    printf '%s|%s|%s\\n' "$p" "$a" "$n"
-  done
-fi
-`.trim();
-
-/*
- * 굳이 전달할 일이 없는 포트. 목록이 길어져 정작 찾는 개발 서버가 묻히는 걸 막는다.
- * (사용자가 직접 번호를 넣으면 이 목록과 상관없이 전달한다)
- */
-const BORING = new Set([22, 25, 53, 111, 123, 631, 5353]);
-
 /** 열려 있는 전달: id → { id, sessionId, localPort, remotePort, remoteHost, server } */
 const forwards = new Map();
 let nextId = 1;
-
-/** 서버에서 듣고 있는 TCP 포트 목록 */
-async function listRemote(sessionId) {
-  const { stdout } = await ssh.exec(sessionId, LIST_PROBE, 15000);
-  const seen = new Map();
-  for (const line of String(stdout || '').split('\n')) {
-    const [portRaw, addr, proc] = line.trim().split('|');
-    const port = Number(portRaw);
-    if (!port || port < 1 || port > 65535) continue;
-    if (BORING.has(port)) continue;
-    // 같은 포트가 IPv4/IPv6 로 두 번 나오므로 하나로 합친다
-    const prev = seen.get(port);
-    if (prev) {
-      if (!prev.proc && proc) prev.proc = proc;
-      continue;
-    }
-    seen.set(port, { port, addr: addr || '', proc: proc || '' });
-  }
-  /*
-   * 포트가 수십 개인 서버(작업자 프로세스가 많은 경우)에서는 정작 찾는 개발
-   * 서버가 뒤로 밀린다. 그래서 "전달할 만한 것" 을 앞으로 올린다.
-   *   1) 바깥에 열지 않은(127.0.0.1) 높은 번호 — 개발 서버가 대개 이렇다
-   *   2) 그 밖의 높은 번호
-   *   3) 1024 미만(시스템 포트)
-   */
-  const rank = (p) => {
-    if (p.port < 1024) return 2;
-    return /^(127\.|::1|localhost)/.test(p.addr) ? 0 : 1;
-  };
-  return [...seen.values()].sort((a, b) => rank(a) - rank(b) || a.port - b.port);
-}
 
 /** 이 포트로 로컬 리스너를 열 수 있는지 */
 function canListen(port) {
@@ -214,4 +156,4 @@ function stopAll() {
   for (const id of [...forwards.keys()]) stop(id);
 }
 
-module.exports = { listRemote, start, stop, stopForSession, list, stopAll };
+module.exports = { start, stop, stopForSession, list, stopAll };
