@@ -56,7 +56,8 @@ function open(profile, size, handlers) {
 
           stream.on('data', (data) => handlers.onData(sessionId, data));
           stream.stderr.on('data', (data) => handlers.onData(sessionId, data));
-          stream.on('close', () => {
+          const gone = () => {
+            if (meta.closed) return;
             meta.closed = true;
             handlers.onExit(sessionId);
             try {
@@ -65,7 +66,15 @@ function open(profile, size, handlers) {
               /* noop */
             }
             sessions.delete(sessionId);
-          });
+          };
+          /*
+           * error 리스너가 없으면 Node 가 예외를 던져 메인 프로세스가 통째로 죽는다.
+           * 이건 터미널 본체 스트림이라 늘 열려 있고, 연결이 험하게 끊기면 여기서
+           * 난다. 죽는 대신 "이 판만 끊긴 것" 으로 처리한다.
+           */
+          stream.on('error', gone);
+          stream.stderr.on('error', () => {});
+          stream.on('close', gone);
         }
       );
     })
@@ -101,17 +110,32 @@ function exec(sessionId, command, timeoutMs = 15000) {
     if (!s) return reject(new Error('세션이 없습니다.'));
     if (s.local) return reject(new Error('로컬 터미널에서는 지원하지 않는 기능입니다.'));
     let done = false;
-    const timer = setTimeout(() => {
+    let channel = null;
+    const settle = (fn, val) => {
       if (done) return;
       done = true;
-      reject(new Error('명령 실행 시간 초과'));
+      clearTimeout(timer);
+      fn(val);
+    };
+    const timer = setTimeout(() => {
+      /*
+       * 시간이 지나면 채널도 닫는다. 예전에는 거부만 하고 열어 둬서, 느린 서버에서
+       * 조회가 반복 실패하면 exec 채널이 계속 쌓였다. SSH 채널에는 한도가 있어
+       * 가득 차면 사용량·포트 목록·AI 가 한꺼번에 조용히 멈춘다.
+       */
+      if (channel) {
+        try {
+          channel.close();
+        } catch (e) {
+          /* 이미 닫혔으면 그만 */
+        }
+      }
+      settle(reject, new Error('명령 실행 시간 초과'));
     }, timeoutMs);
 
     s.client.exec(command, (err, stream) => {
-      if (err) {
-        clearTimeout(timer);
-        return reject(err);
-      }
+      if (err) return settle(reject, err);
+      channel = stream;
       let out = '';
       let errOut = '';
       stream.on('data', (d) => {
@@ -120,12 +144,13 @@ function exec(sessionId, command, timeoutMs = 15000) {
       stream.stderr.on('data', (d) => {
         errOut += d.toString('utf8');
       });
-      stream.on('close', (code) => {
-        clearTimeout(timer);
-        if (done) return;
-        done = true;
-        resolve({ stdout: out, stderr: errOut, code });
-      });
+      /*
+       * error 리스너가 없으면 Node 가 예외를 던져 메인 프로세스가 통째로 죽는다.
+       * (연결이 끊기는 순간 등) 그러면 열려 있던 터미널이 전부 날아간다.
+       */
+      stream.on('error', (e) => settle(reject, e));
+      stream.stderr.on('error', () => {});
+      stream.on('close', (code) => settle(resolve, { stdout: out, stderr: errOut, code }));
     });
   });
 }
@@ -215,17 +240,31 @@ function execStream(sessionId, command, timeoutMs, onData, onClose) {
   if (!s) return onClose(new Error('세션이 없습니다.'));
   if (s.local) return onClose(new Error('로컬 세션은 별도 경로로 실행합니다.'));
   let done = false;
+  let channel = null;
   const finish = (err) => {
     if (done) return;
     done = true;
     clearTimeout(timer);
     onClose(err || null);
   };
-  const timer = setTimeout(() => finish(new Error('실행 시간 초과')), timeoutMs || 300000);
+  const timer = setTimeout(() => {
+    if (channel) {
+      try {
+        channel.close(); // 시간 초과면 채널도 닫는다 (안 닫으면 쌓인다)
+      } catch (e) {
+        /* 이미 닫혔으면 그만 */
+      }
+    }
+    finish(new Error('실행 시간 초과'));
+  }, timeoutMs || 300000);
   s.client.exec(command, (err, stream) => {
     if (err) return finish(err);
+    channel = stream;
     stream.on('data', (d) => onData(d.toString('utf8')));
     stream.stderr.on('data', () => {});
+    // error 리스너가 없으면 Node 가 던져서 메인 프로세스가 죽는다
+    stream.on('error', (e) => finish(e));
+    stream.stderr.on('error', () => {});
     stream.on('close', () => finish(null));
   });
 }

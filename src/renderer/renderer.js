@@ -826,24 +826,13 @@ function setLeafMode(leaf, mode, url, webExtra) {
         },
         // 이 서버에 실제로 깔려 있는 AI 만 고를 수 있게 한다 (없으면 목록에 띄우지 않는다)
         getTools: () => (grp ? grp.aiTools : null),
-        // 같은 서브탭의 다른 판들을 첨부 후보로 (터미널 화면 / 웹페이지 본문)
-        getContextSources: () => {
-          const tab = grp && grp.tabs.find((t) => t.id === leaf.tabId);
-          if (!tab) return [];
-          const out = [];
-          for (const l of leavesOf(tab.root)) {
-            if (l === leaf) continue;
-            if (l.mode === 'terminal' && l.status === 'ready') {
-              out.push({ label: `터미널 — ${l.title || (grp ? grp.host.name : '')}`, get: async () => (readScreenTail(l) || '').slice(-8000) });
-            } else if (l.mode === 'web' && l.web) {
-              out.push({ label: `웹 — ${(l.web.title || l.web.url || '페이지').slice(0, 40)}`, get: async () => {
-                const txt = await l.web.pageText();
-                return txt ? `제목: ${l.web.title || ''}\n주소: ${l.web.url || ''}\n\n${txt}` : '';
-              } });
-            }
-          }
-          return out;
-        }
+        // 같은 서브탭의 다른 판들을 첨부 후보로 (자기 자신은 뺀다)
+        getContextSources: () =>
+          paneContextSources(
+            grp && grp.tabs.find((t) => t.id === leaf.tabId),
+            grp ? grp.host.name : '',
+            leaf
+          )
       });
       body.appendChild(leaf.aichat.el);
     }
@@ -1143,6 +1132,42 @@ function readScreenTail(leaf) {
     if (line) text += line.translateToString(true) + '\n';
   }
   return text;
+}
+
+/*
+ * AI 채팅에 붙일 수 있는 "이 서브탭의 판들" 목록.
+ *
+ * 판 안 채팅과 하단바 팝업이 같이 쓴다. 예전에는 두 벌로 복붙되어 있었고, 그
+ * 사이에 팝업 쪽에만 "파일" 이 추가돼서 판 안 채팅에서는 열어 둔 파일을 붙일 수
+ * 없었다. 한 곳에서 만들면 그런 어긋남이 생기지 않는다.
+ *
+ * @param {object} tab     훑을 서브탭
+ * @param {string} hostName 터미널 이름이 없을 때 대신 쓸 서버 이름
+ * @param {object} [exclude] 자기 자신(채팅 판)은 뺀다
+ */
+function paneContextSources(tab, hostName, exclude) {
+  if (!tab) return [];
+  const out = [];
+  for (const l of leavesOf(tab.root)) {
+    if (exclude && l === exclude) continue;
+    if (l.mode === 'terminal' && l.status === 'ready') {
+      out.push({
+        label: `터미널 — ${l.title || hostName || ''}`,
+        get: async () => (readScreenTail(l) || '').slice(-8000)
+      });
+    } else if (l.mode === 'web' && l.web) {
+      out.push({
+        label: `웹 — ${(l.web.title || l.web.url || '페이지').slice(0, 40)}`,
+        get: async () => {
+          const txt = await l.web.pageText();
+          return txt ? `제목: ${l.web.title || ''}\n주소: ${l.web.url || ''}\n\n${txt}` : '';
+        }
+      });
+    } else if (l.mode === 'file' && l.file && l.file.getText) {
+      out.push({ label: `파일 — ${l.title || '열린 파일'}`, get: async () => l.file.getText() });
+    }
+  }
+  return out;
 }
 
 /**
@@ -3536,30 +3561,11 @@ function ensureAiPop(group) {
     },
     getTools: () => group.aiTools,
     // 첨부 후보는 이 그룹에서 보고 있는 서브탭의 판들
-    getContextSources: () => {
-      const t = group.tabs.find((x) => x.id === group.activeTabId) || group.tabs[0];
-      if (!t) return [];
-      const out = [];
-      for (const l of leavesOf(t.root)) {
-        if (l.mode === 'terminal' && l.status === 'ready') {
-          out.push({
-            label: `터미널 — ${l.title || group.host.name}`,
-            get: async () => (readScreenTail(l) || '').slice(-8000)
-          });
-        } else if (l.mode === 'web' && l.web) {
-          out.push({
-            label: `웹 — ${(l.web.title || l.web.url || '페이지').slice(0, 40)}`,
-            get: async () => {
-              const txt = await l.web.pageText();
-              return txt ? `제목: ${l.web.title || ''}\n주소: ${l.web.url || ''}\n\n${txt}` : '';
-            }
-          });
-        } else if (l.mode === 'file' && l.file && l.file.getText) {
-          out.push({ label: `파일 — ${l.title || '열린 파일'}`, get: async () => l.file.getText() });
-        }
-      }
-      return out;
-    },
+    getContextSources: () =>
+      paneContextSources(
+        group.tabs.find((x) => x.id === group.activeTabId) || group.tabs[0],
+        group.host.name
+      ),
     // 접어 둔 사이에 무슨 일이 있었는지 알린다
     onBusy: (busy) => {
       group.aiBusy = busy;
@@ -5083,6 +5089,20 @@ async function doConnect() {
   if (dlgTargetGroup) createTab(dlgTargetGroup, connect);
   else createGroup({ ...profile, id: hostId }, connect);
 }
+
+/*
+ * 어디선가 조용히 실패한 것을 하단바에 드러낸다.
+ * IPC 호출 상당수가 실패를 그대로 거부로 돌려주는데, 부르는 쪽에서 잡지 않으면
+ * "아무 일도 안 일어난 것" 처럼 보였다. 최소한 무엇이 실패했는지는 보이게 한다.
+ */
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = String((e.reason && e.reason.message) || e.reason || '').replace(/^Error:\s*/, '');
+  console.error('[armux] 처리되지 않은 거부:', e.reason);
+  if (msg) el.statusLeft.textContent = `문제가 있었습니다: ${msg.slice(0, 120)}`;
+});
+window.addEventListener('error', (e) => {
+  console.error('[armux] 화면 오류:', e.error || e.message);
+});
 
 /* --------------------------------- 시작 동작 -------------------------------- */
 

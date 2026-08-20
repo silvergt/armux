@@ -698,10 +698,18 @@ window.Explorer = (function () {
     function closeMenu() {
       menu.classList.add('hidden');
     }
-    document.addEventListener('click', closeMenu);
-    document.addEventListener('contextmenu', (e) => {
+    /*
+     * 이 두 리스너는 document 에 붙으므로 dispose 에서 반드시 떼야 한다.
+     * 안 떼면 클로저가 menu·root 를 붙들어 탐색기 DOM 이 통째로 회수되지 않고,
+     * 메인탭을 여닫을수록 죽은 핸들러가 쌓여 클릭마다 전부 훑게 된다.
+     * (접속하면 탐색기를 미리 만들어 두므로 접속 수만큼 쌓인다)
+     */
+    const onDocClick = () => closeMenu();
+    const onDocContext = (e) => {
       if (!menu.contains(e.target) && !root.contains(e.target)) closeMenu();
-    });
+    };
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('contextmenu', onDocContext);
 
     /* -------------------------------- 입력 대화상자 ------------------------------ */
 
@@ -824,6 +832,8 @@ window.Explorer = (function () {
 
     function dispose() {
       widthObserver.disconnect();
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('contextmenu', onDocContext);
       if (ex.sftpId) api.sftp.close(ex.sftpId);
       ex.sftpId = null;
       menu.remove();

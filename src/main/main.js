@@ -17,6 +17,21 @@ const portforward = require('./portforward');
 const codexinfo = require('./codexinfo');
 const codexhooks = require('./codexhooks');
 
+/*
+ * 마지막 방어막.
+ *
+ * 비동기 콜백 안에서 예외 하나가 나면 Electron 은 치명적 오류 창을 띄우고 앱이
+ * 내려간다. 그러면 열려 있던 터미널·포트 전달이 전부 날아간다. SSH·네트워크를
+ * 다루는 앱이라 어딘가에서 한 번은 나기 마련이므로, 죽는 대신 기록만 남기고
+ * 계속 돌게 한다. (진짜 문제는 로그로 쫓는다)
+ */
+process.on('uncaughtException', (err) => {
+  console.error('[armux] 처리되지 않은 예외:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[armux] 처리되지 않은 거부:', reason && reason.stack ? reason.stack : reason);
+});
+
 const isMac = process.platform === 'darwin';
 let mainWindow = null;
 let allowClose = false; // 종료 확인을 이미 받았는지
