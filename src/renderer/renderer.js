@@ -543,21 +543,52 @@ function createLeaf(tab, connect, options) {
 
   term.open(termHost);
 
+  /*
+   * 한글 입력의 뿌리를 막는다 — 조합이 끝나면 xterm 의 "숨은 입력칸" 을 비운다.
+   *
+   * xterm 은 이 입력칸을 Enter 나 Ctrl+C 를 눌렀을 때만 비운다. 그래서 Claude Code
+   * 프롬프트처럼 Enter 없이 여러 줄을 고치는 동안 친 글자가 계속 쌓인다.
+   * 한글은 조합이 끝날 때 "쌓인 내용의 일부를 잘라내" 보내는 방식이라, 캐럿이
+   * 한 번이라도 끝에서 벗어나면 새로 친 글자가 아니라 옛 글자가 계속 나간다
+   * ("서서서", "크크크"). 영어는 키에서 바로 바이트를 만들므로 영향이 없다.
+   *
+   * 매번 비워 두면 다음 조합이 언제나 빈 칸의 0 번 자리에서 시작하므로
+   * 위치가 어긋날 여지 자체가 없어진다.
+   * (xterm 이 compositionend 에서 setTimeout(0) 으로 글자를 보내므로, 우리도
+   *  같은 방식으로 그 "뒤" 에 비운다)
+   */
+  if (term.textarea) {
+    term.textarea.addEventListener('compositionend', () => {
+      setTimeout(() => {
+        if (term.textarea) term.textarea.value = '';
+      }, 0);
+    });
+  }
+
   // 터미널 커서 이동/삭제 단축키를 표준 시퀀스로 변환해 셸로 보낸다.
   // (mac 의 ⌘/⌥ 조합과 Alt+방향키를 iTerm/Terminal.app 과 같게 맞춘다)
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     /*
-     * IME(한글 등) 조합 중의 키는 xterm 이 keydown 경로로 처리하지 않게 한다.
-     * mac 한글 입력에서 조합 중 방향키를 누르면, xterm 이 keydown 쪽에서 조합을
-     * 강제 확정해 전송하고 브라우저의 compositionend 쪽에서도 한 번 더 전송해
-     * 마지막 글자가 키 입력마다 반복되는 버그("지지지지")가 있다. keydown 을
-     * 막으면 확정은 compositionend 한 경로로만 흘러 정확히 한 번 입력된다.
-     * (keyCode 229 = "IME 가 처리 중인 키")
+     * IME(한글 등) 조합 중에는 우리 단축키 변환에 끼어들지 않고 xterm 에 넘긴다.
+     *
+     * 여기서 false 를 돌려주면 xterm 의 _keyDown 이 통째로 건너뛰어진다. 그러면
+     * xterm 이 방향키에 걸어 주던 preventDefault 도 안 걸리고, 브라우저가 기본
+     * 동작으로 "숨은 입력칸" 의 캐럿을 옮겨 버린다. 한글은 조합이 끝날 때 그
+     * 입력칸의 일부를 잘라내서 보내는 방식이라, 캐럿이 어긋나면 새로 친 글자가
+     * 아니라 버퍼에 남아 있던 옛 글자가 계속 나간다("서서서", "크크크").
+     * 영어는 키에서 바로 바이트를 만들어 보내므로 멀쩡하다.
      */
-    if (e.isComposing || e.keyCode === 229) return false;
+    if (e.isComposing || e.keyCode === 229) return true;
     if (!leaf.sessionId || leaf.status !== 'ready') return true;
     const send = (seq) => {
+      /*
+       * 우리가 직접 처리하는 키는 브라우저 기본 동작도 우리가 막아야 한다.
+       * xterm 은 커스텀 핸들러가 false 를 돌려주면 그냥 리턴만 하고
+       * preventDefault 를 하지 않는다. 이게 빠져 있어서 ⌥←/⌘← 로 커서를 옮기면
+       * 숨은 입력칸의 캐럿까지 같이 움직여 위와 같은 한글 깨짐이 났다.
+       */
+      e.preventDefault();
       api.ssh.write(leaf.sessionId, seq);
       return false; // xterm 기본 처리 중단
     };
