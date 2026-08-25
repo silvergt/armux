@@ -3177,6 +3177,28 @@ body.is-mac #mac-spacer {
 .ai-pop .ac-close { color: #9fd8bb; }
 .ai-pop .ac-close:hover { color: #fff; }
 
+/* 업데이트 창의 맥 전용 안내 — 붙여넣을 한 줄 */
+#update-mac { display: flex; flex-direction: column; gap: 6px; }
+#update-mac.hidden { display: none; }
+.update-cmd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0d0f13;
+}
+.update-cmd code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: #cfe6d8;
+  font-size: 11.5px;
+  user-select: all;
+}
+
 /* ------------------------------- 퀵메모 팝업 ------------------------------- */
 
 /* 하단바 📝 단추 — AI 단추 왼쪽. 여기서 메모창이 올라온다. */

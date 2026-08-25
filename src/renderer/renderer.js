@@ -5203,6 +5203,28 @@ const updateDetail = document.getElementById('update-detail');
 const updateBar = document.getElementById('update-bar');
 const updateFill = document.getElementById('update-fill');
 const updateAction = document.getElementById('update-action');
+const updateMacBox = document.getElementById('update-mac');
+const updateMacCmd = document.getElementById('update-mac-cmd');
+
+/*
+ * 맥은 앱 안에서 설치까지 되지 않는다.
+ * 자동 설치는 Electron 내장 Squirrel.Mac 이 맡는데, 새 앱의 코드 서명이 지금
+ * 실행 중인 앱의 요구조건을 만족하는지 검사한다. 지금 빌드는 애드혹 서명이라
+ * 그 검사를 통과할 수 없다(정식 서명을 하려면 Apple Developer ID 가 필요하다).
+ *
+ * 그래서 맥에서는 "내려받기" 대신 한 줄 명령을 건네준다. 이 명령은 curl 로
+ * 받으므로 격리 딱지가 붙지 않아 "시스템 설정 → 확인 없이 열기" 도 필요 없다.
+ */
+const MAC_INSTALL_CMD =
+  '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/silvergt/armux/main/scripts/install-mac.sh)"';
+updateMacCmd.textContent = MAC_INSTALL_CMD;
+document.getElementById('update-mac-copy').addEventListener('click', (e) => {
+  api.util.clipboardWrite(MAC_INSTALL_CMD);
+  e.target.textContent = '복사됨';
+  setTimeout(() => {
+    e.target.textContent = '복사';
+  }, 1200);
+});
 
 let appInfo = null;
 
@@ -5238,7 +5260,18 @@ function renderUpdateState(st) {
   updateBar.classList.toggle('hidden', !showBar);
   updateFill.style.width = `${st.status === 'ready' ? 100 : st.progress || 0}%`;
 
-  updateAction.classList.toggle('hidden', !(st.status === 'available' || st.status === 'ready'));
+  /*
+   * 맥에서 새 버전이 있으면 한 줄 명령을 보여 주고, 되지도 않을 "내려받기" 는
+   * 감춘다 (받아 봐야 마지막 설치에서 멈춘다).
+   */
+  const macManual = isMacPlatform && (st.status === 'available' || st.status === 'error');
+  updateMacBox.classList.toggle('hidden', !macManual);
+  if (macManual && st.status === 'available') {
+    updateMsg.textContent = `새 버전 v${st.version} 이(가) 있습니다.`;
+  }
+
+  const canAct = (st.status === 'available' || st.status === 'ready') && !(isMacPlatform && st.status === 'available');
+  updateAction.classList.toggle('hidden', !canAct);
   updateAction.textContent = st.status === 'ready' ? '지금 설치하고 다시 시작' : '내려받기';
   updateAction.onclick = () => {
     if (st.status === 'ready') api.update.install();
