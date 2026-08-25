@@ -3172,6 +3172,141 @@ body.is-mac #mac-spacer {
 .ai-pop .ac-close { color: #9fd8bb; }
 .ai-pop .ac-close:hover { color: #fff; }
 
+/* ------------------------------- 퀵메모 팝업 ------------------------------- */
+
+/* 하단바 📝 단추 — AI 단추 왼쪽. 여기서 메모창이 올라온다. */
+#memo-fab {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #3a3220;
+  color: #ffe6b0;
+  border: 1px solid #6b5a2e;
+  font-size: 10px;
+  line-height: 1;
+  margin-right: 6px;
+  position: relative;
+}
+#memo-fab:hover { background: #4a4029; }
+#memo-fab.on { background: #6b5a2e; border-color: #a98c45; color: #fff4d8; }
+
+/*
+ * AI 채팅 팝업과 같은 자리·같은 방식이되, 색으로 구분한다(초록=AI, 호박=메모).
+ * AI 팝업이 열려 있으면 renderer 가 right 를 계산해 그 왼쪽에 나란히 세운다.
+ */
+.qm-pop {
+  position: fixed;
+  right: 8px;
+  bottom: 26px;
+  z-index: 61; /* AI 팝업(60) 위 — 급히 적는 창이 가려지면 곤란하다 */
+  width: min(360px, calc(100vw - 16px));
+  height: min(380px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid #6b5a2e;
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: aipop-in 0.12s ease-out;
+}
+.qm-pop.hidden { display: none; }
+.qm-pop.maximized {
+  width: calc(100vw - 16px);
+  height: calc(100vh - 60px);
+  right: 8px;
+}
+.qm-pop.maximized .ai-pop-grip { display: none; }
+
+/* 메모창 알맹이 */
+.quickmemo {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #101318;
+}
+.qm-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  background: #241f14;
+  border-bottom: 1px solid #3d3520;
+}
+.qm-title {
+  color: #f0dfba;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* 지금 적고 있는 메모 이름 — 남는 자리를 다 쓰고 길면 줄인다 */
+.qm-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.qm-hbtn {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: #9aa3ae;
+  font-size: 11.5px;
+}
+.qm-hbtn:hover { background: #322a1c; color: #fff; }
+.qm-max, .qm-close { color: #d9c48f; }
+.qm-max:hover, .qm-close:hover { color: #fff; }
+
+.qm-editor {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  outline: none;
+  border: none;
+  padding: 10px 12px;
+  background: #101318;
+  color: #e2e7ee;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  /* 글을 쓰는 자리이므로 OS 기본 선택·되돌리기를 그대로 쓴다 */
+  user-select: text;
+}
+.qm-editor::placeholder { color: #5b6470; }
+
+.qm-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-top: 1px solid var(--border);
+  background: #14171d;
+}
+.qm-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qm-foot .qm-hbtn { height: 20px; font-size: 11px; }
+
 /* 파일을 끌어다 놓는 중 — 어디에 놓이는지 보이게 */
 .pane.file-drop::after {
   content: '여기에 놓으면 서버로 올라갑니다';

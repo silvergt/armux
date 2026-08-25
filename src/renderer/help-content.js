@@ -180,6 +180,19 @@ bind C-a send-prefix</pre>
         <tr><td><kbd>F5</kbd> / <kbd>Backspace</kbd> / <kbd>Delete</kbd></td><td>새로고침 / 상위 폴더 / 삭제</td></tr>
       </table>
 
+      <h3>퀵메모</h3>
+      <table>
+        <tr><th>키/동작</th><th>설명</th></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>M</kbd> · 하단바 오른쪽 <b>📝</b></td><td>퀵메모 창 열기/닫기 (마지막으로 적던 메모를 그대로 이어 연다. 그런 메모가 없으면 새 메모를 만든다)</td></tr>
+        <tr><td>머리의 <b>메모 이름 ▾</b></td><td>다른 메모로 갈아타기 · 목록에서 <b>✕</b> 로 삭제</td></tr>
+        <tr><td><b>+</b></td><td>새 메모 만들기</td></tr>
+        <tr><td><b>⏱</b> · <kbd>Ctrl/⌘</kbd>+<kbd>D</kbd></td><td>커서 자리에 지금 시각 넣기</td></tr>
+        <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>S</kbd></td><td>저장 (손을 멈추면 자동 저장도 됨)</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>닫기 (적던 내용은 저장된다)</td></tr>
+        <tr><td>가장자리 끌기 · <b>⛶</b></td><td>창 크기 조절 · 전체보기</td></tr>
+      </table>
+      <p>퀵메모와 메모장 탭은 같은 곳에 저장한다. 급히 적어 둔 것을 <b>메모장에서 열기</b> 로 넘겨 큰 화면에서 이어 쓸 수 있다.</p>
+
       <h3>메모장</h3>
       <table>
         <tr><th>키/동작</th><th>설명</th></tr>

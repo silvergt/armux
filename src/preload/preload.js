@@ -188,6 +188,7 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:split-horizontal',
       'menu:close-tab',
       'menu:ai',
+      'menu:quickmemo',
       'menu:copy',
       'menu:paste',
       'menu:cut',

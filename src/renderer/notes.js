@@ -31,6 +31,8 @@ window.Notes = (function () {
       sortAsc: false,
       el: null,
       refresh,
+      // 퀵메모의 "메모장에서 열기" 가 그 메모를 바로 펼치는 데 쓴다
+      open: (name) => openNote(name),
       focus: () => (notes.current ? editor.focus() : root.focus()),
       dispose
     };

@@ -47,6 +47,7 @@ const el = {
   statusLeft: document.getElementById('status-left'),
   statusClaude: document.getElementById('status-claude'),
   aiFab: document.getElementById('ai-fab'), // 하단바 오른쪽 끝의 AI 단추
+  memoFab: document.getElementById('memo-fab'), // 그 왼쪽의 퀵메모 단추
   portFab: document.getElementById('port-fab'), // 그 왼쪽의 포트 전달 단추
   findbar: document.getElementById('findbar'),
   findInput: document.getElementById('find-input')
@@ -2365,6 +2366,7 @@ const APP_MENUS = [
     label: '도움',
     items: [
       ['AI 채팅', isMacPlatform ? '⌘K' : 'Ctrl+K', () => toggleAiPop()],
+      ['퀵메모', isMacPlatform ? '⌘M' : 'Ctrl+M', () => toggleQuickMemo()],
       ['tmux 사용법', '', () => openHelp('tmux')],
       ['단축키 모음', '', () => openHelp('shortcuts')]
     ]
@@ -3650,6 +3652,7 @@ function applyAiPopSize() {
       box.style.height = `${Math.min(aiPopSize.h, aiPopMaxH())}px`;
     }
   }
+  applyQmPopSize(); // 퀵메모는 AI 팝업 왼쪽에 서므로 자리를 다시 잡는다
 }
 
 /** 전체보기 켜고 끄기. 지금 상태를 돌려준다 (단추 표시용) */
@@ -3662,7 +3665,7 @@ function toggleAiPopMax() {
 }
 
 /**
- * 가장자리를 끌어 크기를 바꾼다.
+ * 가장자리를 끌어 크기를 바꾼다. (AI 채팅 팝업·퀵메모 팝업이 같이 쓴다)
  *
  * 마우스 이벤트 대신 포인터 이벤트 + 포인터 캡처를 쓴다.
  *   - 캡처를 잡으면 창 밖에서 손을 떼도 pointerup 이 반드시 이 요소로 온다.
@@ -3670,11 +3673,11 @@ function toggleAiPopMax() {
  *   - 판 안 브라우저(webview) 위를 지날 때 이벤트를 빼앗기지 않도록 투명한
  *     덮개도 함께 깔아 둔다. 앱의 다른 크기 조절과 같은 방식이다.
  */
-function bindAiPopResize(box) {
+function bindPopResize(box, cfg) {
   const grab = (handle, dirs, cursor) => {
     handle.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return; // 왼쪽 단추로만 (오른쪽 클릭은 메뉴)
-      if (aiPopSize.max) return; // 전체보기 중에는 크기를 바꾸지 않는다
+      if (cfg.size.max) return; // 전체보기 중에는 크기를 바꾸지 않는다
       e.preventDefault();
       e.stopPropagation();
 
@@ -3698,12 +3701,12 @@ function bindAiPopResize(box) {
       const onMove = (ev) => {
         // 오른쪽 아래에 고정된 창이라 왼쪽·위로 끌수록 커진다
         if (dirs.includes('w')) {
-          aiPopSize.w = Math.max(AIPOP_MIN_W, Math.min(startW + (startX - ev.clientX), aiPopMaxW()));
+          cfg.size.w = Math.max(cfg.minW, Math.min(startW + (startX - ev.clientX), cfg.maxW()));
         }
         if (dirs.includes('n')) {
-          aiPopSize.h = Math.max(AIPOP_MIN_H, Math.min(startH + (startY - ev.clientY), aiPopMaxH()));
+          cfg.size.h = Math.max(cfg.minH, Math.min(startH + (startY - ev.clientY), cfg.maxH()));
         }
-        applyAiPopSize();
+        cfg.apply();
       };
       const onUp = () => {
         handle.removeEventListener('pointermove', onMove);
@@ -3717,7 +3720,7 @@ function bindAiPopResize(box) {
           /* 이미 풀렸으면 그만 */
         }
         shield.remove();
-        saveAiPopSize();
+        cfg.save();
       };
 
       handle.addEventListener('pointermove', onMove);
@@ -3731,7 +3734,7 @@ function bindAiPopResize(box) {
 
   const mk = (cls, dirs, cursor) => {
     const h = document.createElement('div');
-    h.className = `ai-pop-grip ${cls}`;
+    h.className = `${cfg.gripCls} ${cls}`;
     box.appendChild(h);
     grab(h, dirs, cursor);
   };
@@ -3739,6 +3742,18 @@ function bindAiPopResize(box) {
   mk('g-top', 'n', 'ns-resize');
   mk('g-corner', 'wn', 'nwse-resize');
 }
+
+const bindAiPopResize = (box) =>
+  bindPopResize(box, {
+    size: aiPopSize,
+    minW: AIPOP_MIN_W,
+    minH: AIPOP_MIN_H,
+    maxW: aiPopMaxW,
+    maxH: aiPopMaxH,
+    apply: applyAiPopSize,
+    save: saveAiPopSize,
+    gripCls: 'ai-pop-grip'
+  });
 
 // 창 크기가 줄면 팝업도 화면 안으로 들어오게 다시 맞춘다
 window.addEventListener('resize', () => {
@@ -3815,6 +3830,7 @@ function syncAiPops() {
     g.aiPop.el.classList.toggle('hidden', !show);
   }
   syncAiFab();
+  applyQmPopSize(); // AI 팝업이 열리고 닫히면 퀵메모가 설 자리도 달라진다
 }
 
 /** 팝업 열기/닫기. 닫아도 내용은 그대로 두고 감추기만 한다. */
@@ -3874,6 +3890,154 @@ async function toggleAiPop() {
   }
   if (ctx && group.aiPop) group.aiPop.chat.attachContext(label, ctx);
 }
+
+/* ---------------------------------- 퀵메모 ---------------------------------- */
+/*
+ * Ctrl/⌘+M — 하단바 오른쪽 📝 단추에서 올라오는 작은 메모창.
+ *
+ * AI 채팅 팝업과 같은 짜임이다(판을 건드리지 않고 위에 겹쳐 뜨고, 닫아도 없애지
+ * 않고 감춘다). 다만 메모는 서버와 상관이 없으므로 메인탭마다 나누지 않고 앱에
+ * 하나만 둔다 — 어느 탭에서 열든 같은 메모가 이어진다.
+ *
+ * 내용은 메모장 탭과 같은 곳(<앱 데이터>/notes/*.md)에 저장한다.
+ */
+const QMPOP_KEY = 'qmPopSize';
+const QMPOP_MIN_W = 260;
+const QMPOP_MIN_H = 200;
+const qmPopSize = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(QMPOP_KEY) || '{}');
+    return { w: Number(v.w) || 360, h: Number(v.h) || 380, max: Boolean(v.max) };
+  } catch (e) {
+    return { w: 360, h: 380, max: false };
+  }
+})();
+const saveQmPopSize = () => localStorage.setItem(QMPOP_KEY, JSON.stringify(qmPopSize));
+
+const qmPopMaxW = () => Math.max(QMPOP_MIN_W, window.innerWidth - 16);
+const qmPopMaxH = () => Math.max(QMPOP_MIN_H, window.innerHeight - 60);
+
+let qmPop = null; // { el, memo }
+let qmOpen = false;
+
+/**
+ * 오른쪽 끝에서 얼마나 떨어뜨릴지.
+ * AI 채팅 팝업이 열려 있으면 그 왼쪽에 나란히 세운다 — 겹쳐 놓으면 둘 중
+ * 하나는 보이지 않는다. (AI 가 전체보기면 나란히 둘 자리가 없으므로 그냥
+ * 오른쪽 끝에 두고 위에 띄운다)
+ */
+function qmRightOffset(width) {
+  const g = activeGroup();
+  if (!g || !g.aiOpen || !g.aiPop || aiPopSize.max) return 8;
+  const aiW = g.aiPop.el.getBoundingClientRect().width;
+  const want = 8 + aiW + 8;
+  const limit = Math.max(8, window.innerWidth - width - 8); // 화면 밖으로 밀리지 않게
+  return Math.min(want, limit);
+}
+
+/** 크기·자리 설정을 팝업에 반영한다 */
+function applyQmPopSize() {
+  if (!qmPop) return;
+  const box = qmPop.el;
+  box.classList.toggle('maximized', qmPopSize.max);
+  if (qmPopSize.max) {
+    box.style.width = '';
+    box.style.height = '';
+    box.style.right = '';
+    return;
+  }
+  const w = Math.min(qmPopSize.w, qmPopMaxW());
+  box.style.width = `${w}px`;
+  box.style.height = `${Math.min(qmPopSize.h, qmPopMaxH())}px`;
+  box.style.right = `${qmRightOffset(w)}px`;
+}
+
+/** 전체보기 켜고 끄기. 지금 상태를 돌려준다 (단추 표시용) */
+function toggleQmPopMax() {
+  qmPopSize.max = !qmPopSize.max;
+  saveQmPopSize();
+  applyQmPopSize();
+  return qmPopSize.max;
+}
+
+function ensureQmPop() {
+  if (qmPop) return qmPop;
+
+  const box = document.createElement('div');
+  box.className = 'qm-pop hidden';
+
+  const memo = window.QuickMemo.create({
+    onClose: () => setQuickMemo(false),
+    onToggleMax: () => toggleQmPopMax(),
+    isMax: () => qmPopSize.max,
+    // 메모장 탭을 열어 두었다면 목록도 바로 새로 고친다
+    onSaved: () => {
+      if (notesPad && state.notesOpen) notesPad.refresh();
+    },
+    // "메모장에서 열기" — 큰 화면에서 이어 쓴다
+    onOpenNotes: (name) => {
+      setQuickMemo(false);
+      openNotes();
+      if (notesPad && name && notesPad.open) notesPad.open(name);
+    }
+  });
+
+  box.appendChild(memo.el);
+  bindPopResize(box, {
+    size: qmPopSize,
+    minW: QMPOP_MIN_W,
+    minH: QMPOP_MIN_H,
+    maxW: qmPopMaxW,
+    maxH: qmPopMaxH,
+    apply: applyQmPopSize,
+    save: saveQmPopSize,
+    gripCls: 'ai-pop-grip'
+  });
+  document.body.appendChild(box);
+  qmPop = { el: box, memo };
+  applyQmPopSize();
+  return qmPop;
+}
+
+/** 하단바 📝 단추를 지금 상태에 맞춘다 */
+function syncMemoFab() {
+  el.memoFab.classList.toggle('on', qmOpen);
+}
+
+/** 열기/닫기. 닫아도 적던 글은 그대로 두고 감추기만 한다(저장은 하고 감춘다). */
+function setQuickMemo(open) {
+  const pop = ensureQmPop();
+  qmOpen = Boolean(open);
+  pop.el.classList.toggle('hidden', !qmOpen);
+  applyQmPopSize();
+  syncMemoFab();
+  if (qmOpen) {
+    pop.memo.focus();
+  } else {
+    pop.memo.flush(); // 감추기 전에 남은 것을 저장
+    const l = activeLeaf();
+    if (l && l.mode === 'terminal' && l.term) l.term.focus();
+  }
+}
+
+/**
+ * Ctrl/⌘+M (또는 하단바 📝 단추).
+ * 열면 마지막으로 적던 메모를 그대로 잇고, 그런 메모가 없으면 새 메모를 만든다
+ * (그 판단은 퀵메모 쪽에서 한다).
+ */
+function toggleQuickMemo() {
+  setQuickMemo(!qmOpen);
+}
+
+// 창 크기가 줄면 메모창도 화면 안으로 들어오게 다시 맞춘다
+window.addEventListener('resize', () => {
+  if (qmPop) applyQmPopSize();
+});
+
+// 앱이 뒤로 물러날 때(다른 창을 볼 때) 적던 것을 저장해 둔다
+window.addEventListener('blur', () => {
+  if (qmPop) qmPop.memo.flush();
+});
 
 /**
  * 판 헤더 버튼 아이콘.
@@ -4306,6 +4470,11 @@ el.aiFab.addEventListener('click', (e) => {
   e.stopPropagation();
   toggleAiPop();
 });
+el.memoFab.addEventListener('mousedown', (e) => e.stopPropagation());
+el.memoFab.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleQuickMemo();
+});
 
 document.addEventListener('click', hideContextMenu);
 window.addEventListener('blur', hideContextMenu);
@@ -4623,6 +4792,9 @@ api.onMenu(async (cmd, arg) => {
     case 'ai':
       toggleAiPop();
       break;
+    case 'quickmemo':
+      toggleQuickMemo();
+      break;
     case 'about':
       openAbout();
       break;
@@ -4648,6 +4820,21 @@ window.addEventListener(
         else if (helpOpen()) closeHelp();
         else if (aboutOpen) closeAbout();
         else closeUpdate();
+      }
+      return;
+    }
+
+    /*
+     * 퀵메모 창 안에 커서가 있으면 앱 단축키는 끼어들지 않는다.
+     * 글을 쓰는 자리라 ⌘W(판 닫기)·⌘S 같은 것이 여기서 먹으면 곤란하다.
+     * 여닫기(Ctrl/⌘+M)만 남기고, 나머지는 메모창이 알아서 처리한다.
+     */
+    // (target 이 요소가 아닐 수도 있다 — contains 에 요소가 아닌 것을 넣으면 예외가 난다)
+    if (qmOpen && qmPop && e.target instanceof Node && qmPop.el.contains(e.target)) {
+      if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'm') {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleQuickMemo();
       }
       return;
     }
@@ -4706,6 +4893,15 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       toggleAiPop();
+      return;
+    }
+
+    // 퀵메모: Ctrl/⌘+M — 하단바 📝 단추에서 올라오는 메모창을 여닫는다.
+    // 마지막으로 적던 메모를 그대로 이어서 연다.
+    if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'm') {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleQuickMemo();
       return;
     }
 

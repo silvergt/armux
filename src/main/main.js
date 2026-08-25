@@ -356,6 +356,11 @@ function buildMenu() {
           click: () => mainWindow && mainWindow.webContents.send('menu:ai')
         },
         {
+          label: '퀵메모',
+          accelerator: 'CmdOrCtrl+M',
+          click: () => mainWindow && mainWindow.webContents.send('menu:quickmemo')
+        },
+        {
           label: 'tmux 사용법',
           click: () => mainWindow && mainWindow.webContents.send('menu:help-tmux')
         },
