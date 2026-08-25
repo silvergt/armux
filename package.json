@@ -1,12 +1,13 @@
 {
   "name": "armux-terminal",
-  "version": "0.10.7",
+  "version": "0.10.8",
   "description": "iTerm 스타일의 크로스플랫폼 SSH 터미널 클라이언트 (Windows / macOS)",
   "main": "src/main/main.js",
   "author": "armux",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "test:ime": "electron scripts/test-ime.js",
     "dev": "electron . --dev",
     "dist:mac": "npm run build:info && electron-builder --mac",
     "dist:win": "npm run build:info && electron-builder --win",
