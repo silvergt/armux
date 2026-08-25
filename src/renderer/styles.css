@@ -122,6 +122,11 @@ body.is-mac #mac-spacer {
   background: #d8a657;
   animation: pulse 1s infinite ease-in-out;
 }
+/* 끊겨서 스스로 다시 붙는 중 — 죽은 것이 아니라 기다리는 중이다 */
+.dot.waiting {
+  background: #e0873d;
+  animation: pulse 1.6s infinite ease-in-out;
+}
 .dot.ready {
   background: var(--ok);
 }

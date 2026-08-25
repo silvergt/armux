@@ -167,6 +167,8 @@ contextBridge.exposeInMainWorld('armux', {
     pickKeyFile: () => ipcRenderer.invoke('util:pickKeyFile'),
     clipboardRead: () => ipcRenderer.invoke('util:clipboardRead'),
     clipboardWrite: (text) => ipcRenderer.send('util:clipboardWrite', text),
+    /** 포커스된 입력칸에 네이티브 편집 명령 (붙여넣기는 이 길로만 된다) */
+    edit: (kind) => ipcRenderer.send('util:edit', { kind }),
     openExternal: (url) => ipcRenderer.send('app:openExternal', url),
     confirm: (message, detail, okLabel) => ipcRenderer.invoke('util:confirm', { message, detail, okLabel }),
     /** 드롭된 File 객체의 실제 경로 (Electron 32+ 에서는 file.path 가 없어 이 API 를 써야 한다) */

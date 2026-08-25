@@ -24,10 +24,22 @@ function open(profile, size, handlers) {
   const meta = { profile: { ...profile, password: undefined, passphrase: undefined }, closed: false };
   sessions.set(sessionId, { client, stream: null, meta });
 
+  /*
+   * 왜 끝났는지를 구분해서 알린다.
+   *  - clean  : 사용자가 exit/logout 을 쳐서 셸이 정상적으로 끝났다.
+   *  - 그 외  : 연결이 끊어진 것이다(네트워크). 이때만 앱이 스스로 다시 붙는다.
+   * 이 구분이 없으면 exit 를 쳐도 자꾸 다시 접속되어 판을 닫을 수가 없다.
+   */
+  let shellExited = false; // 서버가 exit-status 를 보냈다 = 셸이 스스로 끝났다
+
   const fail = (err) => {
     if (meta.closed) return;
     meta.closed = true;
-    handlers.onError(sessionId, err && err.message ? err.message : String(err));
+    handlers.onError(sessionId, err && err.message ? err.message : String(err), {
+      // 접속 자체가 안 된 것(인증 실패 등)인지, 붙어 있다가 끊긴 것인지
+      wasConnected: Boolean(sessions.get(sessionId) && sessions.get(sessionId).stream),
+      code: (err && err.code) || (err && err.level) || ''
+    });
     try {
       client.end();
     } catch (e) {
@@ -56,10 +68,10 @@ function open(profile, size, handlers) {
 
           stream.on('data', (data) => handlers.onData(sessionId, data));
           stream.stderr.on('data', (data) => handlers.onData(sessionId, data));
-          const gone = () => {
+          const gone = (err) => {
             if (meta.closed) return;
             meta.closed = true;
-            handlers.onExit(sessionId);
+            handlers.onExit(sessionId, { clean: shellExited && !err });
             try {
               client.end();
             } catch (e) {
@@ -67,14 +79,18 @@ function open(profile, size, handlers) {
             }
             sessions.delete(sessionId);
           };
+          // 셸이 스스로 끝나면 서버가 exit-status 를 보낸다. 끊긴 경우엔 오지 않는다.
+          stream.on('exit', () => {
+            shellExited = true;
+          });
           /*
            * error 리스너가 없으면 Node 가 예외를 던져 메인 프로세스가 통째로 죽는다.
            * 이건 터미널 본체 스트림이라 늘 열려 있고, 연결이 험하게 끊기면 여기서
            * 난다. 죽는 대신 "이 판만 끊긴 것" 으로 처리한다.
            */
-          stream.on('error', gone);
+          stream.on('error', (e) => gone(e || new Error('stream error')));
           stream.stderr.on('error', () => {});
-          stream.on('close', gone);
+          stream.on('close', () => gone());
         }
       );
     })
@@ -86,7 +102,7 @@ function open(profile, size, handlers) {
     .on('end', () => {
       if (meta.closed) return;
       meta.closed = true;
-      handlers.onExit(sessionId);
+      handlers.onExit(sessionId, { clean: shellExited });
       sessions.delete(sessionId);
     });
 
@@ -183,7 +199,8 @@ function openLocal(size, handlers) {
     if (meta.closed) return;
     meta.closed = true;
     sessions.delete(sessionId);
-    handlers.onExit(sessionId, exitCode || 0);
+    // 로컬 셸이 끝난 것은 언제나 "사용자가 끝낸 것" 이다 (네트워크와 무관)
+    handlers.onExit(sessionId, { clean: true, code: exitCode || 0 });
   });
   // PTY 는 즉시 준비된다
   setTimeout(() => handlers.onReady(sessionId), 0);

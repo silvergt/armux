@@ -432,8 +432,9 @@ ipcMain.handle('local:spawn', (e, { size }) => {
   const sessionId = ssh.openLocal(size, {
     onReady: (id) => send('ssh:ready', { id }),
     onData: (id, data) => send('ssh:data', { id, data: new Uint8Array(Buffer.from(data, 'utf8')) }),
-    onExit: (id) => send('ssh:exit', { id }),
-    onError: (id, message) => send('ssh:error', { id, message })
+    // info.clean === true 면 사용자가 끝낸 것 — 자동 재접속 대상이 아니다
+    onExit: (id, info) => send('ssh:exit', { id, ...(info || {}) }),
+    onError: (id, message, info) => send('ssh:error', { id, message, ...(info || {}) })
   });
   return { sessionId };
 });
@@ -448,8 +449,9 @@ ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, size }) => {
   const sessionId = ssh.open(effective, size, {
     onReady: (id) => send('ssh:ready', { id }),
     onData: (id, data) => send('ssh:data', { id, data: new Uint8Array(data) }),
-    onExit: (id) => send('ssh:exit', { id }),
-    onError: (id, message) => send('ssh:error', { id, message })
+    // info.clean === true 면 사용자가 끝낸 것 — 자동 재접속 대상이 아니다
+    onExit: (id, info) => send('ssh:exit', { id, ...(info || {}) }),
+    onError: (id, message, info) => send('ssh:error', { id, message, ...(info || {}) })
   });
 
   return {
@@ -779,6 +781,18 @@ ipcMain.handle('util:pickKeyFile', async () => {
 
 ipcMain.handle('util:clipboardRead', () => clipboard.readText());
 ipcMain.on('util:clipboardWrite', (e, text) => clipboard.writeText(text));
+/*
+ * 입력칸(다이얼로그·메모장·주소창)의 잘라내기/복사/붙여넣기/전체선택.
+ *
+ * 화면 쪽에서 document.execCommand('paste') 를 부르던 것을 여기로 옮겼다.
+ * 크로미움은 웹 내용이 스스로 붙여넣는 것을 막아 두어 execCommand('paste') 가
+ * 아무 일도 하지 않는다(그래서 맥에서 ⌘V 가 안 먹었다). 네이티브 쪽에서
+ * webContents 에 시키면 포커스된 입력칸에 제대로 들어간다.
+ */
+ipcMain.on('util:edit', (e, { kind }) => {
+  if (['cut', 'copy', 'paste', 'selectAll', 'undo', 'redo'].includes(kind)) e.sender[kind]();
+});
+
 ipcMain.handle('util:confirm', async (e, { message, detail, okLabel }) => {
   const res = await dialog.showMessageBox(mainWindow, {
     type: 'question',

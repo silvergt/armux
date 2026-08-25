@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8" />
+<!--
+  한글 입력 회귀 시험판.
+  맥 한글 IME 가 크로미움에 던지는 이벤트 순서를 진짜 xterm 에 그대로 먹여 보고,
+  터미널로 나가는 글자가 친 그대로인지 본다. SSH 도 앱도 필요 없다.
+-->
+<link rel="stylesheet" href="../../src/renderer/vendor/xterm.css" />
+<div id="t" style="width: 600px; height: 300px"></div>
+<script src="../../src/renderer/vendor/xterm.js"></script>
+<script>
+  const T = window.Terminal;
+  const term = new T({ allowProposedApi: true });
+  term.open(document.getElementById('t'));
+  const ta = term.textarea;
+  let out = [];
+  term.onData((d) => out.push(d));
+
+  /*
+   * 예전에 넣었다가 글자를 먹어서 걷어낸 훅.
+   * 시험이 "이 훅을 다시 넣으면 깨진다" 는 것까지 확인하도록 남겨 둔다.
+   */
+  function installOldHack() {
+    ta.addEventListener('compositionend', () => {
+      setTimeout(() => {
+        ta.value = '';
+      }, 0);
+    });
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await tick();
+  };
+  const ce = (type, data) => ta.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+  const kd = (init) => ta.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+
+  // 조합 중인 글자만 갈아 끼운다 (누가 중간에 값을 비웠다면 그 상태 위에 남는다)
+  let prevLen = 0;
+  function putComposing(s) {
+    const keep = ta.value.slice(0, Math.max(0, ta.value.length - prevLen));
+    ta.value = keep + s;
+    prevLen = s.length;
+  }
+
+  async function syllable(steps) {
+    ce('compositionstart', '');
+    prevLen = 0;
+    for (const s of steps) {
+      putComposing(s);
+      ce('compositionupdate', s);
+      await tick();
+    }
+    ce('compositionend', steps[steps.length - 1]);
+    prevLen = 0;
+  }
+  const plain = (ch) => {
+    kd({ key: ch, keyCode: ch.toUpperCase().charCodeAt(0) });
+    ta.value += ch;
+  };
+  // IME 가 켜져 있으면 스페이스도 keyCode 229 로 온다
+  const space = () => {
+    kd({ key: ' ', code: 'Space', keyCode: 229, isComposing: false });
+    ta.value += ' ';
+  };
+  const enter = () => kd({ key: 'Enter', code: 'Enter', keyCode: 13 });
+  const backspace = () => kd({ key: 'Backspace', code: 'Backspace', keyCode: 8 });
+
+  const HAN = ['ㅎ', '하', '한'];
+  const GEUL = ['ㄱ', '그', '글'];
+  const AN = ['ㅇ', '아', '안'];
+  const NYEONG = ['ㄴ', '녀', '녕'];
+  const DA = ['ㄷ', '다'];
+  const SEO = ['ㅅ', '서'];
+
+  const CASES = {
+    '빠르게 이어 치기': async () => {
+      await syllable(HAN);
+      await syllable(GEUL);
+      await settle();
+      return '한글';
+    },
+    '단어 + 스페이스 + 단어': async () => {
+      await syllable(HAN);
+      await syllable(GEUL);
+      space();
+      await settle();
+      await syllable(AN);
+      await syllable(NYEONG);
+      space();
+      await settle();
+      return '한글 안녕 ';
+    },
+    '천천히 한 글자씩': async () => {
+      await syllable(HAN);
+      await settle();
+      await syllable(GEUL);
+      await settle();
+      return '한글';
+    },
+    '한글 사이에 영문': async () => {
+      await syllable(HAN);
+      await settle();
+      plain('a');
+      await settle();
+      await syllable(GEUL);
+      await settle();
+      return '한a글';
+    },
+    '긴 문장 이어 치기': async () => {
+      for (const s of [HAN, GEUL, AN, NYEONG, DA, SEO]) await syllable(s);
+      await settle();
+      return '한글안녕다서';
+    },
+    '조합하고 바로 Enter': async () => {
+      await syllable(HAN);
+      enter();
+      await settle();
+      return '한' + String.fromCharCode(13);
+    },
+    '조합하고 바로 지우기': async () => {
+      await syllable(HAN);
+      backspace();
+      await settle();
+      return '한' + String.fromCharCode(127);
+    }
+  };
+
+  async function runAll(withHack) {
+    if (withHack) installOldHack();
+    const r = {};
+    for (const [name, fn] of Object.entries(CASES)) {
+      out = [];
+      ta.value = '';
+      prevLen = 0;
+      await settle();
+      const want = await fn();
+      r[name] = { got: out.join(''), want };
+    }
+    return r;
+  }
+  window.__runAll = runAll;
+</script>

@@ -29,8 +29,22 @@ function buildConnectConfig(profile) {
     host: profile.host,
     port: Number(profile.port) || 22,
     username: profile.username,
-    keepaliveInterval: 20000, // NAT/방화벽 타임아웃 방지
-    keepaliveCountMax: 6,
+    /*
+     * 살아 있다고 봐 주는 시간 = keepaliveInterval × (keepaliveCountMax + 1).
+     *
+     * 20초 × 7 = 2분 20초였는데, 인터넷이 그보다 조금만 오래 끊겨도 세션이
+     * 죽었다(실측으로 130초는 살아남고 140.4초에 "Keepalive timeout").
+     * SSH 는 끊긴 뒤에 같은 셸로 돌아갈 방법이 없으므로, 애초에 안 끊기는 것이
+     * 가장 좋다. 그래서 유예를 10분으로 늘렸다.
+     *
+     * 막힌 동안 못 간 것은 TCP 가 알아서 다시 보내므로, 인터넷이 돌아오면
+     * 재접속이 아니라 하던 작업이 그대로 이어진다.
+     *
+     * 대신 서버가 응답 없이 사라진 경우(FIN/RST 조차 못 받는 경우)에는 그만큼
+     * 늦게 알아차린다. 그건 renderer 의 자동 재접속이 이어받는다.
+     */
+    keepaliveInterval: 20000, // NAT/방화벽 타임아웃 방지도 겸한다
+    keepaliveCountMax: 30, // 20초 × 31 ≈ 10분
     readyTimeout: 30000,
     tryKeyboard: true
   };

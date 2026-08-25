@@ -607,26 +607,21 @@ function createLeaf(tab, connect, options) {
   term.open(termHost);
 
   /*
-   * 한글 입력의 뿌리를 막는다 — 조합이 끝나면 xterm 의 "숨은 입력칸" 을 비운다.
+   * 한글 입력에 대해 여기서는 아무것도 하지 않는다 — 일부러 그렇게 둔다.
    *
-   * xterm 은 이 입력칸을 Enter 나 Ctrl+C 를 눌렀을 때만 비운다. 그래서 Claude Code
-   * 프롬프트처럼 Enter 없이 여러 줄을 고치는 동안 친 글자가 계속 쌓인다.
-   * 한글은 조합이 끝날 때 "쌓인 내용의 일부를 잘라내" 보내는 방식이라, 캐럿이
-   * 한 번이라도 끝에서 벗어나면 새로 친 글자가 아니라 옛 글자가 계속 나간다
-   * ("서서서", "크크크"). 영어는 키에서 바로 바이트를 만들므로 영향이 없다.
+   * 한때 조합이 끝날 때마다 xterm 의 "숨은 입력칸" 을 비웠는데, 그것이 오히려
+   * 글자를 먹었다. xterm 은 조합이 끝나면 setTimeout(0) 뒤에 그 입력칸의 값을
+   * 잘라내서 보내고, 조합 중에 다른 키가 오면 그 자리에서 잘라내 보낸다.
+   * 그 사이에 값을 비워 버리면
+   *   - 잘라낼 것이 없어 방금 친 글자가 통째로 사라지고,
+   *   - 길이가 줄어든 것으로 보여 지우기(DEL)가 대신 나가기도 한다.
+   * 빠르게 치거나 조합 직후 스페이스를 누를 때 자주 걸렸다.
    *
-   * 매번 비워 두면 다음 조합이 언제나 빈 칸의 0 번 자리에서 시작하므로
-   * 위치가 어긋날 여지 자체가 없어진다.
-   * (xterm 이 compositionend 에서 setTimeout(0) 으로 글자를 보내므로, 우리도
-   *  같은 방식으로 그 "뒤" 에 비운다)
+   * 원래 잡으려던 것("너너너", "츠츠츠")의 진짜 원인은 따로 있었다. 우리가
+   * 가로챈 ⌥←/⌘← 같은 키에 preventDefault 를 안 걸어서 브라우저가 그 입력칸의
+   * 캐럿을 옮겨 버린 것이다. 그건 아래 send() 에서 preventDefault 로 막았다.
+   * 캐럿이 움직이지 않으면 입력칸은 xterm 이 알아서 관리한다 — 건드리지 않는다.
    */
-  if (term.textarea) {
-    term.textarea.addEventListener('compositionend', () => {
-      setTimeout(() => {
-        if (term.textarea) term.textarea.value = '';
-      }, 0);
-    });
-  }
 
   // 터미널 커서 이동/삭제 단축키를 표준 시퀀스로 변환해 셸로 보낸다.
   // (mac 의 ⌘/⌥ 조합과 Alt+방향키를 iTerm/Terminal.app 과 같게 맞춘다)
@@ -669,6 +664,19 @@ function createLeaf(tab, connect, options) {
     if (cmd && e.key === 'ArrowLeft') return send('\x01'); // 줄 처음(Ctrl+A)
     if (cmd && e.key === 'ArrowRight') return send('\x05'); // 줄 끝(Ctrl+E)
     if (cmd && e.key === 'Backspace') return send('\x15'); // 줄 처음까지 삭제(Ctrl+U)
+
+    /*
+     * 우리도 xterm 도 처리하지 않는 "조합키 + 이동키" 는 기본 동작만 막는다.
+     *
+     * 이게 없으면 브라우저가 xterm 의 숨은 입력칸 캐럿을 옮겨 버리고, 한글은
+     * 조합이 끝날 때 그 캐럿 자리를 기준으로 잘라내 보내므로 엉뚱한 옛 글자가
+     * 나간다("너너너"). 맥의 ⌘↑/⌘↓(문서 처음·끝으로)가 대표적인데, 우리 손도
+     * xterm 손도 닿지 않아 그대로 캐럿이 움직이고 있었다.
+     *
+     * 여기서는 막기만 하고(return true) 처리는 xterm 에 그대로 맡긴다.
+     */
+    const NAV = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Backspace', 'Delete'];
+    if ((e.metaKey || e.ctrlKey || e.altKey) && NAV.includes(e.key)) e.preventDefault();
 
     return true;
   });
@@ -713,6 +721,9 @@ function createLeaf(tab, connect, options) {
     if (leaf.sessionId && leaf.status === 'ready') {
       watchTmuxCommand(leaf, data); // 어떤 tmux 세션에 붙는지 기억해 둔다
       api.ssh.write(leaf.sessionId, data);
+    } else if (leaf.status === 'waiting') {
+      // 자동으로 다시 붙는 중 — Enter 는 "지금 바로 해 봐" 다
+      if (data === '\r') retryNow(leaf);
     } else if (leaf.status === 'closed' || leaf.status === 'error') {
       if (data === '\r') reconnect(leaf); // 종료된 페인에서 Enter → 재접속
     }
@@ -784,7 +795,8 @@ async function startSession(leaf) {
     return;
   }
 
-  leaf.term.writeln(`\x1b[90m→ ${h.username}@${h.host}:${h.port} 접속 중…\x1b[0m`);
+  // 자동 재시도 중에는 같은 줄을 30초마다 쌓지 않는다
+  if (!leaf.retry) leaf.term.writeln(`\x1b[90m→ ${h.username}@${h.host}:${h.port} 접속 중…\x1b[0m`);
   render();
 
   try {
@@ -801,9 +813,14 @@ async function startSession(leaf) {
     leaf.connect = { ...group.connect };
     render();
   } catch (err) {
-    leaf.status = 'error';
-    leaf.term.writeln(`\r\n\x1b[31m✖ 접속 실패: ${String(err.message || err).replace(/^Error:\s*/, '')}\x1b[0m`);
-    leaf.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
+    const msg = String(err.message || err).replace(/^Error:\s*/, '');
+    // 재시도 중이라면 실패했다는 사실만 짧게 (같은 줄이 쌓이지 않게)
+    if (!leaf.retry) leaf.term.writeln(`\r\n\x1b[31m✖ 접속 실패: ${msg}\x1b[0m`);
+    if (isFatalConnectError(msg) || !beginRetry(leaf, `접속 실패: ${msg}`)) {
+      cancelRetry(leaf);
+      leaf.status = 'error';
+      leaf.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
+    }
     render();
   }
 }
@@ -824,6 +841,8 @@ function reconnect(leaf) {
 
 /** 페인 정리 (세션 종료 + 터미널 파기) */
 function disposeLeaf(leaf) {
+  leaf.disposed = true;
+  cancelRetry(leaf); // 예약된 자동 재접속도 함께 없앤다
   if (leaf.sessionId) {
     api.ssh.close(leaf.sessionId);
     sessionToLeaf.delete(leaf.sessionId);
@@ -927,7 +946,7 @@ function setLeafMode(leaf, mode, url, webExtra) {
      * 고르기 화면에서 웹·메모 등을 골랐던 판은 셸이 없다.
      * 나중에 터미널로 바꾸면 그때 붙여 준다(빈 검은 화면이 아니라).
      */
-    if (!leaf.sessionId && leaf.status !== 'connecting') {
+    if (!leaf.sessionId && leaf.status !== 'connecting' && leaf.status !== 'waiting') {
       const c = leaf.connect || {};
       if (c.local || c.hostId || c.credId || c.profile) startSession(leaf);
     }
@@ -1108,6 +1127,137 @@ api.notify.onJump(({ leafId }) => {
   }
 });
 
+/* --------------------------- 끊겨도 죽지 않고 스스로 다시 붙기 --------------------------- */
+/*
+ * 인터넷이 잠깐 끊겼다고 판을 죽이지 않는다.
+ *
+ * 먼저 알아 둘 것: SSH 는 TCP 위에서만 산다. 그 TCP 가 죽으면 서버 쪽 셸도
+ * 같이 죽으므로, 끊긴 뒤에 "그 셸을 이어서" 쓰는 방법은 프로토콜에 없다.
+ * 그래서 두 겹으로 막는다.
+ *
+ *  1) 잠깐 끊긴 것으로는 아예 죽지 않게 한다.
+ *     막힌 동안 오가지 못한 것은 TCP 가 알아서 다시 보내므로, 연결을 살아 있는
+ *     것으로 봐 주는 시간(sshconfig.js 의 keepalive)만 넉넉하면 인터넷이
+ *     돌아왔을 때 하던 작업이 그대로 이어진다. 재접속이 아니라 진짜 같은 세션이다.
+ *
+ *  2) 그래도 끊어졌으면, Enter 를 기다리지 않고 스스로 다시 붙는다.
+ *     붙고 나면 끊기기 전에 보고 있던 tmux 세션으로 돌려놓는다. 서버의 tmux 는
+ *     살아 있으므로 화면과 돌아가던 명령이 그대로 돌아온다.
+ *
+ * 사용자가 exit 를 쳐서 끝난 것(clean)에는 다시 붙지 않는다 — 판을 닫을 수가
+ * 없어진다.
+ */
+const RETRY_STEPS = [2000, 4000, 8000, 15000, 30000]; // 마지막 값으로 계속 간다
+const RETRY_GIVEUP_MS = 30 * 60 * 1000; // 30분 동안 안 되면 그만둔다
+
+/** 다시 해 봐야 똑같은 오류 (틀린 열쇠로 계속 두드리지 않는다) */
+function isFatalConnectError(message, code) {
+  const m = String(message || '');
+  if (code === 'client-authentication') return true;
+  return /authentication methods failed|Permission denied|host key|Host key/i.test(m);
+}
+
+/** 이 판을 자동으로 다시 붙일 수 있는가 (붙을 정보가 있는 SSH 판인가) */
+function canRetry(leaf) {
+  if (!opts.autoReconnect || leaf.disposed) return false;
+  const c = leaf.connect || {};
+  if (c.local) return false; // 로컬 셸이 끝난 것은 사용자가 끝낸 것이다
+  return Boolean(c.hostId || c.credId || c.profile);
+}
+
+/**
+ * 자동 재접속 시작(또는 다음 시도 예약).
+ * @returns {boolean} 맡았으면 true — 부르는 쪽은 "끊김" 안내를 따로 쓰지 않는다
+ */
+function beginRetry(leaf, why) {
+  if (!canRetry(leaf)) return false;
+
+  if (!leaf.retry) {
+    leaf.retry = { attempt: 0, since: Date.now(), timer: null };
+    leaf.term.writeln(`\r\n\x1b[33m● ${why} — 연결이 돌아오면 자동으로 다시 붙습니다.\x1b[0m`);
+  }
+  if (leaf.retry.timer) return true; // 이미 예약되어 있다
+
+  // 끊기기 전에 tmux 안이었다면 다시 붙을 때 그 세션으로 돌려놓는다
+  leaf.reattachTmux = opts.tmuxReattach && Boolean(leaf.tmuxSession || leaf.wasTmux);
+  leaf.status = 'waiting';
+  scheduleRetry(leaf);
+  return true;
+}
+
+function scheduleRetry(leaf) {
+  const r = leaf.retry;
+  if (!r) return;
+  if (Date.now() - r.since > RETRY_GIVEUP_MS) return giveUpRetry(leaf);
+  const wait = RETRY_STEPS[Math.min(r.attempt, RETRY_STEPS.length - 1)];
+  r.attempt += 1;
+  r.timer = setTimeout(() => runRetry(leaf), wait);
+  leaf.term.writeln(`\x1b[90m  ${Math.round(wait / 1000)}초 뒤 다시 시도합니다. (Enter 를 누르면 지금 바로)\x1b[0m`);
+}
+
+function runRetry(leaf) {
+  const r = leaf.retry;
+  if (!r) return;
+  r.timer = null;
+  if (leaf.disposed || !canRetry(leaf)) return cancelRetry(leaf);
+  /*
+   * 인터넷 자체가 없는 동안에는 헛되이 두드리지 않는다.
+   * (돌아오면 online 이벤트가 곧바로 깨운다 — 여기서는 짧게만 다시 본다)
+   */
+  if (navigator.onLine === false) {
+    r.timer = setTimeout(() => runRetry(leaf), 3000);
+    return;
+  }
+  startSession(leaf); // 성공하면 onReady 가, 실패하면 startSession 이 다음 시도를 잡는다
+}
+
+/** 지금 바로 한 번 더 (Enter, 또는 인터넷이 돌아왔을 때) */
+function retryNow(leaf) {
+  const r = leaf.retry;
+  if (!r) return false;
+  if (leaf.status === 'connecting') return false; // 이미 붙는 중이면 겹쳐서 붙지 않는다
+  if (r.timer) {
+    clearTimeout(r.timer);
+    r.timer = null;
+  }
+  r.attempt = 0; // 사람이 눌렀거나 인터넷이 돌아왔으면 처음부터 짧게
+  runRetry(leaf);
+  return true;
+}
+
+function cancelRetry(leaf) {
+  if (!leaf.retry) return;
+  if (leaf.retry.timer) clearTimeout(leaf.retry.timer);
+  leaf.retry = null;
+}
+
+function giveUpRetry(leaf) {
+  cancelRetry(leaf);
+  leaf.status = 'error';
+  leaf.term.writeln('\x1b[90m● 자동 재접속을 그만둡니다. Enter 를 누르면 다시 시도합니다.\x1b[0m');
+  render();
+}
+
+/** 기다리는 중인 판 모두 지금 다시 붙여 본다 */
+function retryAllWaiting() {
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const l of leavesOf(t.root)) {
+        if (l.retry) retryNow(l);
+      }
+    }
+  }
+}
+
+/*
+ * 인터넷이 끊기고 붙는 것을 알려 준다.
+ * 끊겼다고 세션을 건드리지는 않는다 — 대개는 그대로 살아남고, 진짜 끊어졌으면
+ * 위의 재시도가 알아서 맡는다.
+ */
+window.addEventListener('offline', () => {
+  el.statusLeft.textContent = '인터넷이 끊겼습니다 — 연결을 유지한 채 기다리는 중…';
+});
+
 /*
  * 절전에서 깨면 SSH 는 대개 끊겨 있다. 끊긴 판을 순서대로 다시 붙인다.
  * 한꺼번에 붙으면 서버가 동시 접속을 거절할 수 있어 조금씩 띄운다.
@@ -1142,7 +1292,11 @@ function reconnectDeadPanes(reason) {
 }
 
 api.power.onResume(() => setTimeout(() => reconnectDeadPanes('절전에서 깨어남'), 1500));
-window.addEventListener('online', () => setTimeout(() => reconnectDeadPanes('네트워크 복구'), 1500));
+window.addEventListener('online', () => {
+  el.statusLeft.textContent = '인터넷이 돌아왔습니다.';
+  retryAllWaiting(); // 기다리던 판은 곧바로 다시 붙여 본다
+  setTimeout(() => reconnectDeadPanes('네트워크 복구'), 1500);
+});
 
 function raiseAlert(leaf, force) {
   if (leaf.alert) return;
@@ -3151,6 +3305,7 @@ function statusMark(status, alerted) {
 function tabStatus(tab) {
   const sts = leavesOf(tab.root).map((l) => l.status);
   if (sts.includes('connecting')) return 'connecting';
+  if (sts.includes('waiting')) return 'waiting'; // 끊겨서 다시 붙는 중
   if (sts.includes('ready')) return 'ready';
   if (sts.includes('error')) return 'error';
   return 'closed';
@@ -4592,6 +4747,10 @@ api.ssh.onReady(({ id }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
   leaf.status = 'ready';
+  if (leaf.retry) {
+    cancelRetry(leaf);
+    leaf.term.writeln('\x1b[32m● 다시 붙었습니다.\x1b[0m');
+  }
 
   /*
    * 절전에서 깨어나 자동으로 다시 붙은 판이라면, 끊기기 전에 보고 있던 tmux
@@ -4683,24 +4842,30 @@ api.ssh.onData(({ id, data }) => {
   }
 });
 
-api.ssh.onExit(({ id }) => {
+api.ssh.onExit(({ id, clean }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
-  leaf.status = 'closed';
-  leaf.term.writeln('\r\n\x1b[90m● 연결이 종료되었습니다. Enter 를 누르면 다시 접속합니다.\x1b[0m');
   sessionToLeaf.delete(id);
   leaf.sessionId = null;
+  // 사용자가 exit 를 쳐서 끝난 것이면 그대로 둔다. 끊긴 것이면 스스로 다시 붙는다.
+  if (clean || !beginRetry(leaf, '연결이 끊겼습니다')) {
+    leaf.status = 'closed';
+    leaf.term.writeln('\r\n\x1b[90m● 연결이 종료되었습니다. Enter 를 누르면 다시 접속합니다.\x1b[0m');
+  }
   render();
 });
 
-api.ssh.onError(({ id, message }) => {
+api.ssh.onError(({ id, message, code }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
-  leaf.status = 'error';
-  leaf.term.writeln(`\r\n\x1b[31m✖ ${message}\x1b[0m`);
-  leaf.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
   sessionToLeaf.delete(id);
   leaf.sessionId = null;
+  leaf.term.writeln(`\r\n\x1b[31m✖ ${message}\x1b[0m`);
+  // 인증 실패처럼 다시 해도 똑같은 것은 재시도하지 않는다
+  if (isFatalConnectError(message, code) || !beginRetry(leaf, message)) {
+    leaf.status = 'error';
+    leaf.term.writeln('\x1b[90m  Enter 를 누르면 다시 시도합니다.\x1b[0m');
+  }
   render();
 });
 
@@ -4733,13 +4898,13 @@ api.onMenu(async (cmd, arg) => {
     case 'copy': {
       // 파일 뷰어 등에서 드래그로 고른 일반 텍스트 선택이 있으면 그것을 먼저 복사한다
       const domSel = String(window.getSelection ? window.getSelection() : '');
-      if (isTextInput(document.activeElement)) document.execCommand('copy');
+      if (isTextInput(document.activeElement)) api.util.edit('copy');
       else if (domSel) api.util.clipboardWrite(domSel);
       else if (l && l.mode !== 'web' && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
       break;
     }
     case 'cut':
-      if (isTextInput(document.activeElement)) document.execCommand('cut');
+      if (isTextInput(document.activeElement)) api.util.edit('cut');
       break;
     case 'selectAll':
       if (isTextInput(document.activeElement)) document.activeElement.select();
@@ -4756,11 +4921,23 @@ api.onMenu(async (cmd, arg) => {
       } else if (l && l.mode !== 'web') l.term.selectAll();
       break;
     case 'paste': {
+      /*
+       * 입력칸(접속 창·메모장·주소창)에서는 네이티브 붙여넣기를 시킨다.
+       * 크로미움은 웹 내용이 스스로 붙여넣는 것을 막아 두어서
+       * document.execCommand('paste') 는 조용히 아무 일도 하지 않는다.
+       * 맥은 ⌘V 를 메뉴가 먼저 가져가므로, 이 길이 막히면 붙여넣기 자체가 안 됐다.
+       */
       if (isTextInput(document.activeElement)) {
-        document.execCommand('paste');
+        api.util.edit('paste');
         break;
       }
       if (!l || l.status !== 'ready' || l.mode === 'web') break;
+      /*
+       * 터미널에서는 그림(스크린샷)이면 서버로 올리고 경로를 적어 준다.
+       * 맥은 ⌘V 를 메뉴가 먼저 가져가서 아래 keydown 경로를 타지 않으므로,
+       * 여기에도 같은 처리가 있어야 맥에서도 스크린샷 붙여넣기가 된다.
+       */
+      if (await pasteImageIntoTerminal(l)) break;
       const text = await api.util.clipboardRead();
       if (text) api.ssh.write(l.sessionId, text);
       break;
