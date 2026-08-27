@@ -1428,17 +1428,38 @@ function wrapperIsShell(tok, depth = 0) {
   return true; // 뒤에 아무것도 없으면 그냥 프롬프트(비밀번호 입력 등)
 }
 
-/** 창 하나의 상태: 'busy' | 'idle' | 'alert' */
+/**
+ * 창 하나의 상태: 'busy' | 'idle' | 'alert'
+ *
+ * 관찰기는 세 가지를 준다.
+ *   cmd   — tmux 가 말하는 포그라운드 명령 이름(프로세스 그룹 대표)
+ *   argv  — 그 대표의 명령줄 전체
+ *   chain — 대표부터 자식으로 내려간 이름들. 대표만으로는 모자란 경우가 있다.
+ *             `git log`  → ['git', 'pager']        화면을 잡고 있는 건 페이저다
+ *             `sudo -i`  → ['sudo','sudo','bash']  실제로는 루트 셸이다
+ *             `sudo make`→ ['sudo','sudo','make']  이건 진짜 작업이다
+ */
 function classifyPane(leaf, pane) {
   const cmd = baseName(String(pane.cmd || '').replace(/^-/, '')); // 로그인 셸 '-bash' → 'bash'
   const tok = String(pane.argv || '').trim().split(/\s+/).filter(Boolean);
-  /*
-   * argv 의 실행 파일 이름. tmux 의 pane_current_command 와 다를 수 있다.
-   *   `git log`            → cmd=git   argv=/usr/bin/pager   (사실은 페이저 대기)
-   *   `cat /dev/zero | grep` → cmd=cat  argv=grep …          (파이프라인)
-   * 둘 중 하나라도 "가만히 있는 것" 이면 가만히 있는 것으로 본다.
-   */
   const argv0 = baseName((tok[0] || '').replace(/^-/, ''));
+  const chain = (Array.isArray(pane.chain) ? pane.chain : []).map((c) => baseName(String(c).replace(/^-/, '')));
+
+  /*
+   * sudo·nohup 처럼 감싸는 것들과, 그 아래 열린 셸을 걷어낸 "진짜 명령".
+   *   ['sudo','sudo','bash']          → 남는 게 없다 → 마지막인 bash = 루트 프롬프트
+   *   ['sudo','sudo','bash','sleep']  → sleep. 그 루트 셸 안에서 진짜로 돌고 있다
+   *   ['make','sh']                   → make. 레시피 돌리려고 sh 를 띄운 것뿐이다
+   *   ['claude','bash']               → claude. 에이전트가 도구를 부른 것뿐이다
+   * 앞에서부터 처음 걸리는 것을 쓰므로, 중간에 셸이 끼어도 앞의 진짜 명령이 이긴다.
+   * 사슬이 없으면(ps 폴백) 예전처럼 이름 두 개로만 본다.
+   */
+  const effective =
+    chain.find((c) => !CMD_WRAP.has(c) && !CMD_SHELL.has(c)) ||
+    chain[chain.length - 1] ||
+    cmd ||
+    argv0;
+  const deepest = chain.length ? chain[chain.length - 1] : '';
 
   /*
    * 셸 프롬프트가 떠 있다 = 아무것도 안 돌고 있다.
@@ -1446,7 +1467,7 @@ function classifyPane(leaf, pane) {
    * 못 보내고 죽거나(크래시·kill) 그냥 종료해 버리면 'busy' 가 영영 남아서
    * 스피너가 안 꺼졌다. 프롬프트로 돌아왔다는 사실이 그보다 확실한 증거다.
    */
-  if ((cmd && CMD_SHELL.has(cmd)) || (argv0 && CMD_SHELL.has(argv0))) {
+  if (CMD_SHELL.has(effective) || (!chain.length && argv0 && CMD_SHELL.has(argv0))) {
     delete leaf.hookByPane[pane.id];
     return 'idle';
   }
@@ -1455,23 +1476,31 @@ function classifyPane(leaf, pane) {
 
   // 훅이 아는 창(Claude 계열)은 훅이 정한다. 이름이 무엇이든 상관없다 —
   // 신호가 온다는 사실 자체가 "여기는 에이전트" 라는 표시다.
-  if (sig || CMD_AGENT.has(cmd)) {
+  // (에이전트는 작업 중에 자식 셸을 띄우므로, 반드시 사슬 규칙보다 먼저 본다.)
+  if (sig || CMD_AGENT.has(effective) || CMD_AGENT.has(cmd)) {
     if (sig === 'busy') return 'busy';
     if (sig === 'alert') return 'alert';
     return 'idle'; // idle 이거나 아직 신호가 없으면 조용히 둔다
   }
 
-  if (!cmd) return 'idle';
-  if (CMD_TUI.has(cmd) || (argv0 && CMD_TUI.has(argv0))) return 'idle';
-  if (CMD_WRAP.has(cmd)) return wrapperIsShell(tok) ? 'idle' : 'busy';
-  if (CMD_FOLLOW.has(cmd) && tok.some((t) => FOLLOW_FLAGS.has(t))) return 'idle';
+  if (!cmd && !effective) return 'idle';
   /*
-   * 인자 없는 REPL. argv 의 실행 파일이 cmd 와 같을 때만 믿는다 — 파이프라인이면
+   * 사슬 맨 끝이 페이저·전체화면 앱이면 그것이 화면을 잡고 사람을 기다리는 중이다
+   * (`git log` 의 pager). 끝이 셸인 경우는 여기서 보지 않는다 — `make` 가 레시피를
+   * 돌리려고 `sh` 를 띄운 것까지 "놀고 있음" 으로 오해하면 안 되기 때문이다.
+   */
+  if (deepest && CMD_TUI.has(deepest)) return 'idle';
+  if (CMD_TUI.has(effective) || CMD_TUI.has(cmd) || (argv0 && CMD_TUI.has(argv0))) return 'idle';
+  // 사슬이 없을 때를 위한 예전 규칙 (인자만 보고 래퍼를 가른다)
+  if (CMD_WRAP.has(effective)) return wrapperIsShell(tok) ? 'idle' : 'busy';
+  if (CMD_FOLLOW.has(effective) && tok.some((t) => FOLLOW_FLAGS.has(t))) return 'idle';
+  /*
+   * 인자 없는 REPL. argv 의 실행 파일이 그 명령과 같을 때만 믿는다 — 파이프라인이면
    * argv 가 뒤쪽 명령을 가리켜서, 인자가 없어 보인다고 REPL 로 오해할 수 있다.
-   * 또 argv 를 아예 못 받아 온 서버에서는 낮추지 않는다. 확인되지 않은 것을
+   * argv 를 아예 못 받아 온 서버에서는 낮추지 않는다. 확인되지 않은 것을
    * "놀고 있음" 으로 보면 완료 알림이 잘못 뜨기 때문이다.
    */
-  if (CMD_REPL.has(cmd) && argv0 === cmd && !tok.slice(1).some((a) => !BARE_FLAGS.has(a))) {
+  if (CMD_REPL.has(effective) && argv0 === effective && !tok.slice(1).some((x) => !BARE_FLAGS.has(x))) {
     return 'idle';
   }
   return 'busy';

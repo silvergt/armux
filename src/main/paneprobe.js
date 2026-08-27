@@ -42,7 +42,8 @@ const probes = new Map(); // sessionId -> { stopped, timer, onState }
  *   B                                          블록 시작
  *   M tmux <세션이름>  |  M direct              이 판이 지금 무엇을 보고 있는지
  *   P <pane> <창번호> <보임0/1> <tty> <명령>     창 하나 (tmux 밖이면 #direct 하나)
- *   A <tty> <명령줄 전체>                        그 tty 포그라운드의 argv
+ *   A <tty> <명령줄 전체>                        그 tty 포그라운드(그룹 대표)의 argv
+ *   K <tty> <이름1> <이름2> …                   대표부터 내려간 자식 사슬
  *   E                                          블록 끝
  */
 function script() {
@@ -68,25 +69,47 @@ find_shell() {
     awk -v p="$s" '$2 == p && $3 ~ /^(pts|ttys)/ { print $1, $3; exit }'
 }
 
-# 셸 pid 목록("<tty> <pid>" 줄들)을 받아, 각 tty 의 포그라운드 명령줄을 뱉는다.
+# 셸 pid 목록("<tty> <pid>" 줄들)을 받아, 각 tty 의 포그라운드 상태를 뱉는다.
 #
 # ps 로 전체 프로세스를 훑으면 이 서버 기준 17ms 가 걸린다(2초마다면 CPU 1.3%).
 # /proc 을 직접 읽으면 0.5ms 다. 셸의 /proc/<pid>/stat 6번째 값(괄호 뒤 기준)이
 # 그 터미널의 포그라운드 프로세스 그룹(tpgid)이고, 그룹 대표의 pid 와 같으므로
 # /proc/<tpgid>/cmdline 을 그대로 읽으면 된다.
+#
+# 대표만으로는 부족한 경우가 있어 자식 사슬도 함께 보낸다.
+#   git log   → 대표는 git 인데 화면을 잡고 있는 것은 자식 pager 다
+#   sudo -i   → 대표는 sudo 인데 실제로는 그 아래 bash 가 프롬프트를 띄우고 있다
+# /proc/<pid>/task/<pid>/children 을 따라 다섯 단계까지 이름을 모은다. 이 파일이
+# 없는 커널이면 대표 하나만 담기고, 예전과 같은 판정으로 돌아간다.
 args_via_proc() {
   awk '{
     f = "/proc/" $2 "/stat"
-    if ((getline line < f) > 0) {
-      close(f)
-      n = index(line, ") ")
-      split(substr(line, n + 2), a, " ")
-      if (a[6] > 0) print $1, a[6]
+    if ((getline line < f) <= 0) next
+    close(f)
+    n = index(line, ") ")
+    split(substr(line, n + 2), a, " ")
+    g = a[6] + 0
+    if (g <= 0) next
+    chain = ""
+    p = g
+    for (i = 0; i < 5 && p > 0; i++) {
+      cf = "/proc/" p "/comm"
+      if ((getline c < cf) <= 0) { close(cf); break }
+      close(cf)
+      chain = chain " " c
+      kf = "/proc/" p "/task/" p "/children"
+      kids = ""
+      if ((getline kids < kf) <= 0) { close(kf); break }
+      close(kf)
+      split(kids, k, " ")
+      p = (k[1] == "") ? 0 : k[1] + 0
     }
-  }' | while read -r T G; do
+    print $1, g, chain
+  }' | while read -r T G REST; do
     printf 'A %s ' "$T"
     tr '\\0' ' ' < "/proc/$G/cmdline" 2>/dev/null
     echo
+    [ -n "$REST" ] && echo "K $T $REST"
   done
 }
 
@@ -133,9 +156,7 @@ while :; do
           "/proc/$SHPID/stat" 2>/dev/null)
         C=$(cat "/proc/$G/comm" 2>/dev/null)
         echo "P #direct - 1 /dev/$TTY $C"
-        printf 'A /dev/%s ' "$TTY"
-        tr '\\0' ' ' < "/proc/$G/cmdline" 2>/dev/null
-        echo
+        echo "/dev/$TTY $SHPID" | args_via_proc
       else
         C=$(ps -t "$TTY" -o stat=,comm= 2>/dev/null | awk '$1 ~ /\\+/ { print $2 }' | tail -1)
         echo "P #direct - 1 /dev/$TTY $C"
@@ -151,7 +172,7 @@ done
 
 /** 한 블록(B…E)을 상태 객체로 바꾼다. */
 function parseBlock(lines) {
-  const out = { mode: 'unknown', session: '', panes: [], args: {} };
+  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {} };
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
@@ -178,11 +199,19 @@ function parseBlock(lines) {
       // "/dev/pts/26 python3 -c import time;..." — 그 tty 포그라운드의 명령줄 전체
       const sp = rest.indexOf(' ');
       if (sp > 0) out.args[rest.slice(0, sp)] = rest.slice(sp + 1);
+    } else if (kind === 'K') {
+      // "/dev/pts/26 git pager" — 대표부터 내려간 자식 사슬
+      const k = rest.split(/\s+/).filter(Boolean);
+      if (k.length >= 2) out.chains[k[0]] = k.slice(1);
     }
   }
-  // 창마다 명령줄을 붙여 준다 (없으면 빈 문자열)
-  for (const pane of out.panes) pane.argv = out.args[pane.tty] || '';
+  // 창마다 명령줄과 자식 사슬을 붙여 준다 (없으면 빈 값)
+  for (const pane of out.panes) {
+    pane.argv = out.args[pane.tty] || '';
+    pane.chain = out.chains[pane.tty] || [];
+  }
   delete out.args;
+  delete out.chains;
   return out;
 }
 
