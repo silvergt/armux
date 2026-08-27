@@ -217,12 +217,170 @@ body.is-mac #mac-spacer {
 
 /* -------------------------------- 서브 탭바 --------------------------------- */
 
+/* ------------------------- 서브탭 줄 + 뽀모도로 타이머 ------------------------ */
+
+/*
+ * 서브탭 줄은 가로로 넘칠 수 있어야 하고(스크롤), 뽀모도로는 오른쪽 끝에 항상
+ * 붙어 있어야 한다. 그래서 둘을 한 줄(#subrow)로 감싸고 테두리는 바깥에 준다.
+ */
+#subrow {
+  display: flex;
+  align-items: stretch;
+  background: var(--chrome-2);
+  border-bottom: 1px solid var(--border);
+}
+
+#pomodoro {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  /* 서브탭이 하나도 없을 때(#substrip 이 숨겨질 때)도 오른쪽 끝에 붙어 있게 */
+  margin-left: auto;
+  padding: 0 10px;
+  border-left: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+#pomodoro:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+/* 단색 토마토 — 글자색을 따라간다 */
+.pomo-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: currentColor;
+  opacity: 0.85;
+}
+#pomo-time {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+/* 돌고 있을 때만 또렷하게 (아이콘도 같은 색을 따라가므로 단색 그대로다) */
+#pomodoro.running {
+  color: #e0796b;
+}
+#pomodoro.done {
+  color: #e0796b;
+  animation: pomoDone 0.7s ease-in-out 6;
+}
+@keyframes pomoDone {
+  50% {
+    opacity: 0.25;
+  }
+}
+.pomo-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 1px;
+  font-size: 10px;
+  line-height: 1;
+}
+.pomo-btn:hover {
+  color: #ffffff;
+}
+
+/* 시간 입력 팝업 */
+.pomo-pop {
+  position: fixed;
+  z-index: 70;
+  width: 176px;
+  padding: 10px;
+  background: var(--chrome-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  color: var(--fg);
+}
+.pomo-pop.hidden {
+  display: none;
+}
+.pomo-pop-title {
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-bottom: 7px;
+}
+.pomo-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pomo-pop-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  background: var(--chrome-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.pomo-pop-row input:focus {
+  outline: none;
+  border-color: #4a7fd0;
+}
+/* 브라우저 기본 위/아래 화살표는 밝은 색이라 어두운 테마에서 튄다 */
+.pomo-pop-row input::-webkit-outer-spin-button,
+.pomo-pop-row input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pomo-presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 7px;
+}
+.pomo-presets button {
+  flex: 1;
+  padding: 4px 0;
+  background: var(--chrome-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 11px;
+}
+.pomo-presets button:hover {
+  color: #ffffff;
+  border-color: #4a7fd0;
+}
+.pomo-pop-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 9px;
+}
+.pomo-pop-foot button {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 11px;
+}
+.pomo-ghost {
+  background: transparent;
+  color: var(--fg-dim);
+}
+.pomo-primary {
+  background: #2f5d9e;
+  border-color: #2f5d9e;
+  color: #ffffff;
+}
+
 #substrip {
   display: flex;
   align-items: stretch;
   min-height: 28px;
-  background: var(--chrome-2);
-  border-bottom: 1px solid var(--border);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }

@@ -3010,6 +3010,155 @@ clockBtn.addEventListener('click', (e) => {
 setClockZone(clockZone);
 setInterval(renderClock, 500); // 분이 바뀌는 순간을 놓치지 않도록
 
+/* -------------------------------- 뽀모도로 타이머 ------------------------------- */
+/*
+ * 서브탭 줄 오른쪽 끝(시계 바로 아래)의 작은 타이머.
+ *   - 창을 누르면 시간을 분 단위로 직접 넣는다
+ *   - ▶ 시작 / ■ 정지. 정지해도 남은 시간은 그대로 두고, 다시 맞추면 초기화된다
+ *   - 남은 시간은 "끝나는 시각" 에서 거꾸로 계산한다. 창이 뒤로 밀리면 브라우저가
+ *     setInterval 을 늦추는데, 남은 시간을 빼는 방식이면 그만큼 시간이 밀린다.
+ */
+const POMO_KEY = 'pomodoroMinutes';
+const POMO_DEFAULT_MIN = 25;
+const pomoEl = document.getElementById('pomodoro');
+const pomoTimeEl = document.getElementById('pomo-time');
+const pomoToggleEl = document.getElementById('pomo-toggle');
+const pomoPop = document.getElementById('pomo-pop');
+const pomoMinInput = document.getElementById('pomo-min');
+
+let pomoMinutes = (() => {
+  const v = Number(localStorage.getItem(POMO_KEY));
+  return Number.isFinite(v) && v >= 1 && v <= 180 ? v : POMO_DEFAULT_MIN;
+})();
+let pomoLeftMs = pomoMinutes * 60000;
+let pomoEndAt = 0; // 0 이면 멈춰 있다
+let pomoDoneTimer = null;
+
+const pomoFmt = (ms) => {
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+};
+
+function renderPomo() {
+  const ms = pomoEndAt ? pomoEndAt - Date.now() : pomoLeftMs;
+  const text = pomoFmt(ms);
+  if (pomoTimeEl.textContent !== text) pomoTimeEl.textContent = text;
+  pomoEl.classList.toggle('running', Boolean(pomoEndAt));
+  pomoToggleEl.textContent = pomoEndAt ? '■' : '▶';
+  pomoToggleEl.title = pomoEndAt ? '정지' : '시작';
+  pomoEl.title = `뽀모도로 ${pomoMinutes}분 — 눌러서 시간 설정`;
+}
+
+function pomoClearDone() {
+  if (pomoDoneTimer) {
+    clearTimeout(pomoDoneTimer);
+    pomoDoneTimer = null;
+  }
+  pomoEl.classList.remove('done');
+}
+
+function pomoStart() {
+  pomoClearDone();
+  if (pomoLeftMs <= 0) pomoLeftMs = pomoMinutes * 60000; // 다 쓴 뒤 다시 누르면 처음부터
+  pomoEndAt = Date.now() + pomoLeftMs;
+  renderPomo();
+}
+
+function pomoStop() {
+  if (!pomoEndAt) return;
+  pomoLeftMs = Math.max(0, pomoEndAt - Date.now()); // 남은 시간은 그대로 둔다
+  pomoEndAt = 0;
+  renderPomo();
+}
+
+function pomoFinish() {
+  pomoEndAt = 0;
+  pomoLeftMs = 0;
+  renderPomo();
+  pomoEl.classList.add('done');
+  api.notify.alert({ title: '뽀모도로 끝', body: `${pomoMinutes}분이 지났습니다.` });
+  // 잠깐 깜빡인 뒤 다음 판을 위해 처음 시간으로 되돌린다
+  pomoDoneTimer = setTimeout(() => {
+    pomoClearDone();
+    pomoLeftMs = pomoMinutes * 60000;
+    renderPomo();
+  }, 5000);
+}
+
+function setPomoMinutes(m) {
+  pomoMinutes = Math.min(180, Math.max(1, Math.round(m) || POMO_DEFAULT_MIN));
+  localStorage.setItem(POMO_KEY, String(pomoMinutes));
+  pomoClearDone();
+  pomoEndAt = 0; // 새로 맞추면 멈춘 상태에서 처음부터
+  pomoLeftMs = pomoMinutes * 60000;
+  renderPomo();
+}
+
+setInterval(() => {
+  if (!pomoEndAt) return;
+  if (Date.now() >= pomoEndAt) pomoFinish();
+  else renderPomo();
+}, 250);
+
+pomoToggleEl.addEventListener('click', (e) => {
+  e.stopPropagation(); // 이 단추는 시간 입력 팝업을 열지 않는다
+  if (pomoEndAt) pomoStop();
+  else pomoStart();
+});
+
+/* ----- 시간 입력 팝업 ----- */
+function openPomoPop() {
+  pomoMinInput.value = String(pomoMinutes);
+  pomoPop.classList.remove('hidden'); // 크기를 재려면 먼저 보여야 한다
+  const r = pomoEl.getBoundingClientRect();
+  const left = Math.max(6, Math.min(r.right - pomoPop.offsetWidth, window.innerWidth - pomoPop.offsetWidth - 8));
+  pomoPop.style.left = `${left}px`;
+  pomoPop.style.top = `${r.bottom + 4}px`;
+  pomoMinInput.focus();
+  pomoMinInput.select();
+}
+
+function closePomoPop() {
+  pomoPop.classList.add('hidden');
+}
+
+const pomoPopOpen = () => !pomoPop.classList.contains('hidden');
+
+pomoEl.addEventListener('click', () => {
+  if (pomoPopOpen()) closePomoPop();
+  else openPomoPop();
+});
+
+document.getElementById('pomo-apply').addEventListener('click', () => {
+  setPomoMinutes(Number(pomoMinInput.value));
+  closePomoPop();
+});
+document.getElementById('pomo-cancel').addEventListener('click', closePomoPop);
+for (const b of pomoPop.querySelectorAll('.pomo-presets button')) {
+  b.addEventListener('click', () => {
+    pomoMinInput.value = b.dataset.min;
+    setPomoMinutes(Number(b.dataset.min));
+    closePomoPop();
+  });
+}
+pomoMinInput.addEventListener('keydown', (e) => {
+  e.stopPropagation(); // 앱 단축키가 숫자 입력을 가로채지 않게
+  if (e.key === 'Enter') {
+    setPomoMinutes(Number(pomoMinInput.value));
+    closePomoPop();
+  } else if (e.key === 'Escape') {
+    closePomoPop();
+  }
+});
+// 바깥을 누르면 닫는다
+document.addEventListener('mousedown', (e) => {
+  if (!pomoPopOpen()) return;
+  if (pomoPop.contains(e.target) || pomoEl.contains(e.target)) return;
+  closePomoPop();
+});
+
+renderPomo();
+
 /* --------------------------------- 메모장 ---------------------------------- */
 
 let notesPad = null; // 메모장 인스턴스 (처음 열 때 생성)
