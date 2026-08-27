@@ -149,6 +149,18 @@ app.whenReady().then(async () => {
     l.probe = { mode:'tmux', panes: [pane({ id:'%2', cmd:'bash', argv:'-bash', chain:['bash'] })] };
     evaluatePanes(l); out.afterReal = l.busy; out.afterHooks = Object.keys(l.hookByPane);
 
+    // Codex — 훅에 "시작" 이벤트가 없어서 생각 중은 화면으로 본다
+    const codex = (o) => { const x = mk(); Object.assign(x, o);
+      x.probe = { mode:'tmux', panes: [pane({ id:'%c', cmd:'codex', argv:'codex', chain:['codex'], visible: o.vis !== false })] };
+      evaluatePanes(x); return x.busy; };
+    out.codexQuiet   = codex({});                                   // 켜져만 있음 → 점
+    out.codexWorking = codex({ screenBusyAt: Date.now() });         // 생각 중 → 스피너
+    out.codexOldScreen = codex({ screenBusyAt: Date.now() - 60000 });// 오래된 화면 → 점
+    out.codexHidden  = codex({ screenBusyAt: Date.now(), vis:false });// 안 보이는 창 → 화면은 안 씀
+    let cx = mk(); cx.hookByPane['%c'] = 'alert';
+    cx.probe = { mode:'tmux', panes: [pane({ id:'%c', cmd:'codex', argv:'codex', chain:['codex'] })] };
+    evaluatePanes(cx); out.codexAlert = cx.alert;
+
     // 여러 창 중 하나만 돌아도 판 전체는 "돌고 있음"
     l = mk();
     l.probe = { mode:'tmux', panes: [
@@ -173,7 +185,12 @@ app.whenReady().then(async () => {
     ['★ 그때 훅 기억은 남겨 둔다', ev.emptyHooks.includes('%1')],
     ['창 목록이 돌아오면 없는 창의 기억을 정리한다', ev.afterHooks.length === 0 && ev.afterReal === false],
     ['여러 창 중 하나만 돌아도 판은 돌고 있음', ev.anyBusy === true],
-    ['그 창이 끝나면 꺼진다', ev.thenIdle === false]
+    ['그 창이 끝나면 꺼진다', ev.thenIdle === false],
+    ['★ codex 켜져만 있으면 점', ev.codexQuiet === false],
+    ['★ codex 생각 중이면 스피너 (화면으로 판단)', ev.codexWorking === true],
+    ['★ 오래된 화면 흔적으로는 안 켜진다', ev.codexOldScreen === false],
+    ['★ 안 보이는 창에는 화면 판단을 쓰지 않는다', ev.codexHidden === false],
+    ['★ codex 승인 대기 → 느낌표', ev.codexAlert === true]
   ];
   for (const [name, pass] of evChecks) {
     if (!pass) bad++;

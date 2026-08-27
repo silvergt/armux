@@ -486,6 +486,7 @@ function createLeaf(tab, connect, options) {
      */
     probe: null,
     probeAt: 0, // 관찰기 소식을 마지막으로 받은 시각
+    screenBusyAt: 0, // 화면에서 에이전트 작업 상태줄을 마지막으로 본 시각
     hookByPane: Object.create(null),
     paneWas: Object.create(null),
     busy: false,
@@ -562,6 +563,22 @@ function createLeaf(tab, connect, options) {
       leaf.hookByPane[pane] = sig;
       // 새 턴이 시작됐으면 이전 알림은 해제한다
       if (sig === 'busy') clearAlert(leaf);
+      /*
+       * "완료" 신호는 그 자체로 소식이다. 시작을 못 봤더라도 알린다 —
+       * Codex 는 시작 이벤트가 아예 없어서, 전이(작업중→대기)만 기다리면
+       * 초록 느낌표가 영영 안 뜬다.
+       */
+      if (sig === 'idle') {
+        const info = leaf.probe && (leaf.probe.panes || []).find((x) => x.id === pane);
+        const cur = activeLeaf();
+        const watching = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
+        if (info && info.visible === false) {
+          raiseAlert(leaf, true, false); // 안 보이는 tmux 창에서 끝났다
+        } else if (!watching) {
+          raiseAlert(leaf);
+        }
+        leaf.paneWas[pane] = 'idle'; // evaluatePanes 가 같은 일로 또 알리지 않게
+      }
       // 화면 추측 폴백(evaluateActivity)이 쓰는 값도 계속 맞춰 준다
       leaf.wasThinking = sig === 'busy';
       leaf.thinkSeenAt = sig === 'busy' ? Date.now() : 0;
@@ -1017,12 +1034,23 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()]
  * 대화 본문에 그냥 "(esc to interrupt)" 라는 말이 들어 있어도 이런 동반 표시가 없어 걸러진다.
  */
 
-const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
-function isClaudeWorkingLine(line) {
+const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●○◦•∙◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷';
+
+/**
+ * 에이전트가 "작업 중" 이라고 그려 놓은 라이브 상태줄인가.
+ *
+ *   Claude — "✻ … (esc to interrupt)"
+ *   Codex  — "◦ Working (3s • esc to interrupt)"   앞 글리프가 프레임마다 바뀐다
+ *
+ * 대화 본문에 같은 문구가 있어도 줄 맨 앞이 글자면 걸러진다. Codex 는 글리프
+ * 집합이 판마다 다를 수 있어 "Working (" 문구로도 받아 준다.
+ */
+function isAgentWorkingLine(line) {
   if (!/esc to interrupt/i.test(line)) return false;
-  // 라이브 상태줄은 줄 맨 앞에 스피너 글리프가 있다. 대화 본문은 글자/한글로 시작하므로 걸러진다.
-  const first = line.trimStart()[0];
-  return Boolean(first) && SPINNER_GLYPHS.includes(first);
+  const t = line.trimStart();
+  const first = t[0];
+  if (first && SPINNER_GLYPHS.includes(first)) return true;
+  return /^\S?\s*Working\s*\(/.test(t);
 }
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
@@ -1390,6 +1418,12 @@ const CMD_TUI = new Set([
   'ipython', 'ipython3', 'irb', 'psql', 'mysql', 'sqlite3', 'redis-cli', 'gdb', 'pdb', 'watch'
 ]);
 
+/*
+ * 화면에서 작업 상태줄을 본 뒤 이만큼은 "작업 중" 으로 본다. 한두 프레임 놓쳐도
+ * 깜빡이지 않게 하려는 것이고, 시간이 지나면 저절로 풀리므로 갇히지 않는다.
+ */
+const SCREEN_BUSY_MS = 2500;
+
 // 인자가 없으면 REPL(입력 대기)로 보는 것들. 인자가 있으면 스크립트 실행이다.
 const CMD_REPL = new Set(['python', 'python2', 'python3', 'node', 'ruby', 'perl', 'php', 'lua', 'R', 'ghci', 'julia']);
 
@@ -1493,7 +1527,16 @@ function classifyPane(leaf, pane) {
   if (sig || CMD_AGENT.has(effective) || CMD_AGENT.has(cmd)) {
     if (sig === 'busy') return 'busy';
     if (sig === 'alert') return 'alert';
-    return 'idle'; // idle 이거나 아직 신호가 없으면 조용히 둔다
+    /*
+     * Codex 는 훅에 "시작" 이벤트가 없다 — 완료(agent-turn-complete)와
+     * 승인 대기만 알려 준다. 그래서 "생각 중" 은 화면의 작업 상태줄로 본다.
+     * 화면은 지금 보이는 창의 것이므로 안 보이는 tmux 창에는 쓸 수 없다.
+     * 그쪽은 완료 신호만으로 초록 느낌표를 띄운다.
+     */
+    if (pane.visible !== false && leaf.screenBusyAt && Date.now() - leaf.screenBusyAt < SCREEN_BUSY_MS) {
+      return 'busy';
+    }
+    return 'idle'; // 신호도 없고 화면도 조용하면 그냥 켜져만 있는 것이다
   }
 
   if (!cmd && !effective) return 'idle';
@@ -1835,11 +1878,17 @@ function evaluateActivity() {
          * 시작하자마자 초록 느낌표가 떴다. 끝났다는 신호는 Stop 훅이 정확히
          * 주므로 화면 추측은 훅이 없는 판(훅 설치 전, 다른 도구)에만 쓴다.
          */
-        if (leaf.hooksActive) continue;
+        /*
+         * 에이전트의 작업 상태줄이 화면 아래 15줄 안에 보이는가.
+         * 훅이 있는 판에서도 이 값은 계산한다 — Codex 는 훅에 "시작" 이벤트가
+         * 없어서(완료·승인만 있다) 스피너를 띄우려면 화면을 봐야 하기 때문이다.
+         * 시각을 함께 찍어 두므로 한두 프레임 놓쳐도 깜빡이지 않고, 시간이
+         * 지나면 저절로 풀려서 갇히지도 않는다.
+         */
+        const seen = live && bottomNonEmptyLines(leaf, 15).some(isAgentWorkingLine);
+        if (seen) leaf.screenBusyAt = now;
 
-        // Claude 의 작업 상태줄(맨 앞 스피너 글리프 + "esc to interrupt")이
-        // 화면 아래 15줄 안에 보이는가. 상태줄은 항상 입력 상자 바로 위에 있다.
-        const seen = live && bottomNonEmptyLines(leaf, 15).some(isClaudeWorkingLine);
+        if (leaf.hooksActive) continue;
 
         // 히스테리시스: 마지막으로 본 지 2.5초 안이면 아직 작업 중으로 본다.
         // (툴 전환 순간 상태줄이 한두 프레임 사라져도 완료로 오인하지 않게)

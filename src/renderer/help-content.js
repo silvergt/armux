@@ -126,8 +126,10 @@ bind C-a send-prefix</pre>
         <li>사람의 입력을 기다리는 것은 "돌고 있다" 로 보지 않는다 —
             <code>vim</code>·<code>htop</code>·페이저, 인자 없는 <code>python3</code> REPL,
             <code>sudo -i</code> 로 연 셸, <code>tail -f</code> 같은 감시.</li>
-        <li>Claude 가 <b>생각 중인지 입력을 기다리는지</b>는 폴링으로 구별되지 않아
-            Claude Code 훅이 알려 준다(창별로 따로 기억한다).</li>
+        <li>Claude·Codex 가 <b>생각 중인지 입력을 기다리는지</b>는 폴링으로 구별되지 않아
+            에이전트 훅이 알려 준다(창별로 따로 기억한다).</li>
+        <li>Codex 는 훅에 "시작" 이벤트가 없어서, 생각 중인지는 화면의 작업 표시로 본다.
+            그래서 <b>안 보이는 tmux 창의 Codex</b> 는 스피너 없이 완료될 때 초록 느낌표만 뜬다.</li>
         <li>중첩 <code>tmux</code>·중첩 <code>ssh</code> 안쪽은 판단하지 않는다.
             스피너가 안 뜰 뿐, 잘못된 알림은 뜨지 않는다.</li>
       </ul>
