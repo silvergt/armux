@@ -137,6 +137,27 @@ body.is-mac #mac-spacer {
   background: var(--danger);
 }
 
+/*
+ * 실행 중 스피너 — 그 탭 어딘가(tmux 의 다른 창 포함)에서 명령이 돌고 있다.
+ * 연결 상태 점과 같은 자리에 같은 크기로 들어간다.
+ */
+.spin {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(126, 168, 255, 0.25);
+  border-top-color: #7ea8ff;
+  box-sizing: border-box;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes pulse {
   0%,
   100% {

@@ -13,6 +13,7 @@ const updater = require('./updater');
 const chromehistory = require('./chromehistory');
 const webfav = require('./webfav');
 const claudehooks = require('./claudehooks');
+const paneprobe = require('./paneprobe');
 const portforward = require('./portforward');
 const dropfiles = require('./dropfiles');
 const codexinfo = require('./codexinfo');
@@ -447,11 +448,21 @@ ipcMain.handle('ssh:connect', (e, { hostId, credId, profile, size }) => {
   ephemeralCreds.set(token, effective);
 
   const sessionId = ssh.open(effective, size, {
-    onReady: (id) => send('ssh:ready', { id }),
+    onReady: (id) => {
+      send('ssh:ready', { id });
+      // 이 판에서 무엇이 돌고 있는지 서버에 직접 물어보는 관찰기를 붙인다.
+      paneprobe.start(id, (sid, st) => send('pane:state', { id: sid, ...st }));
+    },
     onData: (id, data) => send('ssh:data', { id, data: new Uint8Array(data) }),
     // info.clean === true 면 사용자가 끝낸 것 — 자동 재접속 대상이 아니다
-    onExit: (id, info) => send('ssh:exit', { id, ...(info || {}) }),
-    onError: (id, message, info) => send('ssh:error', { id, message, ...(info || {}) })
+    onExit: (id, info) => {
+      paneprobe.stop(id);
+      send('ssh:exit', { id, ...(info || {}) });
+    },
+    onError: (id, message, info) => {
+      paneprobe.stop(id);
+      send('ssh:error', { id, message, ...(info || {}) });
+    }
   });
 
   return {
@@ -481,6 +492,7 @@ ipcMain.on('ssh:write', (e, { id, data }) => ssh.write(id, data));
 ipcMain.on('ssh:resize', (e, { id, cols, rows }) => ssh.resize(id, cols, rows));
 ipcMain.on('ssh:close', (e, { id }) => {
   portforward.stopForSession(id); // 끊긴 연결에 매달린 전달을 남겨 두지 않는다
+  paneprobe.stop(id);
   ssh.close(id);
 });
 
@@ -1323,6 +1335,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   portforward.stopAll();
+  paneprobe.stopAll();
   ssh.closeAll();
   sftp.closeAll();
   if (!isMac) app.quit();
@@ -1341,6 +1354,7 @@ app.on('before-quit', (e) => {
 
 app.on('will-quit', () => {
   portforward.stopAll();
+  paneprobe.stopAll();
   ssh.closeAll();
   sftp.closeAll();
   ephemeralCreds.clear();

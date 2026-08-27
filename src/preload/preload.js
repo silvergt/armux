@@ -22,7 +22,9 @@ contextBridge.exposeInMainWorld('armux', {
     onReady: (cb) => ipcRenderer.on('ssh:ready', (e, p) => cb(p)),
     onData: (cb) => ipcRenderer.on('ssh:data', (e, p) => cb(p)),
     onExit: (cb) => ipcRenderer.on('ssh:exit', (e, p) => cb(p)),
-    onError: (cb) => ipcRenderer.on('ssh:error', (e, p) => cb(p))
+    onError: (cb) => ipcRenderer.on('ssh:error', (e, p) => cb(p)),
+    // 판 상태 관찰기(서버에 직접 물어본 결과)가 한 틱마다 보내 준다
+    onPaneState: (cb) => ipcRenderer.on('pane:state', (e, p) => cb(p))
   },
 
   /** 파일 탐색기(SFTP) */

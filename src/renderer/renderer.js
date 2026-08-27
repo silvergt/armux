@@ -477,6 +477,17 @@ function createLeaf(tab, connect, options) {
     lastInputAt: 0, // 마지막으로 사용자가 키를 누른 시각
     wasThinking: false, // 직전 검사에서 Claude 가 작업 중이었는지 (완료 알림 판정용)
     lastOutputAt: 0,
+    /*
+     * 판 상태 관찰기(paneprobe)와 훅이 함께 쓰는 자리.
+     *  probe     — 서버가 2초마다 알려 주는 "지금 어떤 창에서 무엇이 돌고 있는지"
+     *  hookByPane— tmux pane 이름표(%3) 별 Claude 훅 상태. tmux 밖은 '#direct'
+     *  paneWas   — 창별 직전 판정('busy'|'idle'). 완료 전이를 잡는 데 쓴다
+     *  busy      — 이 판 어딘가에서 뭔가 돌고 있는지 (탭의 스피너)
+     */
+    probe: null,
+    hookByPane: Object.create(null),
+    paneWas: Object.create(null),
+    busy: false,
     mode: 'terminal', // 'terminal' | 'web' | 'file'
     web: null, // 웹 브라우저 화면 (웹으로 전환할 때 만든다)
     file: null, // 파일 뷰어 (파일을 열 때 만든다)
@@ -533,31 +544,27 @@ function createLeaf(tab, connect, options) {
   }
 
   // OSC 6789: Claude Code 훅이 보내는 상태 신호(우리가 원격 settings.json 에 심는다).
-  //   armux-status;busy → 작업 시작, ;idle → 완료, ;alert → 입력/권한 대기.
-  // 화면 추측보다 정확하므로, 한 번이라도 신호가 오면 이 판은 훅 상태를 따른다.
+  //   armux-status;<busy|idle|alert>;<pane 이름표>
+  // 폴링으로는 Claude 의 "생각 중" 과 "입력 대기" 가 똑같이 보이므로, 그 구간만은
+  // 이 신호가 정한다. 뒤에 붙는 pane 이름표(%3)로 tmux 창별로 따로 기억한다.
+  // 여기서는 기록만 하고, 판정은 evaluatePanes() 한 곳에서만 한다.
   try {
     term.parser.registerOscHandler(6789, (data) => {
-      const parts = String(data).split(';'); // "armux-status;<sig>"
+      const parts = String(data).split(';'); // "armux-status;<sig>;<pane>"
       if (parts[0] !== 'armux-status') return true;
       const sig = parts[1];
+      if (sig !== 'busy' && sig !== 'idle' && sig !== 'alert') return true;
+      // 이름표가 없으면(tmux 밖이거나 옛 버전 notify.sh) 하나뿐인 창으로 본다
+      const pane = (parts[2] || '').trim() || DIRECT_PANE;
       leaf.hooksActive = true;
       leaf.hookAt = Date.now();
-      if (sig === 'busy') {
-        // 새 턴이 시작됐다 = 사용자가 방금 프롬프트를 보냈다 → 이전 알림은 해제
-        clearAlert(leaf);
-        leaf.wasThinking = true; // 화면 감지가 "끝남" 전환을 잡을 수 있게 시작점을 기록
-        leaf.thinkSeenAt = Date.now();
-      } else if (sig === 'idle') {
-        leaf.wasThinking = false;
-        leaf.thinkSeenAt = 0;
-        const cur = activeLeaf();
-        const looking = cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen;
-        if (!looking) raiseAlert(leaf); // 끝났는데 안 보고 있으면 알림
-      } else if (sig === 'alert') {
-        leaf.wasThinking = false;
-        leaf.thinkSeenAt = 0;
-        raiseAlert(leaf, true); // 입력/권한 대기 — 보고 있어도 표시
-      }
+      leaf.hookByPane[pane] = sig;
+      // 새 턴이 시작됐으면 이전 알림은 해제한다
+      if (sig === 'busy') clearAlert(leaf);
+      // 화면 추측 폴백(evaluateActivity)이 쓰는 값도 계속 맞춰 준다
+      leaf.wasThinking = sig === 'busy';
+      leaf.thinkSeenAt = sig === 'busy' ? Date.now() : 0;
+      evaluatePanes(leaf); // 관찰기 다음 틱을 기다리지 않고 곧바로 반영
       scheduleRender();
       return true;
     });
@@ -1298,16 +1305,25 @@ window.addEventListener('online', () => {
   setTimeout(() => reconnectDeadPanes('네트워크 복구'), 1500);
 });
 
-function raiseAlert(leaf, force) {
+/**
+ * @param {object} leaf
+ * @param {boolean} force      보고 있는 판이어도 표시한다
+ * @param {boolean} needsInput OS 알림 문구를 "입력 대기" 로 할지 "작업 끝남" 으로 할지
+ *
+ * force 가 필요한 경우가 두 가지다.
+ *  1) 권한/입력 대기 — 보고 있어도 알려야 한다 (needsInput = true)
+ *  2) tmux 의 안 보이는 창에서 끝났다 — 이 판을 보고 있어도 그 창은 못 봤다
+ *     (needsInput = false. 문구는 "작업이 끝났습니다" 여야 한다)
+ */
+function raiseAlert(leaf, force, needsInput) {
   if (leaf.alert) return;
   // 보통은 지금 보고 있는 판이면 표시하지 않는다.
-  // 단 force(권한/입력 대기 알림)면 보고 있어도 표시한다.
   if (!force) {
     const cur = activeLeaf();
     if (cur && cur.id === leaf.id && document.hasFocus()) return;
   }
   leaf.alert = true;
-  notifyOutside(leaf, force); // 창이 가려져 있으면 OS 알림으로도 알린다
+  notifyOutside(leaf, needsInput === undefined ? force : needsInput);
   syncBadge();
   scheduleRender();
 }
@@ -1333,6 +1349,209 @@ function clearAlertsInTab(tab) {
     scheduleRender();
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * 판 상태 판정 — "이 창에서 지금 뭔가 돌고 있는가"
+ *
+ * 두 층을 합친다.
+ *   아래층: 서버가 2초마다 알려 주는 관찰 결과(paneprobe) — tmux 의 모든 창에서
+ *           무엇이 돌고 있는지, 어느 창이 보이는지
+ *   위층 : Claude Code 훅(OSC 6789) — 폴링으로는 "생각 중" 과 "입력 대기" 가
+ *           똑같이 `claude` 로만 보이므로 그 구간만 훅이 정한다
+ * 위층이 이긴다.
+ *
+ * 판정 규칙
+ *   1) 셸 이름이면            → 놀고 있음 (프롬프트가 떠 있다)
+ *   2) 훅이 아는 창이면        → 훅이 정한다
+ *   3) 전체화면 앱이면        → 판단하지 않는다 (vim·htop·중첩 ssh…)
+ *   4) 인자 없는 REPL 이면    → 놀고 있음 (`python3` 혼자면 입력 대기)
+ *   5) 그 밖에는              → 작업 중
+ *
+ * 모르는 것은 "작업 중" 이 아니라 "판단 안 함" 쪽으로 떨어뜨린다. 틀린 스피너보다
+ * 틀린 완료 알림이 훨씬 나쁘기 때문이다(보러 갔는데 안 끝나 있다).
+ * ────────────────────────────────────────────────────────────────────────── */
+
+const DIRECT_PANE = '#direct'; // tmux 밖일 때 쓰는 가짜 pane 이름표
+
+// 프롬프트를 띄우고 있는 셸 = 아무것도 안 돌고 있다 (로그인 셸은 '-bash' 로 나온다)
+const CMD_SHELL = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'ash', 'login']);
+
+// 상태를 훅이 알려 주는 것들. 이름만으로는 생각중/대기중을 가를 수 없다.
+const CMD_AGENT = new Set(['claude', 'codex']);
+
+// 오래 떠 있는 전체화면 앱·페이저. "돌고 있다" 고 표시해 봐야 의미가 없다.
+const CMD_TUI = new Set([
+  'vim', 'nvim', 'vi', 'emacs', 'nano', 'micro', 'helix', 'hx',
+  'htop', 'top', 'btop', 'atop', 'glances', 'ncdu', 'iotop', 'nvtop',
+  'less', 'more', 'most', 'pager', 'man', 'info', 'tig', 'lazygit', 'lazydocker',
+  'ranger', 'mc', 'nnn', 'yazi',
+  'ssh', 'mosh', 'telnet', 'tmux', 'screen', 'byobu',
+  'ipython', 'ipython3', 'irb', 'psql', 'mysql', 'sqlite3', 'redis-cli', 'gdb', 'pdb', 'watch'
+]);
+
+// 인자가 없으면 REPL(입력 대기)로 보는 것들. 인자가 있으면 스크립트 실행이다.
+const CMD_REPL = new Set(['python', 'python2', 'python3', 'node', 'ruby', 'perl', 'php', 'lua', 'R', 'ghci', 'julia']);
+
+/*
+ * 다른 명령을 감싸 실행하는 것들. 이름만 보면 무엇을 하는지 알 수 없으므로
+ * 뒤에 무엇이 오는지 본다. `sudo -i` 는 루트 셸(놀고 있음)이고
+ * `sudo apt update` 는 실제 작업이다. 이걸 안 가르면 `sudo -i` 를 한 판은
+ * 스피너가 영원히 켜져 있는다.
+ */
+const CMD_WRAP = new Set(['sudo', 'su', 'doas', 'nice', 'nohup', 'env', 'time', 'stdbuf', 'setsid']);
+
+// -f 로 따라가는 것은 "작업" 이 아니라 "감시" 다 (tail -f 로 로그를 켜 두는 경우)
+const CMD_FOLLOW = new Set(['tail', 'journalctl', 'multitail', 'docker', 'kubectl', 'dmesg']);
+const FOLLOW_FLAGS = new Set(['-f', '-F', '--follow']);
+
+// 실행할 거리가 실제로 붙어 있는가 (`python3 -u` 정도는 여전히 REPL 이다)
+const BARE_FLAGS = new Set(['-i', '-u', '-q', '-B', '-E', '-s', '--']);
+
+const baseName = (v) => String(v || '').split('/').pop();
+
+const SHELL_FLAGS = new Set(['-i', '-s', '-l', '--login', '--shell']);
+
+/** 래퍼(sudo 등) 뒤에 오는 것이 대화형 셸인가. `sudo su` 처럼 겹쳐 쓰는 경우도 따라간다. */
+function wrapperIsShell(tok, depth = 0) {
+  if (depth > 3) return false;
+  for (let i = 1; i < tok.length; i++) {
+    const t = tok[i];
+    if (t.startsWith('-')) {
+      if (SHELL_FLAGS.has(t)) return true; // 셸을 띄우는 대표 플래그들
+      continue;
+    }
+    const b = baseName(t);
+    if (CMD_SHELL.has(b)) return true;
+    if (CMD_WRAP.has(b)) return wrapperIsShell(tok.slice(i), depth + 1); // sudo su, sudo -i su …
+    return false; // 처음 나오는 진짜 명령이 셸이 아니면 실제 작업이다
+  }
+  return true; // 뒤에 아무것도 없으면 그냥 프롬프트(비밀번호 입력 등)
+}
+
+/** 창 하나의 상태: 'busy' | 'idle' | 'alert' */
+function classifyPane(leaf, pane) {
+  const cmd = baseName(String(pane.cmd || '').replace(/^-/, '')); // 로그인 셸 '-bash' → 'bash'
+  const tok = String(pane.argv || '').trim().split(/\s+/).filter(Boolean);
+  /*
+   * argv 의 실행 파일 이름. tmux 의 pane_current_command 와 다를 수 있다.
+   *   `git log`            → cmd=git   argv=/usr/bin/pager   (사실은 페이저 대기)
+   *   `cat /dev/zero | grep` → cmd=cat  argv=grep …          (파이프라인)
+   * 둘 중 하나라도 "가만히 있는 것" 이면 가만히 있는 것으로 본다.
+   */
+  const argv0 = baseName((tok[0] || '').replace(/^-/, ''));
+
+  /*
+   * 셸 프롬프트가 떠 있다 = 아무것도 안 돌고 있다.
+   * 이 창에 남아 있던 훅 상태는 낡은 것이므로 함께 지운다. Claude 가 Stop 훅을
+   * 못 보내고 죽거나(크래시·kill) 그냥 종료해 버리면 'busy' 가 영영 남아서
+   * 스피너가 안 꺼졌다. 프롬프트로 돌아왔다는 사실이 그보다 확실한 증거다.
+   */
+  if ((cmd && CMD_SHELL.has(cmd)) || (argv0 && CMD_SHELL.has(argv0))) {
+    delete leaf.hookByPane[pane.id];
+    return 'idle';
+  }
+
+  const sig = leaf.hookByPane[pane.id];
+
+  // 훅이 아는 창(Claude 계열)은 훅이 정한다. 이름이 무엇이든 상관없다 —
+  // 신호가 온다는 사실 자체가 "여기는 에이전트" 라는 표시다.
+  if (sig || CMD_AGENT.has(cmd)) {
+    if (sig === 'busy') return 'busy';
+    if (sig === 'alert') return 'alert';
+    return 'idle'; // idle 이거나 아직 신호가 없으면 조용히 둔다
+  }
+
+  if (!cmd) return 'idle';
+  if (CMD_TUI.has(cmd) || (argv0 && CMD_TUI.has(argv0))) return 'idle';
+  if (CMD_WRAP.has(cmd)) return wrapperIsShell(tok) ? 'idle' : 'busy';
+  if (CMD_FOLLOW.has(cmd) && tok.some((t) => FOLLOW_FLAGS.has(t))) return 'idle';
+  /*
+   * 인자 없는 REPL. argv 의 실행 파일이 cmd 와 같을 때만 믿는다 — 파이프라인이면
+   * argv 가 뒤쪽 명령을 가리켜서, 인자가 없어 보인다고 REPL 로 오해할 수 있다.
+   * 또 argv 를 아예 못 받아 온 서버에서는 낮추지 않는다. 확인되지 않은 것을
+   * "놀고 있음" 으로 보면 완료 알림이 잘못 뜨기 때문이다.
+   */
+  if (CMD_REPL.has(cmd) && argv0 === cmd && !tok.slice(1).some((a) => !BARE_FLAGS.has(a))) {
+    return 'idle';
+  }
+  return 'busy';
+}
+
+/**
+ * 한 판의 모든 창을 보고 스피너/느낌표를 정한다.
+ * 관찰기가 한 틱 돌 때마다, 그리고 훅 신호가 올 때마다 불린다.
+ */
+function evaluatePanes(leaf) {
+  if (!leaf || leaf.mode !== 'terminal') return;
+
+  const probe = leaf.probe;
+  /*
+   * 관찰기가 아직 말이 없으면(연결 직후, 또는 ps/tmux 가 없는 서버) 훅이 아는
+   * 창만으로 본다. 그래야 관찰기가 못 도는 환경에서도 Claude 표시는 살아 있다.
+   */
+  const panes =
+    probe && probe.panes && probe.panes.length
+      ? probe.panes
+      : Object.keys(leaf.hookByPane).map((id) => ({ id, cmd: '', argv: '', visible: true }));
+
+  const cur = activeLeaf();
+  // 이 판을 실제로 사람이 보고 있는가 (창이 앞에 있고, 메모장에 가려져 있지 않고)
+  const watchingLeaf = Boolean(cur && cur.id === leaf.id && document.hasFocus() && !state.notesOpen);
+
+  let busy = false;
+  for (const pane of panes) {
+    const st = classifyPane(leaf, pane);
+    if (st === 'busy') busy = true;
+    const was = leaf.paneWas[pane.id];
+
+    /*
+     * 작업 중 → 놀고 있음 = 방금 끝났다.
+     * 그 창을 눈으로 보고 있었다면 알리지 않는다. 눈앞에서 Ctrl+C 를 눌러도
+     * 느낌표가 뜨면 성가시기만 하다. tmux 의 안 보이는 창에서 끝난 것만 알린다.
+     */
+    if (was === 'busy' && st === 'idle') {
+      if (pane.visible === false) {
+        // 안 보이는 tmux 창 — 이 판을 보고 있었더라도 사용자는 못 봤다
+        raiseAlert(leaf, true, false);
+      } else if (!watchingLeaf) {
+        raiseAlert(leaf);
+      }
+    }
+    // 권한/입력 대기는 보고 있어도 알린다
+    if (st === 'alert' && was !== 'alert') raiseAlert(leaf, true, true);
+
+    leaf.paneWas[pane.id] = st;
+  }
+
+  // 닫힌 tmux 창의 기억은 지운다 (남겨 두면 없는 창의 전이가 계속 걸린다)
+  if (probe && probe.panes) {
+    const alive = new Set(panes.map((p) => p.id));
+    for (const id of Object.keys(leaf.paneWas)) if (!alive.has(id)) delete leaf.paneWas[id];
+    for (const id of Object.keys(leaf.hookByPane)) {
+      if (id !== DIRECT_PANE && !alive.has(id)) delete leaf.hookByPane[id];
+    }
+  }
+
+  if (leaf.busy !== busy) {
+    leaf.busy = busy;
+    scheduleRender();
+  }
+}
+
+/** 연결이 끊기면 관찰 결과는 버린다 (되살아난 뒤 옛 상태로 판정하지 않게) */
+function resetPaneState(leaf) {
+  if (!leaf) return;
+  leaf.probe = null;
+  leaf.hookByPane = Object.create(null);
+  leaf.paneWas = Object.create(null);
+  if (leaf.busy) {
+    leaf.busy = false;
+    scheduleRender();
+  }
+}
+
+const tabBusy = (tab) => leavesOf(tab.root).some((l) => l.busy && l.status === 'ready');
+const groupBusy = (group) => group.tabs.some(tabBusy);
 
 const tabHasAlert = (tab) => leavesOf(tab.root).some((l) => l.alert);
 const groupHasAlert = (group) =>
@@ -3296,8 +3515,20 @@ function statusDot(status) {
  * 탭 앞에 붙는 표시 하나를 고른다.
  * 우선순위: 초록 느낌표(확인 필요) > 연결 상태 점
  */
-function statusMark(status, alerted) {
+function busySpinner() {
+  const b = document.createElement('span');
+  b.className = 'spin';
+  b.title = '이 탭에서 무언가 실행 중입니다';
+  return b;
+}
+
+/**
+ * 탭 앞에 붙는 표시 하나를 고른다.
+ * 우선순위: 초록 느낌표(확인 필요) > 스피너(실행 중) > 연결 상태 점
+ */
+function statusMark(status, alerted, busy) {
   if (alerted) return alertBadge();
+  if (busy && status === 'ready') return busySpinner();
   return statusDot(status);
 }
 
@@ -3343,7 +3574,11 @@ function renderTabstrip() {
     });
 
     // 서브탭 중 하나라도 응답 대기면 메인탭도 초록 느낌표
-    node.append(statusMark(cur ? tabStatus(cur) : 'closed', groupHasAlert(group)), idx, label);
+    node.append(
+      statusMark(cur ? tabStatus(cur) : 'closed', groupHasAlert(group), groupBusy(group)),
+      idx,
+      label
+    );
     node.appendChild(close);
 
     // 끌어서 메인탭 순서 바꾸기
@@ -3441,7 +3676,7 @@ function renderSubstrip() {
       confirmCloseTab(group, tab);
     });
 
-    node.append(statusMark(tabStatus(tab), tabHasAlert(tab)), idx, label);
+    node.append(statusMark(tabStatus(tab), tabHasAlert(tab), tabBusy(tab)), idx, label);
     node.appendChild(close);
 
     // 끌어서 서브탭 순서 바꾸기
@@ -4276,7 +4511,7 @@ function renderPaneHeader(leaf) {
   grip.title = '끌어서 다른 판과 자리 바꾸기';
 
   // 고르기 화면인 판은 아직 붙은 셸이 없으므로 상태 점을 달지 않는다
-  const mark = leaf.mode === 'launcher' ? null : statusMark(leaf.status, leaf.alert);
+  const mark = leaf.mode === 'launcher' ? null : statusMark(leaf.status, leaf.alert, leaf.busy);
   if (mark) mark.classList.add('pane-mark');
 
   const title = document.createElement('span');
@@ -4842,11 +5077,24 @@ api.ssh.onData(({ id, data }) => {
   }
 });
 
+/*
+ * 판 상태 관찰기가 2초마다 보내 주는 결과.
+ * "어느 창이 보이고, 각 창에서 무엇이 돌고 있는지" 를 그대로 담고 있다.
+ * 창을 옮기든 tmux 를 빠져나가든 다음 틱에 저절로 맞춰진다.
+ */
+api.ssh.onPaneState(({ id, ...st }) => {
+  const leaf = sessionToLeaf.get(id);
+  if (!leaf) return;
+  leaf.probe = st;
+  evaluatePanes(leaf);
+});
+
 api.ssh.onExit(({ id, clean }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
   sessionToLeaf.delete(id);
   leaf.sessionId = null;
+  resetPaneState(leaf); // 끊긴 판의 옛 관찰 결과로 판정하지 않는다
   // 사용자가 exit 를 쳐서 끝난 것이면 그대로 둔다. 끊긴 것이면 스스로 다시 붙는다.
   if (clean || !beginRetry(leaf, '연결이 끊겼습니다')) {
     leaf.status = 'closed';
@@ -4860,6 +5108,7 @@ api.ssh.onError(({ id, message, code }) => {
   if (!leaf) return;
   sessionToLeaf.delete(id);
   leaf.sessionId = null;
+  resetPaneState(leaf);
   leaf.term.writeln(`\r\n\x1b[31m✖ ${message}\x1b[0m`);
   // 인증 실패처럼 다시 해도 똑같은 것은 재시도하지 않는다
   if (isFatalConnectError(message, code) || !beginRetry(leaf, message)) {

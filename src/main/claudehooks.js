@@ -73,13 +73,21 @@ T=$(find_tty 2>/dev/null) || T=""
 [ -n "$T" ] && [ -w "$T" ] || T=/dev/tty
 
 if [ -n "$TMUX" ]; then
-  # tmux 3.3+ 는 passthrough 가 기본 off 라 켜 준다("all" 이면 안 보이는 창에서도 통과)
-  tmux set -p allow-passthrough all >/dev/null 2>&1 ||
-    tmux set -p allow-passthrough on >/dev/null 2>&1
-  # 래핑 안에서는 ESC 를 두 번 써야 tmux 가 한 번 벗겨서 바깥으로 내보낸다
-  printf '\\033Ptmux;\\033\\033]${OSC};${MARKER};%s\\007\\033\\\\' "$S" > "$T" 2>/dev/null
+  # tmux 3.3+ 는 passthrough 가 기본 off 라 켜 준다("all" 이면 안 보이는 창에서도 통과).
+  # -t 로 대상을 반드시 명시한다. 빼면 "지금 보이는 창" 에 걸려서, 다른 창에서 돌던
+  # Claude 의 신호가 그 창에서는 계속 off 인 채로 tmux 에 삼켜진다.
+  if [ -n "$TMUX_PANE" ]; then
+    tmux set -p -t "$TMUX_PANE" allow-passthrough all >/dev/null 2>&1 ||
+      tmux set -p -t "$TMUX_PANE" allow-passthrough on >/dev/null 2>&1
+  else
+    tmux set -p allow-passthrough all >/dev/null 2>&1 ||
+      tmux set -p allow-passthrough on >/dev/null 2>&1
+  fi
+  # 래핑 안에서는 ESC 를 두 번 써야 tmux 가 한 번 벗겨서 바깥으로 내보낸다.
+  # 상태 뒤에 pane 이름표($TMUX_PANE, 예: %3)를 붙인다 — 창마다 상태를 따로 들기 위해.
+  printf '\\033Ptmux;\\033\\033]${OSC};${MARKER};%s;%s\\007\\033\\\\' "$S" "$TMUX_PANE" > "$T" 2>/dev/null
 else
-  printf '\\033]${OSC};${MARKER};%s\\007' "$S" > "$T" 2>/dev/null
+  printf '\\033]${OSC};${MARKER};%s;\\007' "$S" > "$T" 2>/dev/null
 fi
 exit 0
 `;

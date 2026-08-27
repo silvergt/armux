@@ -114,6 +114,23 @@ bind C-a send-prefix</pre>
         예를 들어 서버에 붙자마자 <code>tmux new -s main</code> 또는 <code>tmux attach -t main</code> 을 실행해 두면,
         네트워크가 끊겨도 재접속 후 그대로 이어서 작업할 수 있다.
       </p>
+
+      <h3>10. 탭 표시는 tmux 의 모든 창을 본다</h3>
+      <p>
+        Armux 는 접속한 서버에 <b>2초마다</b> "지금 어느 창에서 무엇이 돌고 있는지" 를 물어본다.
+        그래서 <b>지금 보고 있지 않은 tmux 창</b>에서 백테스트가 돌고 있어도 탭에 스피너가 뜨고,
+        <b>안 보는 사이에 끝나면 초록 느낌표</b>가 뜬다. 창을 옮기거나 tmux 에서 빠져나가도
+        다음 조회에서 저절로 맞춰진다.
+      </p>
+      <ul>
+        <li>사람의 입력을 기다리는 것은 "돌고 있다" 로 보지 않는다 —
+            <code>vim</code>·<code>htop</code>·페이저, 인자 없는 <code>python3</code> REPL,
+            <code>sudo -i</code> 로 연 셸, <code>tail -f</code> 같은 감시.</li>
+        <li>Claude 가 <b>생각 중인지 입력을 기다리는지</b>는 폴링으로 구별되지 않아
+            Claude Code 훅이 알려 준다(창별로 따로 기억한다).</li>
+        <li>중첩 <code>tmux</code>·중첩 <code>ssh</code> 안쪽은 판단하지 않는다.
+            스피너가 안 뜰 뿐, 잘못된 알림은 뜨지 않는다.</li>
+      </ul>
     `
   },
 
