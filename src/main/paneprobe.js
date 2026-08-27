@@ -55,6 +55,7 @@ const probes = new Map(); // sessionId -> { stopped, timer, onState, cancel, las
  *   P <pane> <창번호> <보임0/1> <tty> <명령>     창 하나 (tmux 밖이면 #direct 하나)
  *   A <tty> <명령줄 전체>                        그 tty 포그라운드(그룹 대표)의 argv
  *   K <tty> <이름1> <이름2> …                   대표부터 내려간 자식 사슬
+ *   Z <tty>                                    그 터미널은 프롬프트만 떠 있다(대기)
  *   E                                          블록 끝
  */
 function script() {
@@ -93,34 +94,68 @@ find_shell() {
 # /proc/<pid>/task/<pid>/children 을 따라 다섯 단계까지 이름을 모은다. 이 파일이
 # 없는 커널이면 대표 하나만 담기고, 예전과 같은 판정으로 돌아간다.
 args_via_proc() {
-  awk '{
-    f = "/proc/" $2 "/stat"
-    if ((getline line < f) <= 0) next
-    close(f)
-    n = index(line, ") ")
-    split(substr(line, n + 2), a, " ")
-    g = a[6] + 0
-    if (g <= 0) next
-    chain = ""
-    p = g
-    for (i = 0; i < 5 && p > 0; i++) {
-      cf = "/proc/" p "/comm"
-      if ((getline c < cf) <= 0) { close(cf); break }
-      close(cf)
-      chain = chain " " c
-      kf = "/proc/" p "/task/" p "/children"
-      kids = ""
-      if ((getline kids < kf) <= 0) { close(kf); break }
-      close(kf)
-      split(kids, k, " ")
-      p = (k[1] == "") ? 0 : k[1] + 0
+  awk '
+    # /proc/<pid>/stat 을 읽어 배열에 담는다. 괄호 뒤 기준으로
+    #   a[3]=pgrp  a[5]=tty_nr  a[6]=tpgid
+    # comm 에 공백이나 괄호가 있을 수 있어 마지막 ") " 뒤부터 자른다.
+    function rdstat(pid, a,   line, f, n) {
+      f = "/proc/" pid "/stat"
+      if ((getline line < f) <= 0) { close(f); return 0 }
+      close(f)
+      n = index(line, ") ")
+      split(substr(line, n + 2), a, " ")
+      return 1
     }
-    print $1, g, chain
-  }' | while read -r T G REST; do
-    printf 'A %s ' "$T"
-    tr '\\0' ' ' < "/proc/$G/cmdline" 2>/dev/null
-    echo
-    [ -n "$REST" ] && echo "K $T $REST"
+    function rdcomm(pid,   c, f) {
+      f = "/proc/" pid "/comm"
+      if ((getline c < f) <= 0) { close(f); return "" }
+      close(f)
+      return c
+    }
+    function firstchild(pid,   kids, k, f) {
+      f = "/proc/" pid "/task/" pid "/children"
+      if ((getline kids < f) <= 0) { close(f); return 0 }
+      close(f)
+      split(kids, k, " ")
+      return (k[1] == "") ? 0 : k[1] + 0
+    }
+    {
+      tty = $1
+      cur = $2
+      idle = 0; leader = 0; chain = ""
+      # 최대 세 겹까지 안쪽으로 따라 들어간다 (녹화 래퍼가 새 pty 를 여는 경우)
+      for (lvl = 0; lvl < 3; lvl++) {
+        if (!rdstat(cur, a)) break
+        mytty = a[5]; mypgrp = a[3]; tp = a[6] + 0
+        # 그 터미널의 포그라운드가 셸 자신이면 프롬프트가 떠 있는 것이다.
+        # 이름을 전혀 보지 않으므로 셸이 무엇이든(녹화 래퍼 포함) 통한다.
+        if (tp <= 0 || tp == mypgrp) { idle = 1; break }
+        chain = ""; cross = 0; p = tp
+        for (i = 0; i < 5 && p > 0; i++) {
+          if (!rdstat(p, b)) break
+          c = rdcomm(p)
+          if (c == "") break
+          chain = chain " " c
+          # 터미널이 바뀌었다 = 여기서부터는 래퍼가 연 안쪽 pty 다
+          if (cross == 0 && b[5] != mytty) cross = p
+          p = firstchild(p)
+        }
+        if (cross > 0) { cur = cross; continue }  # 안쪽으로 내려가 다시 본다
+        leader = tp
+        break
+      }
+      if (idle) print "Z", tty
+      else if (leader > 0) print "Y", tty, leader, chain
+    }
+  ' | while read -r K T G REST; do
+    if [ "$K" = "Z" ]; then
+      echo "Z $T"
+    else
+      printf 'A %s ' "$T"
+      tr '\\0' ' ' < "/proc/$G/cmdline" 2>/dev/null
+      echo
+      [ -n "$REST" ] && echo "K $T $REST"
+    fi
   done
 }
 
@@ -185,7 +220,7 @@ done
 
 /** 한 블록(B…E)을 상태 객체로 바꾼다. */
 function parseBlock(lines) {
-  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {} };
+  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {}, idle: {} };
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
@@ -212,6 +247,9 @@ function parseBlock(lines) {
       // "/dev/pts/26 python3 -c import time;..." — 그 tty 포그라운드의 명령줄 전체
       const sp = rest.indexOf(' ');
       if (sp > 0) out.args[rest.slice(0, sp)] = rest.slice(sp + 1);
+    } else if (kind === 'Z') {
+      // "그 터미널은 프롬프트만 떠 있다" — 이름을 보지 않고 얻은 확실한 신호
+      out.idle[line.slice(2).trim()] = true;
     } else if (kind === 'K') {
       // "/dev/pts/26 git pager" — 대표부터 내려간 자식 사슬
       const k = rest.split(/\s+/).filter(Boolean);
@@ -222,9 +260,11 @@ function parseBlock(lines) {
   for (const pane of out.panes) {
     pane.argv = out.args[pane.tty] || '';
     pane.chain = out.chains[pane.tty] || [];
+    pane.idle = Boolean(out.idle[pane.tty]);
   }
   delete out.args;
   delete out.chains;
+  delete out.idle;
   return out;
 }
 

@@ -20,7 +20,7 @@ require(path.join(__dirname, '..', 'src', 'main', 'main.js'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-//  [설명, cmd, argv, chain(자식 사슬), 훅신호, 기대값]
+//  [설명, cmd, argv, chain(자식 사슬), 훅신호, 기대값, 관찰기가 '대기'라고 못박았는지]
 const T = [
   // ── 기본 ──────────────────────────────────────────────────────────────
   ['프롬프트',                'bash',    '-bash',                   ['bash'],                  null, 'idle'],
@@ -77,6 +77,12 @@ const T = [
   ['이름이 뭐든 훅이 있으면',    'mytool',  'mytool',                  ['mytool'],                'busy',  'busy'],
   ['★ 죽은 뒤 낡은 훅 busy',    'bash',    '-bash',                   ['bash'],                  'busy',  'idle'],
 
+  // ── 세션 녹화처럼 셸을 감싸는 것 (관찰기가 안쪽 pty 까지 보고 Z 를 준다) ──
+  ['★ 녹화 래퍼, 프롬프트 대기',  'script',  '',                        [],                        null,   'idle', true],
+  ['★ 녹화 래퍼 + 낡은 훅 busy',  'script',  '',                        [],                        'busy', 'idle', true],
+  ['★ 녹화 안에서 작업 중',       'script',  'sleep 120',               ['sleep'],                 null,   'busy'],
+  ['★ 이름 모를 셸, 프롬프트 대기', 'myshell', '',                       [],                        null,   'idle', true],
+
   // ── 사슬을 못 받은 서버(ps 폴백)에서도 예전 규칙으로 동작해야 한다 ─────
   ['[폴백] 프롬프트',          'bash',    '-bash',                   [],                        null, 'idle'],
   ['[폴백] sudo -i',          'sudo',    'sudo -i',                 [],                        null, 'idle'],
@@ -93,10 +99,10 @@ app.whenReady().then(async () => {
     `(()=>{
     const cases = ${JSON.stringify(T)};
     const out = [];
-    for (const [name, cmd, argv, chain, sig, want] of cases) {
+    for (const [name, cmd, argv, chain, sig, want, idle] of cases) {
       const leaf = { hookByPane: Object.create(null) };
       if (sig) leaf.hookByPane['%9'] = sig;
-      const got = classifyPane(leaf, { id: '%9', cmd, argv, chain, visible: true });
+      const got = classifyPane(leaf, { id: '%9', cmd, argv, chain, idle: !!idle, visible: true });
       out.push([name, cmd, want, got, leaf.hookByPane['%9'] || '-']);
     }
     return out;

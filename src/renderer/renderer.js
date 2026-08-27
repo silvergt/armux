@@ -1463,6 +1463,18 @@ function classifyPane(leaf, pane) {
   const deepest = chain.length ? chain[chain.length - 1] : '';
 
   /*
+   * 관찰기가 "이 터미널은 프롬프트만 떠 있다" 고 확실히 알려 준 경우.
+   *
+   * 그 터미널의 포그라운드 프로세스 그룹이 셸 자신인지로 판단한 것이라 이름을
+   * 전혀 보지 않는다. 셸이 무엇이든(세션 녹화 래퍼가 감싸고 있어도) 통하고,
+   * 래퍼가 새 pty 를 열었으면 그 안쪽까지 따라 들어가 본 결과다.
+   */
+  if (pane.idle) {
+    delete leaf.hookByPane[pane.id];
+    return 'idle';
+  }
+
+  /*
    * 셸 프롬프트가 떠 있다 = 아무것도 안 돌고 있다.
    * 이 창에 남아 있던 훅 상태는 낡은 것이므로 함께 지운다. Claude 가 Stop 훅을
    * 못 보내고 죽거나(크래시·kill) 그냥 종료해 버리면 'busy' 가 영영 남아서
