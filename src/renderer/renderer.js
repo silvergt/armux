@@ -81,6 +81,31 @@ const THEME = {
   brightWhite: '#ffffff'
 };
 
+/** 밝은 테마용 터미널 색 (GitHub Light 계열 — 흰 바탕에서 대비가 충분한 값들) */
+const THEME_LIGHT = {
+  background: '#ffffff',
+  foreground: '#1f2328',
+  cursor: '#1f2328',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#b6dcff',
+  black: '#24292f',
+  red: '#cf222e',
+  green: '#116329',
+  yellow: '#8f6c00',
+  blue: '#0969da',
+  magenta: '#8250df',
+  cyan: '#1b7c83',
+  white: '#6e7781',
+  brightBlack: '#57606a',
+  brightRed: '#a40e26',
+  brightGreen: '#0b6218',
+  brightYellow: '#7a5c00',
+  brightBlue: '#0550ae',
+  brightMagenta: '#6639ba',
+  brightCyan: '#12666b',
+  brightWhite: '#24292f'
+};
+
 /**
  * OS별 폰트 스택.
  * - windows: PowerShell / Windows Terminal 기본 글꼴인 Cascadia Mono → Consolas 순.
@@ -516,11 +541,12 @@ function createLeaf(tab, connect, options) {
   body.appendChild(termHost);
 
   const term = new Terminal({
-    fontFamily: FONT_STACK,
+    fontFamily: prefs.fontFamily || FONT_STACK,
     fontSize: state.fontSize,
-    theme: THEME,
-    cursorBlink: true,
-    scrollback: 10000,
+    theme: termTheme(),
+    cursorBlink: prefs.cursorBlink,
+    cursorStyle: prefs.cursorStyle,
+    scrollback: prefs.scrollback,
     allowProposedApi: true,
     macOptionIsMeta: true,
     rightClickSelectsWord: false,
@@ -1116,6 +1142,245 @@ function setOption(key, on) {
   else syncBadge();
 }
 api.settings.sync(opts); // 시작할 때 시스템 메뉴 체크 표시를 맞춘다
+
+/* ---------------------------------- 설정 ---------------------------------- */
+/*
+ * 위의 opts 세 가지는 시스템 메뉴의 체크 표시와 묶여 있어 그대로 둔다.
+ * 그 밖의 설정은 여기 prefs 에 모으고, 설정 창(정보 ▸ 설정)에서 바꾼다.
+ */
+const PREF_DEFAULTS = {
+  theme: 'dark', // dark | light | system
+  cursorBlink: true,
+  cursorStyle: 'block', // block | bar | underline
+  scrollback: 10000,
+  fontFamily: '', // 비우면 기본 글꼴
+  swapTabKeys: false // 메인탭 ↔ 서브탭 번호 단축키 바꾸기
+};
+
+const prefs = (() => {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem('prefs') || '{}') || {};
+  } catch (e) {
+    /* 깨진 값이면 기본값으로 */
+  }
+  const out = { ...PREF_DEFAULTS };
+  for (const k of Object.keys(PREF_DEFAULTS)) {
+    if (saved[k] !== undefined && typeof saved[k] === typeof PREF_DEFAULTS[k]) out[k] = saved[k];
+  }
+  return out;
+})();
+
+function savePrefs() {
+  localStorage.setItem('prefs', JSON.stringify(prefs));
+}
+
+function setPref(key, value) {
+  if (!(key in PREF_DEFAULTS)) return;
+  prefs[key] = value;
+  savePrefs();
+  if (key === 'theme') applyTheme();
+  else if (key === 'swapTabKeys') renderSettings();
+  else applyTermPrefs();
+}
+
+/* ----- 테마 ----- */
+const themeLink = document.getElementById('theme-light');
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+/** 지금 실제로 쓸 테마 ('dark' | 'light') — '시스템' 이면 OS 설정을 따른다 */
+function effectiveTheme() {
+  if (prefs.theme === 'light') return 'light';
+  if (prefs.theme === 'dark') return 'dark';
+  return darkQuery.matches ? 'dark' : 'light';
+}
+
+function applyTheme() {
+  const t = effectiveTheme();
+  document.documentElement.setAttribute('data-theme', t);
+  if (themeLink) themeLink.disabled = t !== 'light';
+  // 터미널 안쪽 색도 같이 바꾼다
+  const theme = t === 'light' ? THEME_LIGHT : THEME;
+  for (const g of state.groups) {
+    for (const tab of g.tabs) {
+      for (const l of leavesOf(tab.root)) {
+        if (l.term) l.term.options.theme = theme;
+      }
+    }
+  }
+}
+darkQuery.addEventListener('change', () => {
+  if (prefs.theme === 'system') applyTheme();
+});
+
+/** 새로 만드는 터미널이 쓸 색 */
+function termTheme() {
+  return effectiveTheme() === 'light' ? THEME_LIGHT : THEME;
+}
+
+/** 커서·스크롤백·글꼴을 열려 있는 모든 터미널에 반영한다 */
+function applyTermPrefs() {
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const l of leavesOf(t.root)) {
+        if (!l.term) continue;
+        l.term.options.cursorBlink = prefs.cursorBlink;
+        l.term.options.cursorStyle = prefs.cursorStyle;
+        l.term.options.scrollback = prefs.scrollback;
+        l.term.options.fontFamily = prefs.fontFamily || FONT_STACK;
+      }
+    }
+  }
+  fitTab(activeTab());
+}
+
+/* ------------------------------- 단축키 ------------------------------- */
+/*
+ * 단축키는 한곳에 모아 두고, 사용자가 바꾼 것은 keybinds 에 저장한다.
+ *
+ * 맥에서는 시스템 메뉴가 같은 키를 먼저 가져가므로, 바꾼 내용을 메인 프로세스에도
+ * 보내 메뉴의 가속기를 다시 세워야 한다. 그렇지 않으면 예전 키가 계속 살아 있다.
+ */
+const KEY_ACTIONS = [
+  { id: 'newGroup', label: '새 메인탭 (새 접속)', def: 'Mod+KeyN' },
+  { id: 'newTab', label: '새 서브탭', def: 'Mod+KeyT' },
+  { id: 'splitRow', label: '좌우로 분할', def: isMacPlatform ? 'Mod+KeyD' : 'Mod+Shift+KeyD' },
+  { id: 'splitCol', label: '위아래로 분할', def: isMacPlatform ? 'Mod+Shift+KeyD' : 'Mod+Shift+KeyE' },
+  { id: 'closePane', label: '현재 창 닫기', def: 'Mod+KeyW' },
+  { id: 'find', label: '화면 내 검색', def: 'Mod+KeyF' },
+  { id: 'explorer', label: '파일 탐색기', def: 'Mod+Backquote' },
+  { id: 'notes', label: '메모장', def: isMacPlatform ? 'Mod+Ctrl+Backquote' : 'Mod+Alt+Backquote' },
+  { id: 'ai', label: 'AI 채팅', def: 'Mod+KeyK' },
+  { id: 'memo', label: '퀵메모', def: 'Mod+KeyM' }
+];
+
+let keybinds = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('keybinds') || '{}');
+    return v && typeof v === 'object' ? v : {};
+  } catch (e) {
+    return {};
+  }
+})();
+
+const keyDef = (id) => (KEY_ACTIONS.find((a) => a.id === id) || {}).def || '';
+const keyOf = (id) => keybinds[id] || keyDef(id);
+
+/** 키 이벤트를 'Mod+Shift+KeyD' 같은 문자열로 */
+function accelFromEvent(e) {
+  const parts = [];
+  if (hasMod(e)) parts.push('Mod');
+  if (isMacPlatform && e.ctrlKey) parts.push('Ctrl');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey) parts.push('Shift');
+  parts.push(e.code);
+  return parts.join('+');
+}
+
+/** 사람이 읽는 표기 */
+function accelLabel(accel) {
+  if (!accel) return '';
+  const mac = isMacPlatform;
+  return accel
+    .split('+')
+    .map((p) => {
+      if (p === 'Mod') return mac ? '⌘' : 'Ctrl';
+      if (p === 'Ctrl') return mac ? '⌃' : 'Ctrl';
+      if (p === 'Alt') return mac ? '⌥' : 'Alt';
+      if (p === 'Shift') return mac ? '⇧' : 'Shift';
+      if (p.startsWith('Key')) return p.slice(3);
+      if (p.startsWith('Digit')) return p.slice(5);
+      if (p === 'Backquote') return '`';
+      if (p === 'Minus') return '-';
+      if (p === 'Equal') return '=';
+      return p;
+    })
+    .join(mac ? '' : '+');
+}
+
+/** 우리 표기 → Electron 메뉴 가속기 */
+function toElectronAccel(accel) {
+  const parts = accel.split('+');
+  const key = parts.pop();
+  const mods = parts
+    .map((p) => (p === 'Mod' ? 'CmdOrCtrl' : p === 'Ctrl' ? 'Control' : p))
+    .join('+');
+  let k = key;
+  if (k.startsWith('Key')) k = k.slice(3);
+  else if (k.startsWith('Digit')) k = k.slice(5);
+  else if (k === 'Backquote') k = '`';
+  else if (k === 'Minus') k = '-';
+  else if (k === 'Equal') k = '=';
+  return mods ? `${mods}+${k}` : k;
+}
+
+/** 지금 눌린 키가 어떤 동작인지 (없으면 null) */
+function actionForEvent(e) {
+  const accel = accelFromEvent(e);
+  for (const a of KEY_ACTIONS) if (keyOf(a.id) === accel) return a.id;
+  return null;
+}
+
+function runAction(id) {
+  const g = activeGroup();
+  const l = activeLeaf();
+  switch (id) {
+    case 'newGroup':
+      openConnectDialog({});
+      break;
+    case 'newTab':
+      if (g) addSubTab(g);
+      else openConnectDialog({});
+      break;
+    case 'splitRow':
+      splitActive('row');
+      break;
+    case 'splitCol':
+      splitActive('col');
+      break;
+    case 'closePane':
+      if (g && g.explorerSelected && !g.explorerPinned) leaveExplorer(g);
+      else if (l && l.mode === 'file') {
+        const t = g && g.tabs.find((x) => x.id === l.tabId);
+        if (t) closeFilePane(g, t, l);
+      } else if (l) closeLeaf(l);
+      break;
+    case 'find':
+      openFind();
+      break;
+    case 'explorer':
+      if (state.notesOpen) closeNotes();
+      if (g) toggleExplorerView(g);
+      break;
+    case 'notes':
+      toggleNotes();
+      break;
+    case 'ai':
+      toggleAiPop();
+      break;
+    case 'memo':
+      toggleQuickMemo();
+      break;
+    default:
+      break;
+  }
+}
+
+/** 바뀐 단축키를 메인 프로세스에 알려 시스템 메뉴 가속기를 다시 세운다 */
+function syncKeybinds() {
+  const map = {};
+  for (const a of KEY_ACTIONS) map[a.id] = toElectronAccel(keyOf(a.id));
+  api.settings.keybinds(map);
+}
+
+function setKeybind(id, accel) {
+  if (accel) keybinds[id] = accel;
+  else delete keybinds[id];
+  localStorage.setItem('keybinds', JSON.stringify(keybinds));
+  syncKeybinds();
+  renderSettings();
+}
+
 
 /** 지금 확인이 필요한 판의 개수를 독 배지/작업표시줄에 알린다 */
 function syncBadge() {
@@ -2817,7 +3082,7 @@ const APP_MENUS = [
       ['좌우로 분할', api.platform === 'darwin' ? '⌘D' : 'Ctrl+Shift+D', () => splitActive('row')],
       ['위아래로 분할', api.platform === 'darwin' ? '⌘⇧D' : 'Ctrl+Shift+E', () => splitActive('col')],
       ['-'],
-      ['현재 창 닫기', `${MOD}+W`, () => {
+      ['현재 창 닫기', () => accelLabel(keyOf('closePane')), () => {
         const l = activeLeaf();
         if (l) closeLeaf(l);
       }]
@@ -2837,17 +3102,17 @@ const APP_MENUS = [
         if (text) api.ssh.write(l.sessionId, text);
       }],
       ['-'],
-      ['찾기', `${MOD}+F`, () => openFind()]
+      ['찾기', () => accelLabel(keyOf('find')), () => openFind()]
     ]
   },
   {
     label: '보기',
     items: [
-      ['파일 탐색기', isMacPlatform ? '⌘`' : 'Ctrl+`', () => {
+      ['파일 탐색기', () => accelLabel(keyOf('explorer')), () => {
         const g = activeGroup();
         if (g) toggleExplorerView(g);
       }],
-      ['메모장', isMacPlatform ? '⌘⌃`' : 'Ctrl+Alt+`', () => toggleNotes()],
+      ['메모장', () => accelLabel(keyOf('notes')), () => toggleNotes()],
       ['-'],
       // 켬/끔 — 메뉴를 열 때마다 라벨을 다시 만들어 ✓ 를 보여 준다
       [() => `${opts.notifyOs ? '✓' : '  '} 작업 완료 시 알림`, '', () => setOption('notifyOs', !opts.notifyOs)],
@@ -2865,6 +3130,8 @@ const APP_MENUS = [
   {
     label: '정보',
     items: [
+      ['설정', '', () => openSettings()],
+      ['-'],
       ['버전', '', () => openAbout()],
       ['업데이트', '', () => openUpdate()]
     ]
@@ -2872,8 +3139,8 @@ const APP_MENUS = [
   {
     label: '도움',
     items: [
-      ['AI 채팅', isMacPlatform ? '⌘K' : 'Ctrl+K', () => toggleAiPop()],
-      ['퀵메모', isMacPlatform ? '⌘M' : 'Ctrl+M', () => toggleQuickMemo()],
+      ['AI 채팅', () => accelLabel(keyOf('ai')), () => toggleAiPop()],
+      ['퀵메모', () => accelLabel(keyOf('memo')), () => toggleQuickMemo()],
       ['tmux 사용법', '', () => openHelp('tmux')],
       ['단축키 모음', '', () => openHelp('shortcuts')]
     ]
@@ -2929,7 +3196,8 @@ function toggleAppMenu(index, button) {
     name.textContent = typeof label === 'function' ? label() : label;
     const key = document.createElement('span');
     key.className = 'menu-accel';
-    key.textContent = accel || '';
+    // 단축키도 함수면 열 때마다 계산한다 (설정에서 바꾼 키가 바로 보이게)
+    key.textContent = (typeof accel === 'function' ? accel() : accel) || '';
     b.append(name, key);
     b.addEventListener('click', () => {
       toggleAppMenu(-1);
@@ -3158,6 +3426,184 @@ document.addEventListener('mousedown', (e) => {
 });
 
 renderPomo();
+
+/* -------------------------------- 설정 창 -------------------------------- */
+
+const setEl = document.getElementById('settings');
+let keyListening = null; // 지금 새 키를 기다리고 있는 동작 id
+
+function openSettings() {
+  renderSettings();
+  setEl.classList.remove('hidden');
+}
+
+function closeSettings() {
+  stopKeyListen();
+  setEl.classList.add('hidden');
+}
+
+function stopKeyListen() {
+  keyListening = null;
+  for (const b of setEl.querySelectorAll('.set-key-btn.listening')) b.classList.remove('listening');
+}
+
+/** 설정 창의 모든 값을 지금 상태에 맞춘다 */
+function renderSettings() {
+  if (!setEl) return;
+  const seg = (id, val) => {
+    for (const b of setEl.querySelectorAll(`#${id} button`)) b.classList.toggle('on', b.dataset.v === val);
+  };
+  seg('set-theme', prefs.theme);
+  seg('set-cursor', prefs.cursorStyle);
+  document.getElementById('set-font-size').textContent = String(state.fontSize);
+  document.getElementById('set-font-family').value = prefs.fontFamily;
+  document.getElementById('set-cursor-blink').checked = prefs.cursorBlink;
+  document.getElementById('set-scrollback').value = String(prefs.scrollback);
+  document.getElementById('set-notify').checked = opts.notifyOs;
+  document.getElementById('set-reconnect').checked = opts.autoReconnect;
+  document.getElementById('set-tmux').checked = opts.tmuxReattach;
+  document.getElementById('set-pomo').value = String(pomoMinutes);
+  document.getElementById('set-swap-tabs').checked = prefs.swapTabKeys;
+
+  // 지금 번호 단축키가 무엇을 가리키는지 말로 적어 준다
+  const numMain = isMacPlatform ? '⌘⌃' : 'Ctrl+Alt+';
+  const numSub = isMacPlatform ? '⌘' : 'Ctrl+';
+  const a = prefs.swapTabKeys ? numMain : numSub;
+  const b = prefs.swapTabKeys ? numSub : numMain;
+  document.getElementById('set-swap-note').textContent =
+    `지금: ${a}숫자 → 서브탭(가로 줄) · ${b}숫자 → 메인탭(세로 열)`;
+
+  // 단축키 목록
+  const list = document.getElementById('set-keylist');
+  list.innerHTML = '';
+  for (const act of KEY_ACTIONS) {
+    const row = document.createElement('div');
+    row.className = 'set-key' + (keybinds[act.id] ? ' custom' : '');
+
+    const name = document.createElement('span');
+    name.className = 'set-key-name';
+    name.textContent = act.label;
+
+    const btn = document.createElement('button');
+    btn.className = 'set-key-btn' + (keybinds[act.id] ? ' changed' : '');
+    btn.textContent = keyListening === act.id ? '키를 누르세요…' : accelLabel(keyOf(act.id));
+    if (keyListening === act.id) btn.classList.add('listening');
+    btn.title = '눌러서 새 단축키 지정';
+    btn.addEventListener('click', () => {
+      stopKeyListen();
+      keyListening = act.id;
+      renderSettings();
+    });
+
+    const undo = document.createElement('button');
+    undo.className = 'set-key-undo';
+    undo.textContent = '↺';
+    undo.title = `기본값(${accelLabel(act.def)})으로`;
+    undo.addEventListener('click', () => setKeybind(act.id, null));
+
+    row.append(name, btn, undo);
+    list.appendChild(row);
+  }
+}
+
+/* ----- 새 단축키 받기 ----- */
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!keyListening) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      stopKeyListen();
+      renderSettings();
+      return;
+    }
+    // 수정키만 눌린 것은 아직 아니다
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+    // 수정키 없이 글자 하나만 지정하면 터미널 입력을 먹어 버린다
+    if (!hasMod(e) && !e.altKey) return;
+    const accel = accelFromEvent(e);
+    const id = keyListening;
+    // 이미 다른 동작이 쓰고 있으면 그쪽을 비운다 (같은 키가 둘이면 헷갈린다)
+    for (const other of KEY_ACTIONS) {
+      if (other.id !== id && keyOf(other.id) === accel) delete keybinds[other.id];
+    }
+    stopKeyListen();
+    setKeybind(id, accel === keyDef(id) ? null : accel);
+  },
+  true
+);
+
+/* ----- 창 조작 ----- */
+if (setEl) {
+  for (const t of setEl.querySelectorAll('.set-tab')) {
+    t.addEventListener('click', () => {
+      for (const x of setEl.querySelectorAll('.set-tab')) x.classList.toggle('active', x === t);
+      for (const p of setEl.querySelectorAll('.set-pane')) p.classList.toggle('hidden', p.dataset.pane !== t.dataset.pane);
+      stopKeyListen();
+    });
+  }
+  for (const b of setEl.querySelectorAll('#set-theme button')) {
+    b.addEventListener('click', () => {
+      setPref('theme', b.dataset.v);
+      renderSettings();
+    });
+  }
+  for (const b of setEl.querySelectorAll('#set-cursor button')) {
+    b.addEventListener('click', () => {
+      setPref('cursorStyle', b.dataset.v);
+      renderSettings();
+    });
+  }
+  document.getElementById('set-font-plus').addEventListener('click', () => {
+    setFontSize(state.fontSize + 1);
+    renderSettings();
+  });
+  document.getElementById('set-font-minus').addEventListener('click', () => {
+    setFontSize(state.fontSize - 1);
+    renderSettings();
+  });
+  document.getElementById('set-font-family').addEventListener('change', (e) => setPref('fontFamily', e.target.value.trim()));
+  document.getElementById('set-cursor-blink').addEventListener('change', (e) => setPref('cursorBlink', e.target.checked));
+  document.getElementById('set-scrollback').addEventListener('change', (e) => {
+    const v = Math.min(200000, Math.max(1000, Number(e.target.value) || 10000));
+    setPref('scrollback', v);
+    renderSettings();
+  });
+  document.getElementById('set-notify').addEventListener('change', (e) => setOption('notifyOs', e.target.checked));
+  document.getElementById('set-reconnect').addEventListener('change', (e) => setOption('autoReconnect', e.target.checked));
+  document.getElementById('set-tmux').addEventListener('change', (e) => setOption('tmuxReattach', e.target.checked));
+  document.getElementById('set-pomo').addEventListener('change', (e) => {
+    setPomoMinutes(Number(e.target.value));
+    renderSettings();
+  });
+  document.getElementById('set-swap-tabs').addEventListener('change', (e) => {
+    setPref('swapTabKeys', e.target.checked);
+    renderSettings();
+  });
+  document.getElementById('set-close').addEventListener('click', closeSettings);
+  document.getElementById('set-done').addEventListener('click', closeSettings);
+  document.getElementById('set-reset').addEventListener('click', () => {
+    for (const k of Object.keys(PREF_DEFAULTS)) prefs[k] = PREF_DEFAULTS[k];
+    savePrefs();
+    keybinds = {};
+    localStorage.setItem('keybinds', '{}');
+    syncKeybinds();
+    applyTheme();
+    applyTermPrefs();
+    setFontSize(13);
+    renderSettings();
+  });
+  // 바깥(어두운 바탕)을 누르면 닫는다
+  setEl.addEventListener('mousedown', (e) => {
+    if (e.target === setEl) closeSettings();
+  });
+}
+
+// 시작할 때 저장된 설정을 화면에 반영한다
+applyTheme();
+syncKeybinds();
+
 
 /* --------------------------------- 메모장 ---------------------------------- */
 
@@ -5554,7 +6000,9 @@ window.addEventListener(
     if (hasMod(e) && !e.shiftKey) {
       const m = /^Digit([1-9])$/.exec(e.code);
       if (m && !(isMacPlatform && e.altKey)) {
-        const toGroup = isMacPlatform ? e.ctrlKey : e.altKey; // mac ⌘⌃숫자 / win Ctrl+Alt+숫자
+        // mac ⌘⌃숫자 / win Ctrl+Alt+숫자 가 메인탭. 설정에서 서브탭과 맞바꿀 수 있다.
+        const second = isMacPlatform ? e.ctrlKey : e.altKey;
+        const toGroup = prefs.swapTabKeys ? !second : second;
         e.preventDefault();
         e.stopPropagation();
         const n = Number(m[1]) - 1;
@@ -5597,85 +6045,17 @@ window.addEventListener(
       }
     }
 
-    // AI 채팅: Ctrl/⌘+K — 하단바 AI 단추에서 올라오는 팝업을 여닫는다.
-    // 열 때는 지금 판의 내용(터미널 화면·선택 글자·웹 본문·파일)이 함께 붙는다.
-    if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleAiPop();
-      return;
-    }
-
-    // 퀵메모: Ctrl/⌘+M — 하단바 📝 단추에서 올라오는 메모창을 여닫는다.
-    // 마지막으로 적던 메모를 그대로 이어서 연다.
-    if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'm') {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleQuickMemo();
-      return;
-    }
-
-    // 파일 탐색기: mac ⌘+`  / win Ctrl+`
-    // 메모장:     mac ⌘+Control+` / win Ctrl+Alt+`
-    if (hasMod(e) && e.code === 'Backquote') {
-      const toNotes = isMacPlatform ? e.ctrlKey : e.altKey;
-      e.preventDefault();
-      e.stopPropagation();
-      if (toNotes) {
-        toggleNotes();
-      } else {
-        if (state.notesOpen) closeNotes();
-        const g = activeGroup();
-        if (g) toggleExplorerView(g);
-      }
-      return;
-    }
-
-    // 분할 / 창 닫기 / 새 탭 — 메뉴 가속기와 별개로 여기서도 확실히 처리한다
-    const mod = hasMod(e);
-    if (mod && !e.altKey) {
-      const key = e.key.toLowerCase();
-      // 좌우 분할: mac ⌘D / 그 외 Ctrl+Shift+D
-      if (key === 'd' && (api.platform === 'darwin' ? !e.shiftKey : e.shiftKey)) {
+    /*
+     * 나머지 단축키는 표(KEY_ACTIONS)에서 찾아 처리한다.
+     * 설정 ▸ 단축키 에서 바꾼 키가 곧바로 반영되고, 예전 키는 더 이상 듣지 않는다.
+     * (복사·붙여넣기처럼 터미널 입력과 얽힌 키는 위에서 따로 다루고 바꿀 수 없다)
+     */
+    {
+      const act = actionForEvent(e);
+      if (act) {
         e.preventDefault();
         e.stopPropagation();
-        splitActive('row');
-        return;
-      }
-      // 상하 분할: mac ⌘⇧D / 그 외 Ctrl+Shift+E
-      if ((api.platform === 'darwin' && key === 'd' && e.shiftKey) || (api.platform !== 'darwin' && key === 'e' && e.shiftKey)) {
-        e.preventDefault();
-        e.stopPropagation();
-        splitActive('col');
-        return;
-      }
-      // 새 서브탭
-      if (key === 't' && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        const g = activeGroup();
-        if (g) addSubTab(g);
-        else openConnectDialog({});
-        return;
-      }
-      // 새 메인탭(새 접속)
-      if (key === 'n' && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        openConnectDialog({});
-        return;
-      }
-      // 현재 분할 창 닫기
-      if (key === 'w' && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        const l = activeLeaf();
-        const g = activeGroup();
-        if (g && g.explorerSelected && !g.explorerPinned) leaveExplorer(g);
-        else if (l && l.mode === 'file') {
-          const t = g && g.tabs.find((x) => x.id === l.tabId);
-          if (t) closeFilePane(g, t, l); // 파일 판만 닫는다(셸 세션이 없으므로 확인 없이)
-        } else if (l) closeLeaf(l);
+        runAction(act);
         return;
       }
     }

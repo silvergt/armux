@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="vendor/highlight.css" />
     <link rel="stylesheet" href="styles.css" />
+    <!-- 밝은 테마 (설정 ▸ 모양 에서 켜면 활성화된다) -->
+    <link id="theme-light" rel="stylesheet" href="styles-light.css" disabled />
   </head>
   <body>
     <div id="app">
@@ -35,12 +37,106 @@
         <div id="substrip"></div>
         <div id="pomodoro" title="뽀모도로 타이머 — 눌러서 시간 설정">
           <svg class="pomo-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="14.2" r="7.6" />
-            <rect x="11.3" y="3.1" width="1.4" height="3.2" rx="0.7" />
-            <path d="M12 6.6c-1.6-1.7-3.5-2.1-5.1-1.7.6 1.6 2 2.7 3.7 3-1.2.3-2.3 1-3 2 1.7.4 3.4 0 4.4-1 1 1 2.7 1.4 4.4 1-.7-1-1.8-1.7-3-2 1.7-.3 3.1-1.4 3.7-3-1.6-.4-3.5 0-5.1 1.7z" />
+            <circle cx="12" cy="12.6" r="8.4" />
+            <path d="M12 7.6v5l3.4 2" />
+            <path d="M8.6 2.9 5.4 5.3M15.4 2.9l3.2 2.4" />
           </svg>
           <span id="pomo-time">25:00</span>
           <button id="pomo-toggle" class="pomo-btn" title="시작">▶</button>
+        </div>
+      </div>
+
+      <!-- 설정 창 (정보 ▸ 설정) -->
+      <div id="settings" class="hidden">
+        <div class="set-box">
+          <div class="set-head">
+            <span class="set-title">설정</span>
+            <button id="set-close" class="set-x" title="닫기">✕</button>
+          </div>
+          <div class="set-tabs">
+            <button class="set-tab active" data-pane="look">모양</button>
+            <button class="set-tab" data-pane="keys">단축키</button>
+            <button class="set-tab" data-pane="behave">동작</button>
+          </div>
+
+          <div class="set-body">
+            <!-- 모양 -->
+            <div class="set-pane" data-pane="look">
+              <div class="set-row">
+                <label>테마</label>
+                <div class="set-seg" id="set-theme">
+                  <button data-v="dark">어둡게</button>
+                  <button data-v="light">밝게</button>
+                  <button data-v="system">시스템</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <label>글자 크기</label>
+                <div class="set-stepper">
+                  <button id="set-font-minus">−</button>
+                  <span id="set-font-size">13</span>
+                  <button id="set-font-plus">+</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <label>글꼴</label>
+                <input id="set-font-family" type="text" placeholder="비워 두면 기본 글꼴" />
+              </div>
+              <div class="set-row">
+                <label>커서 모양</label>
+                <div class="set-seg" id="set-cursor">
+                  <button data-v="block">■ 블록</button>
+                  <button data-v="bar">▏줄</button>
+                  <button data-v="underline">＿밑줄</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <label>커서 깜빡임</label>
+                <input id="set-cursor-blink" type="checkbox" />
+              </div>
+              <div class="set-row">
+                <label>스크롤백 (줄)</label>
+                <input id="set-scrollback" type="number" min="1000" max="200000" step="1000" />
+              </div>
+            </div>
+
+            <!-- 단축키 -->
+            <div class="set-pane hidden" data-pane="keys">
+              <div class="set-row set-row-top">
+                <label>메인탭 ↔ 서브탭<br /><span class="set-hint">번호 단축키 바꾸기</span></label>
+                <input id="set-swap-tabs" type="checkbox" />
+              </div>
+              <div class="set-note" id="set-swap-note"></div>
+              <div class="set-sep"></div>
+              <div id="set-keylist" class="set-keylist"></div>
+            </div>
+
+            <!-- 동작 -->
+            <div class="set-pane hidden" data-pane="behave">
+              <div class="set-row">
+                <label>작업이 끝나면 알림</label>
+                <input id="set-notify" type="checkbox" />
+              </div>
+              <div class="set-row">
+                <label>절전에서 깨면 자동 재접속</label>
+                <input id="set-reconnect" type="checkbox" />
+              </div>
+              <div class="set-row">
+                <label>재접속하면 tmux 다시 붙기</label>
+                <input id="set-tmux" type="checkbox" />
+              </div>
+              <div class="set-sep"></div>
+              <div class="set-row">
+                <label>뽀모도로 기본 시간 (분)</label>
+                <input id="set-pomo" type="number" min="1" max="180" step="1" />
+              </div>
+            </div>
+          </div>
+
+          <div class="set-foot">
+            <button id="set-reset" class="set-ghost">기본값으로</button>
+            <button id="set-done" class="set-primary">닫기</button>
+          </div>
         </div>
       </div>
 

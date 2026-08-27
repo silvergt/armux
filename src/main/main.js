@@ -184,6 +184,13 @@ function editCommand(kind) {
   if (mainWindow) mainWindow.webContents.send(`menu:${kind}`);
 }
 
+/*
+ * 사용자가 바꾼 단축키. 맥은 시스템 메뉴가 키를 먼저 가져가므로, 렌더러에서만
+ * 바꾸면 예전 키가 계속 살아 있다. 그래서 여기에 받아 두고 메뉴를 다시 세운다.
+ */
+let keybinds = {};
+const accelOf = (id, fallback) => keybinds[id] || fallback;
+
 function buildMenu() {
   const template = [
     ...(isMac
@@ -206,29 +213,29 @@ function buildMenu() {
       submenu: [
         {
           label: '새 SSH 탭',
-          accelerator: 'CmdOrCtrl+N',
+          accelerator: accelOf('newGroup', 'CmdOrCtrl+N'),
           click: () => mainWindow && mainWindow.webContents.send('menu:new-group')
         },
         {
           label: '현재 그룹에 서브탭 추가',
-          accelerator: 'CmdOrCtrl+T',
+          accelerator: accelOf('newTab', 'CmdOrCtrl+T'),
           click: () => mainWindow && mainWindow.webContents.send('menu:new-subtab')
         },
         { type: 'separator' },
         {
           label: '좌우로 분할',
-          accelerator: isMac ? 'Cmd+D' : 'Ctrl+Shift+D',
+          accelerator: accelOf('splitRow', isMac ? 'Cmd+D' : 'Ctrl+Shift+D'),
           click: () => mainWindow && mainWindow.webContents.send('menu:split-vertical')
         },
         {
           label: '위아래로 분할',
-          accelerator: isMac ? 'Cmd+Shift+D' : 'Ctrl+Shift+E',
+          accelerator: accelOf('splitCol', isMac ? 'Cmd+Shift+D' : 'Ctrl+Shift+E'),
           click: () => mainWindow && mainWindow.webContents.send('menu:split-horizontal')
         },
         { type: 'separator' },
         {
           label: '현재 창 닫기',
-          accelerator: 'CmdOrCtrl+W',
+          accelerator: accelOf('closePane', 'CmdOrCtrl+W'),
           click: () => mainWindow && mainWindow.webContents.send('menu:close-tab')
         }
       ]
@@ -249,7 +256,7 @@ function buildMenu() {
             { type: 'separator' },
             {
               label: '찾기',
-              accelerator: 'Cmd+F',
+              accelerator: accelOf('find', 'Cmd+F'),
               click: () => mainWindow && mainWindow.webContents.send('menu:find')
             }
           ]
@@ -267,7 +274,7 @@ function buildMenu() {
             { type: 'separator' },
             {
               label: '찾기',
-              accelerator: 'Ctrl+F',
+              accelerator: accelOf('find', 'Ctrl+F'),
               click: () => mainWindow && mainWindow.webContents.send('menu:find')
             }
           ]
@@ -280,12 +287,12 @@ function buildMenu() {
               // macOS 는 메뉴에 등록해 두어야 ⌘` 같은 키가 앱으로 확실히 들어온다
               {
                 label: '파일 탐색기',
-                accelerator: 'Cmd+`',
+                accelerator: accelOf('explorer', 'Cmd+`'),
                 click: () => mainWindow && mainWindow.webContents.send('menu:toggle-explorer')
               },
               {
                 label: '메모장',
-                accelerator: 'Cmd+Control+`',
+                accelerator: accelOf('notes', 'Cmd+Control+`'),
                 click: () => mainWindow && mainWindow.webContents.send('menu:toggle-notes')
               },
               { type: 'separator' }
@@ -353,12 +360,12 @@ function buildMenu() {
       submenu: [
         {
           label: 'AI 채팅',
-          accelerator: 'CmdOrCtrl+K',
+          accelerator: accelOf('ai', 'CmdOrCtrl+K'),
           click: () => mainWindow && mainWindow.webContents.send('menu:ai')
         },
         {
           label: '퀵메모',
-          accelerator: 'CmdOrCtrl+M',
+          accelerator: accelOf('memo', 'CmdOrCtrl+M'),
           click: () => mainWindow && mainWindow.webContents.send('menu:quickmemo')
         },
         {
@@ -490,6 +497,15 @@ function pruneEmpty(obj) {
 
 ipcMain.on('ssh:write', (e, { id, data }) => ssh.write(id, data));
 ipcMain.on('ssh:resize', (e, { id, cols, rows }) => ssh.resize(id, cols, rows));
+ipcMain.on('settings:keybinds', (e, map) => {
+  keybinds = map && typeof map === 'object' ? map : {};
+  try {
+    buildMenu(); // 새 가속기로 메뉴를 다시 세운다
+  } catch (err) {
+    /* 가속기 문자열이 이상해도 앱은 계속 돌아야 한다 */
+  }
+});
+
 ipcMain.on('ssh:close', (e, { id }) => {
   portforward.stopForSession(id); // 끊긴 연결에 매달린 전달을 남겨 두지 않는다
   paneprobe.stop(id);

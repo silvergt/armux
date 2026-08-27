@@ -134,7 +134,9 @@ contextBridge.exposeInMainWorld('armux', {
 
   /** 켬/끔 설정을 시스템 메뉴 체크 표시에 반영 */
   settings: {
-    sync: (opts) => ipcRenderer.send('settings:sync', opts)
+    sync: (opts) => ipcRenderer.send('settings:sync', opts),
+    // 바뀐 단축키 — 맥은 시스템 메뉴가 키를 먼저 가져가므로 메뉴를 다시 세워야 한다
+    keybinds: (map) => ipcRenderer.send('settings:keybinds', map)
   },
 
   /** 끌어다 놓은 파일 · 붙여넣은 그림을 서버로 (Claude Code 가 읽을 수 있게) */
