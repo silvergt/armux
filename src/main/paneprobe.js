@@ -31,10 +31,21 @@
 const ssh = require('./ssh');
 
 const INTERVAL_SEC = 2; // 폴링 주기(초). 사람 눈에는 충분하고 서버에는 거의 공짜다.
-const CHANNEL_MS = 60 * 60 * 1000; // exec 채널 수명. 끝나면 알아서 다시 연다.
-const RESTART_MS = 3000; // 채널이 끊겼을 때 다시 열기까지
+/*
+ * 원격 반복 횟수. 다 돌면 스크립트가 스스로 끝나고 채널이 정상적으로 닫힌다.
+ *
+ * 예전에는 채널을 우리 쪽에서 시간 맞춰 강제로 닫았는데, SSH 연결 하나가 열 수
+ * 있는 채널 수는 서버의 MaxSessions(기본 10)로 묶여 있고 한도에 걸린 연결은
+ * 그 뒤로 exec 이 계속 실패한다. 우리가 닫는 것에 기대는 대신 원격이 스스로
+ * 끝나게 두면, 채널이 어중간하게 남을 여지가 줄어든다.
+ */
+const LOOP_ITERS = 600; // 2초 × 600 = 20분마다 스스로 끝나고 다시 연다
+const SILENT_MS = 15000; // 이만큼 아무 소식이 없으면 채널이 살아 있어도 다시 연다
+const WATCH_MS = 5000; // 감시견이 도는 주기
+const RESTART_MIN_MS = 2000; // 다시 열기까지 (실패가 이어지면 늘린다)
+const RESTART_MAX_MS = 20000;
 
-const probes = new Map(); // sessionId -> { stopped, timer, onState }
+const probes = new Map(); // sessionId -> { stopped, timer, onState, cancel, lastAt, backoff }
 
 /**
  * 서버에서 돌 관찰 스크립트(POSIX sh).
@@ -127,7 +138,8 @@ SH=$(find_shell 2>/dev/null)
 SHPID=\${SH%% *}
 TTY=\${SH##* }
 
-while :; do
+n=0
+while [ "$n" -lt ${LOOP_ITERS} ]; do
   if [ -z "$TTY" ] || [ -z "$SHPID" ]; then
     SH=$(find_shell 2>/dev/null); SHPID=\${SH%% *}; TTY=\${SH##* }
   fi
@@ -166,6 +178,7 @@ while :; do
   fi
   echo E
   sleep ${INTERVAL_SEC}
+  n=$((n + 1))
 done
 `;
 }
@@ -222,14 +235,62 @@ function parseBlock(lines) {
  */
 function start(sessionId, onState) {
   if (probes.has(sessionId)) return;
-  const p = { stopped: false, timer: null, onState };
+  const p = {
+    stopped: false,
+    timer: null,
+    onState,
+    cancel: null,
+    lastAt: Date.now(), // 마지막으로 소식을 들은 시각
+    backoff: RESTART_MIN_MS
+  };
   probes.set(sessionId, p);
+  ensureWatchdog();
   run(sessionId);
 }
 
-function run(sessionId) {
+/**
+ * 감시견 — 채널이 "열려 있는데 조용한" 상태를 되살린다.
+ *
+ * close 이벤트만 보고 다시 열면, 채널이 살아 있는데 원격 쪽이 멎은 경우(서버가
+ * 절전에서 깨어난 직후, 파이프가 어딘가에서 막힌 경우)에 영영 못 깨어난다.
+ * 그러면 앱은 마지막으로 받은 상태를 그대로 들고 있어서, 아무것도 안 하는
+ * 탭에 스피너가 계속 돌아 있게 된다. 소식이 끊기면 무조건 다시 연다.
+ */
+let watchdog = null;
+function ensureWatchdog() {
+  if (watchdog) return;
+  watchdog = setInterval(() => {
+    if (!probes.size) {
+      clearInterval(watchdog);
+      watchdog = null;
+      return;
+    }
+    const now = Date.now();
+    for (const [id, p] of probes) {
+      if (p.stopped || p.timer) continue; // 이미 다시 열기를 기다리는 중
+      if (now - p.lastAt > SILENT_MS) run(id, true); // 조용하다 → 끊고 다시
+    }
+  }, WATCH_MS);
+}
+
+function run(sessionId, force) {
   const p = probes.get(sessionId);
   if (!p || p.stopped) return;
+  if (p.timer) {
+    clearTimeout(p.timer);
+    p.timer = null;
+  }
+  if (p.cancel) {
+    // 이전 채널이 남아 있으면 확실히 놓아 주고 시작한다 (채널 한도가 있다)
+    try {
+      p.cancel();
+    } catch (e) {
+      /* 이미 닫혔으면 그만 */
+    }
+    p.cancel = null;
+  }
+  p.lastAt = Date.now();
+  if (force) p.backoff = RESTART_MIN_MS;
 
   let buf = '';
   let cur = null;
@@ -247,6 +308,8 @@ function run(sessionId) {
         if (cur) {
           const state = parseBlock(cur);
           cur = null;
+          p.lastAt = Date.now(); // 살아 있다는 증거
+          p.backoff = RESTART_MIN_MS; // 한 번이라도 받았으면 재시도 간격을 되돌린다
           if (!p.stopped) {
             try {
               p.onState(sessionId, state);
@@ -264,12 +327,23 @@ function run(sessionId) {
 
   const onClose = () => {
     if (p.stopped) return;
-    // 채널이 끝났다(수명 만료·네트워크). 잠시 뒤 다시 연다.
-    p.timer = setTimeout(() => run(sessionId), RESTART_MS);
+    p.cancel = null;
+    /*
+     * 채널이 끝났다(원격이 제 수명을 다했거나, 네트워크가 끊겼거나, 서버의
+     * 채널 한도에 걸렸거나). 어느 쪽이든 포기하지 않고 다시 연다. 다만 계속
+     * 실패하는 상황(채널 한도 등)에서 초당 몇 번씩 두드리지 않도록 간격을 늘린다.
+     */
+    const wait = p.backoff;
+    p.backoff = Math.min(p.backoff * 2, RESTART_MAX_MS);
+    p.timer = setTimeout(() => {
+      p.timer = null;
+      run(sessionId);
+    }, wait);
   };
 
   try {
-    ssh.execStream(sessionId, script(), CHANNEL_MS, onData, onClose);
+    // 원격이 스스로 끝나므로 여기 시간제한은 그보다 넉넉하게 둔 안전망일 뿐이다
+    p.cancel = ssh.execStream(sessionId, script(), (LOOP_ITERS * INTERVAL_SEC + 60) * 1000, onData, onClose);
   } catch (e) {
     onClose();
   }
@@ -281,6 +355,13 @@ function stop(sessionId) {
   if (!p) return;
   p.stopped = true;
   if (p.timer) clearTimeout(p.timer);
+  if (p.cancel) {
+    try {
+      p.cancel(); // 채널을 놓아 준다 (원격 반복문도 같이 끝난다)
+    } catch (e) {
+      /* 이미 닫혔으면 그만 */
+    }
+  }
   probes.delete(sessionId);
 }
 

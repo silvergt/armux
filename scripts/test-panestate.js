@@ -117,6 +117,62 @@ app.whenReady().then(async () => {
   const cleaned = stale && stale[4] === '-';
   if (!cleaned) bad++;
   console.log(`${cleaned ? '  ' : '✗ '}낡은 훅 상태가 지워졌다`);
-  console.log(`\n${bad === 0 ? `모두 통과 (${res.length + 1}건)` : bad + ' 건 실패'}`);
+
+  /*
+   * 판 단위 판정(evaluatePanes) — 관찰 결과가 어떤 모양이든 스피너가 갇히면 안 된다.
+   * "봤는데 아무것도 없다"(빈 배열)와 "아직 못 봤다"(null)를 다르게 다루는지가 핵심이다.
+   */
+  console.log('');
+  const ev = await win.webContents.executeJavaScript(
+    `(()=>{
+    const mk = () => ({ id:'L', mode:'terminal', alert:false, busy:false,
+      hookByPane:Object.create(null), paneWas:Object.create(null), probe:null });
+    const pane = (o) => Object.assign({ win:'0', visible:true, argv:'', chain:[] }, o);
+    const out = {};
+
+    // 관찰기가 아직 말이 없다 → 훅만으로 본다 (관찰기가 못 도는 서버에서도 살아 있게)
+    let l = mk(); l.hookByPane['%1'] = 'busy';
+    evaluatePanes(l); out.noProbe = l.busy;
+
+    // 관찰기가 "봤는데 아무것도 없다" → 스피너를 켜지 않는다. 훅 기억은 남긴다.
+    l = mk(); l.hookByPane['%1'] = 'busy';
+    l.probe = { mode:'tmux', panes: [] };
+    evaluatePanes(l); out.emptyBusy = l.busy; out.emptyHooks = Object.keys(l.hookByPane);
+
+    // 창 목록이 돌아오면 없는 창의 기억은 정리된다
+    l.probe = { mode:'tmux', panes: [pane({ id:'%2', cmd:'bash', argv:'-bash', chain:['bash'] })] };
+    evaluatePanes(l); out.afterReal = l.busy; out.afterHooks = Object.keys(l.hookByPane);
+
+    // 여러 창 중 하나만 돌아도 판 전체는 "돌고 있음"
+    l = mk();
+    l.probe = { mode:'tmux', panes: [
+      pane({ id:'%1', cmd:'bash', argv:'-bash', chain:['bash'] }),
+      pane({ id:'%2', cmd:'python3', argv:'python3 bt.py', chain:['python3'], visible:false })
+    ] };
+    evaluatePanes(l); out.anyBusy = l.busy;
+
+    // 그 창이 끝나면 꺼진다
+    l.probe = { mode:'tmux', panes: [
+      pane({ id:'%1', cmd:'bash', argv:'-bash', chain:['bash'] }),
+      pane({ id:'%2', cmd:'bash', argv:'-bash', chain:['bash'], visible:false })
+    ] };
+    evaluatePanes(l); out.thenIdle = l.busy;
+    return out;
+  })()`,
+    true
+  );
+  const evChecks = [
+    ['관찰기가 아직 말이 없으면 훅만으로 본다', ev.noProbe === true],
+    ['★ 관찰 결과가 비면 스피너를 켜지 않는다', ev.emptyBusy === false],
+    ['★ 그때 훅 기억은 남겨 둔다', ev.emptyHooks.includes('%1')],
+    ['창 목록이 돌아오면 없는 창의 기억을 정리한다', ev.afterHooks.length === 0 && ev.afterReal === false],
+    ['여러 창 중 하나만 돌아도 판은 돌고 있음', ev.anyBusy === true],
+    ['그 창이 끝나면 꺼진다', ev.thenIdle === false]
+  ];
+  for (const [name, pass] of evChecks) {
+    if (!pass) bad++;
+    console.log(`${pass ? '  ' : '✗ '}${name}`);
+  }
+  console.log(`\n${bad === 0 ? `모두 통과 (${res.length + 1 + evChecks.length}건)` : bad + ' 건 실패'}`);
   setTimeout(() => app.exit(bad ? 1 : 0), 200);
 });

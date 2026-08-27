@@ -485,6 +485,7 @@ function createLeaf(tab, connect, options) {
      *  busy      — 이 판 어딘가에서 뭔가 돌고 있는지 (탭의 스피너)
      */
     probe: null,
+    probeAt: 0, // 관찰기 소식을 마지막으로 받은 시각
     hookByPane: Object.create(null),
     paneWas: Object.create(null),
     busy: false,
@@ -1515,12 +1516,18 @@ function evaluatePanes(leaf) {
 
   const probe = leaf.probe;
   /*
-   * 관찰기가 아직 말이 없으면(연결 직후, 또는 ps/tmux 가 없는 서버) 훅이 아는
-   * 창만으로 본다. 그래야 관찰기가 못 도는 환경에서도 Claude 표시는 살아 있다.
+   * 관찰기가 본 창 목록. "봤는데 아무것도 없었다"(빈 배열)와 "아직 못 봤다"(null)는
+   * 다르게 다뤄야 한다.
+   *   못 봤다   → 훅이 아는 창만으로 본다. 관찰기가 못 도는 환경에서도
+   *               Claude 표시는 살아 있어야 하기 때문이다.
+   *   봤는데 없다 → 그대로 "아무것도 없음". 여기서 훅 목록으로 넘어가면, 낡은
+   *               훅 하나가 자기 자신을 계속 살려 내서 스피너가 안 꺼진다.
+   *               (훅 기억은 지우지 않는다 — 창이 다시 보이면 살아나야 하므로)
    */
+  const observed = probe ? probe.panes || [] : null;
   const panes =
-    probe && probe.panes && probe.panes.length
-      ? probe.panes
+    observed !== null
+      ? observed
       : Object.keys(leaf.hookByPane).map((id) => ({ id, cmd: '', argv: '', visible: true }));
 
   const cur = activeLeaf();
@@ -1552,9 +1559,14 @@ function evaluatePanes(leaf) {
     leaf.paneWas[pane.id] = st;
   }
 
-  // 닫힌 tmux 창의 기억은 지운다 (남겨 두면 없는 창의 전이가 계속 걸린다)
-  if (probe && probe.panes) {
-    const alive = new Set(panes.map((p) => p.id));
+  /*
+   * 닫힌 tmux 창의 기억은 지운다 (남겨 두면 없는 창의 전이가 계속 걸린다).
+   * 반드시 "실제로 관찰된 창 목록" 으로만 판단한다. 관찰 결과가 비었을 때
+   * 쓰는 대체 목록(훅이 아는 창)으로 지우려 들면, 그 목록이 자기 자신을 살려
+   * 두기 때문에 낡은 훅 상태가 영영 안 지워진다 — 스피너가 안 꺼진다.
+   */
+  if (observed && observed.length) {
+    const alive = new Set(observed.map((p) => p.id));
     for (const id of Object.keys(leaf.paneWas)) if (!alive.has(id)) delete leaf.paneWas[id];
     for (const id of Object.keys(leaf.hookByPane)) {
       if (id !== DIRECT_PANE && !alive.has(id)) delete leaf.hookByPane[id];
@@ -1567,10 +1579,42 @@ function evaluatePanes(leaf) {
   }
 }
 
+/*
+ * 관찰기가 조용해지면 표시를 내린다.
+ *
+ * 관찰기는 2초마다 소식을 보낸다. 그보다 한참 지나도 소식이 없으면 무언가
+ * 잘못된 것이고(채널이 막혔거나 서버가 응답을 멈췄거나), 그때 마지막으로 받은
+ * 값을 계속 믿으면 아무것도 안 하는 탭에 스피너가 영원히 돌아 있게 된다.
+ * 모르면 표시하지 않는 쪽이 맞다. 소식이 돌아오면 다음 틱에 다시 켜진다.
+ */
+const PROBE_STALE_MS = 15000;
+
+function dropStaleProbes() {
+  const now = Date.now();
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const leaf of leavesOf(t.root)) {
+        if (!leaf.probe || !leaf.probeAt) continue;
+        if (now - leaf.probeAt <= PROBE_STALE_MS) continue;
+        leaf.probe = null;
+        // 되살아났을 때 "방금 끝난 것" 으로 오해해 느낌표를 띄우지 않도록 함께 비운다
+        leaf.paneWas = Object.create(null);
+        if (leaf.busy) {
+          leaf.busy = false;
+          scheduleRender();
+        }
+      }
+    }
+  }
+}
+
+setInterval(dropStaleProbes, 5000);
+
 /** 연결이 끊기면 관찰 결과는 버린다 (되살아난 뒤 옛 상태로 판정하지 않게) */
 function resetPaneState(leaf) {
   if (!leaf) return;
   leaf.probe = null;
+  leaf.probeAt = 0;
   leaf.hookByPane = Object.create(null);
   leaf.paneWas = Object.create(null);
   if (leaf.busy) {
@@ -5115,6 +5159,7 @@ api.ssh.onPaneState(({ id, ...st }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
   leaf.probe = st;
+  leaf.probeAt = Date.now(); // 살아 있다는 증거 (끊기면 dropStaleProbes 가 표시를 내린다)
   evaluatePanes(leaf);
 });
 

@@ -254,9 +254,16 @@ function close(sessionId) {
  */
 function execStream(sessionId, command, timeoutMs, onData, onClose) {
   const s = sessions.get(sessionId);
-  if (!s) return onClose(new Error('세션이 없습니다.'));
-  if (s.local) return onClose(new Error('로컬 세션은 별도 경로로 실행합니다.'));
+  if (!s) {
+    onClose(new Error('세션이 없습니다.'));
+    return () => {};
+  }
+  if (s.local) {
+    onClose(new Error('로컬 세션은 별도 경로로 실행합니다.'));
+    return () => {};
+  }
   let done = false;
+  let cancelled = false;
   let channel = null;
   const finish = (err) => {
     if (done) return;
@@ -264,18 +271,35 @@ function execStream(sessionId, command, timeoutMs, onData, onClose) {
     clearTimeout(timer);
     onClose(err || null);
   };
-  const timer = setTimeout(() => {
-    if (channel) {
+  /*
+   * 채널을 확실히 놓아 준다. SSH 연결 하나가 열 수 있는 채널 수는 서버의
+   * MaxSessions(기본 10)로 제한되고, 한도에 걸린 연결은 그 뒤로 exec 이 계속
+   * 실패한다(실측: 닫아도 곧바로 회복되지 않았다). 그래서 close 만 부르지 않고
+   * end/destroy 까지 시도한다.
+   */
+  const release = () => {
+    if (!channel) return;
+    for (const m of ['close', 'end', 'destroy']) {
       try {
-        channel.close(); // 시간 초과면 채널도 닫는다 (안 닫으면 쌓인다)
+        if (typeof channel[m] === 'function') channel[m]();
       } catch (e) {
         /* 이미 닫혔으면 그만 */
       }
     }
+    channel = null;
+  };
+  const timer = setTimeout(() => {
+    release(); // 시간 초과면 채널도 놓아 준다 (안 놓으면 쌓인다)
     finish(new Error('실행 시간 초과'));
   }, timeoutMs || 300000);
   s.client.exec(command, (err, stream) => {
     if (err) return finish(err);
+    if (cancelled) {
+      // 채널이 열리기 전에 취소된 경우 — 열리자마자 놓아 준다
+      channel = stream;
+      release();
+      return finish(new Error('취소됨'));
+    }
     channel = stream;
     stream.on('data', (d) => onData(d.toString('utf8')));
     stream.stderr.on('data', () => {});
@@ -284,6 +308,13 @@ function execStream(sessionId, command, timeoutMs, onData, onClose) {
     stream.stderr.on('error', () => {});
     stream.on('close', () => finish(null));
   });
+
+  /** 부르는 쪽에서 언제든 끊을 수 있게 해 준다 (관찰기의 감시견이 쓴다) */
+  return () => {
+    cancelled = true;
+    release();
+    finish(new Error('취소됨'));
+  };
 }
 
 /** 이 세션이 로컬 PTY 인지 (AI 질문을 로컬에서 실행할지 판단용) */
