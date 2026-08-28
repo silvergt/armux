@@ -1154,7 +1154,18 @@ const PREF_DEFAULTS = {
   cursorStyle: 'block', // block | bar | underline
   scrollback: 10000,
   fontFamily: '', // 비우면 기본 글꼴
-  swapTabKeys: false // 메인탭 ↔ 서브탭 번호 단축키 바꾸기
+  swapTabKeys: false, // 메인탭 ↔ 서브탭 번호 단축키 바꾸기
+  /*
+   * 연결이 끊겼을 때 스스로 다시 붙을지. 기본은 끔.
+   *
+   * 켜면 판을 죽이지 않고 기다렸다가 연결이 돌아오면 알아서 다시 붙는다. 다만
+   * 다시 붙는 것은 "새 셸" 이라, 하던 작업이 tmux 안이 아니었다면 이어지지 않는다.
+   * 끄면 예전처럼 끊긴 자리에 그대로 두고 Enter 를 눌러야 다시 붙는다.
+   *
+   * 이것과 별개로, 잠깐 끊긴 정도(10분 이내)는 SSH keepalive 가 버텨 주므로
+   * 애초에 끊기지 않고 하던 셸이 그대로 이어진다. 여기 설정과 무관하다.
+   */
+  reconnectOnDrop: false
 };
 
 const prefs = (() => {
@@ -1460,7 +1471,7 @@ function isFatalConnectError(message, code) {
 
 /** 이 판을 자동으로 다시 붙일 수 있는가 (붙을 정보가 있는 SSH 판인가) */
 function canRetry(leaf) {
-  if (!opts.autoReconnect || leaf.disposed) return false;
+  if (!prefs.reconnectOnDrop || leaf.disposed) return false;
   const c = leaf.connect || {};
   if (c.local) return false; // 로컬 셸이 끝난 것은 사용자가 끝낸 것이다
   return Boolean(c.hostId || c.credId || c.profile);
@@ -3117,6 +3128,7 @@ const APP_MENUS = [
       // 켬/끔 — 메뉴를 열 때마다 라벨을 다시 만들어 ✓ 를 보여 준다
       [() => `${opts.notifyOs ? '✓' : '  '} 작업 완료 시 알림`, '', () => setOption('notifyOs', !opts.notifyOs)],
       [() => `${opts.autoReconnect ? '✓' : '  '} 절전에서 깨면 자동 재접속`, '', () => setOption('autoReconnect', !opts.autoReconnect)],
+      [() => `${prefs.reconnectOnDrop ? '✓' : '  '} 연결이 끊기면 자동으로 다시 붙기`, '', () => setPref('reconnectOnDrop', !prefs.reconnectOnDrop)],
       [() => `${opts.tmuxReattach ? '✓' : '  '} 재접속하면 tmux 다시 붙기`, '', () => setOption('tmuxReattach', !opts.tmuxReattach)],
       ['-'],
       ['글자 크게', `${MOD}+ +`, () => setFontSize(state.fontSize + 1)],
@@ -3461,6 +3473,7 @@ function renderSettings() {
   document.getElementById('set-scrollback').value = String(prefs.scrollback);
   document.getElementById('set-notify').checked = opts.notifyOs;
   document.getElementById('set-reconnect').checked = opts.autoReconnect;
+  document.getElementById('set-drop').checked = prefs.reconnectOnDrop;
   document.getElementById('set-tmux').checked = opts.tmuxReattach;
   document.getElementById('set-pomo').value = String(pomoMinutes);
   document.getElementById('set-swap-tabs').checked = prefs.swapTabKeys;
@@ -3572,6 +3585,7 @@ if (setEl) {
   });
   document.getElementById('set-notify').addEventListener('change', (e) => setOption('notifyOs', e.target.checked));
   document.getElementById('set-reconnect').addEventListener('change', (e) => setOption('autoReconnect', e.target.checked));
+  document.getElementById('set-drop').addEventListener('change', (e) => setPref('reconnectOnDrop', e.target.checked));
   document.getElementById('set-tmux').addEventListener('change', (e) => setOption('tmuxReattach', e.target.checked));
   document.getElementById('set-pomo').addEventListener('change', (e) => {
     setPomoMinutes(Number(e.target.value));
