@@ -3314,7 +3314,7 @@ setInterval(renderClock, 500); // 분이 바뀌는 순간을 놓치지 않도록
  *     setInterval 을 늦추는데, 남은 시간을 빼는 방식이면 그만큼 시간이 밀린다.
  */
 const POMO_KEY = 'pomodoroMinutes';
-const POMO_DEFAULT_MIN = 25;
+const POMO_DEFAULT_MIN = 50; // 기본 50분
 const pomoEl = document.getElementById('pomodoro');
 const pomoTimeEl = document.getElementById('pomo-time');
 const pomoToggleEl = document.getElementById('pomo-toggle');
