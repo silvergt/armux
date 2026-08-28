@@ -237,7 +237,8 @@ while [ "$n" -lt ${LOOP_ITERS} ]; do
     for PID_ in $(echo "$PANES" | awk '$6 ~ /^(claude|codex)$/ { print $1 }'); do
       # 상태줄: "✶ Working… (2s · …)" / "✻ …(esc to interrupt)" / Codex "• Working (3s • esc…)"
       SCR=$(tmux capture-pane -p -t "$PID_" 2>/dev/null)
-      if printf '%s\\n' "$SCR" | tail -15 | grep -qE '(…|\\.\\.\\.) ?\\([0-9]+s\\b|Working(…|\\.\\.\\.)? ?\\([0-9]+s\\b|\\(esc to interrupt'; then
+      # 경과 시간은 "(2s" → "(3m 22s" → "(1h 2m 3s" 로 길어진다. 초만 보면 1분 뒤에 놓친다.
+      if printf '%s\\n' "$SCR" | tail -15 | grep -qE '(…|\\.\\.\\.) ?\\(([0-9]+h ?)?([0-9]+m ?)?[0-9]+s\\b|Working(…|\\.\\.\\.)? ?\\(([0-9]+h ?)?([0-9]+m ?)?[0-9]+s\\b|\\(esc to interrupt'; then
         echo "W $PID_ 1"
       else
         echo "W $PID_ 0"

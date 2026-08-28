@@ -219,6 +219,9 @@ app.whenReady().then(async () => {
       bullet: isAgentWorkingLine('• The default timeout (30s) is fine'),
       bullet2: isAgentWorkingLine('✻ Retry limit (5s) reached'),
       dots: isAgentWorkingLine('✻ Thinking... (12s)'),
+      minutes: isAgentWorkingLine('✻ Scurrying… (3m 22s · ↓ 13.8k tokens)'),
+      hours: isAgentWorkingLine('✶ Working… (1h 2m 3s · ↓ 90k tokens)'),
+      codexMin: isAgentWorkingLine('• Working (2m 5s • esc to interrupt)'),
       bg: isAgentWorkingLine('     (ctrl+b ctrl+b (twice) to run in background)')
     }))()`, true);
   // ESC: 사용자가 보고 있는 창에서 ESC 를 누르면 그 창의 busy 훅만 내린다 (Stop 훅이 안 오므로)
@@ -253,6 +256,7 @@ app.whenReady().then(async () => {
     ['본문 줄은 안 잡는다', !wl.body && !wl.body2 && !wl.body3 && !wl.bg],
     ['★ 글머리 본문 "• … (30s)" 는 안 잡는다 (Codex 메시지 앞이 •)', !wl.bullet && !wl.bullet2],
     ['"Thinking... (12s)" 처럼 점 세 개도 잡는다', wl.dots],
+    ['★ 1분 넘긴 "(3m 22s" · 1시간 넘긴 "(1h 2m 3s" 도 잡는다', wl.minutes && wl.hours && wl.codexMin],
     ['★ 작업 중엔 답변 속 "1. Yes" 로 느낌표를 올리지 않는다', fa.whileWorking === false],
     ['조용할 때의 진짜 질문에는 올린다', fa.whenIdle === true],
     ['관찰기가 아직 말이 없으면 훅만으로 본다', ev.noProbe === true],

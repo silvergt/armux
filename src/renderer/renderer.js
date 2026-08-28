@@ -1061,7 +1061,13 @@ const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●○◦•∙◐
  * Codex 는 메시지마다 앞에 • 를 붙이므로 특히 위험하다. 그러면 놀고 있는데
  * 스피너가 돌고, 그 줄이 스크롤돼 사라질 때 거짓 느낌표까지 뜬다.
  */
-const WORKING_LINE_RE = /((…|\.\.\.)\s*\(\d+s\b|\bWorking\s*(…|\.\.\.)?\s*\(\d+s\b|\(esc to interrupt)/i;
+/*
+ * 경과 시간은 1분을 넘기면 "(3m 22s", 한 시간을 넘기면 "(1h 2m 3s" 로 바뀐다.
+ * 초만 받으면 긴 작업은 1분이 되는 순간 못 알아본다 — 앱이 붙기 전부터 돌던
+ * Claude(busy 훅을 못 받은 판)는 화면이 유일한 근거라 그때 점으로 떨어졌다.
+ */
+const ELAPSED = '\\((?:\\d+h\\s*)?(?:\\d+m\\s*)?\\d+s\\b';
+const WORKING_LINE_RE = new RegExp(`(?:…|\\.\\.\\.)\\s*${ELAPSED}|\\bWorking\\s*(?:…|\\.\\.\\.)?\\s*${ELAPSED}|\\(esc to interrupt`, 'i');
 function isAgentWorkingLine(line) {
   const t = line.trimStart();
   if (!WORKING_LINE_RE.test(t)) return false;
