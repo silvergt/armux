@@ -80,6 +80,9 @@ const T = [
   ['★ claude 가 자식 셸을 띄움',          'claude', 'claude', ['claude', 'bash'], null, 'busy', false, true, false],
   ['★ claude 가 자식 vim 을 띄움',        'claude', 'claude', ['claude', 'vim'],  null, 'busy', false, true, false],
   ['codex 화면 작업중',                  'codex',  'codex',  ['codex'],  null,    'busy',  false, true,  false],
+  ['★ 상태줄은 못 알아봤지만 화면이 연속으로 바뀜 (안 보이는 창)', 'claude','claude',['claude'], null, 'busy', false, false, false, false, true],
+  ['★ 상태줄은 못 알아봤지만 화면이 연속으로 바뀜 (보이는 창)',   'claude','claude',['claude'], null, 'busy', false, false, false, true,  true],
+  ['화면이 한 번만 바뀐 것은 작업이 아니다',                    'claude','claude',['claude'], null, 'idle', false, false, false, false, false],
   ['codex 조용',                        'codex',  'codex',  ['codex'],  null,    'idle',  false, false, false],
   ['이름이 뭐든 훅이 방금 오면',           'mytool', 'mytool', ['mytool'], 'busy',  'busy',  false, false, true ],
   ['★ 죽은 뒤 낡은 훅 busy',             'bash',   '-bash',  ['bash'],   'busy',  'idle',  false, false, false],
@@ -108,15 +111,17 @@ app.whenReady().then(async () => {
     `(()=>{
     const cases = ${JSON.stringify(T)};
     const out = [];
-    for (const [name, cmd, argv, chain, sig, want, idle, working, fresh, visible] of cases) {
-      const leaf = { hookByPane: Object.create(null), hookAtByPane: Object.create(null), screenBusyAt: 0 };
+    for (const [name, cmd, argv, chain, sig, want, idle, working, fresh, visible, changing] of cases) {
+      const leaf = { hookByPane: Object.create(null), hookAtByPane: Object.create(null), screenBusyAt: 0, screenChangeAt: 0 };
+      if (changing && visible !== false) leaf.screenChangeAt = Date.now();
       if (sig) { leaf.hookByPane['%9'] = sig; leaf.hookAtByPane['%9'] = fresh ? Date.now() : Date.now() - 60000; }
       const vis = visible !== false;
       // 보이는 창의 화면은 우리 xterm 이, 안 보이는 창은 관찰기(working)가 본다
       if (working === true && vis) leaf.screenBusyAt = Date.now();
       // 표의 undefined 는 JSON 을 거치며 null 이 된다 — "모른다" 는 뜻이므로 되돌린다
       const got = classifyPane(leaf, { id: '%9', cmd, argv, chain, idle: !!idle, visible: vis,
-        working: vis || working == null ? undefined : working });
+        working: vis || working == null ? undefined : working,
+        changing: vis ? undefined : Boolean(changing) });
       out.push([name, cmd, want, got, leaf.hookByPane['%9'] || '-']);
     }
     return out;

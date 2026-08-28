@@ -489,6 +489,9 @@ function createLeaf(tab, connect, options) {
     screenBusyAt: 0, // 화면에서 에이전트 작업 상태줄을 마지막으로 본 시각
     hookByPane: Object.create(null),
     hookAtByPane: Object.create(null), // 창별로 훅 신호를 마지막에 받은 시각
+    hashHist: Object.create(null), // 창별 화면 지문 이력 (변하는 중인지 보려고)
+    localHashHist: [], // 보이는 판의 화면 지문 이력
+    screenChangeAt: 0, // 보이는 판의 화면이 연속으로 바뀌고 있다고 마지막으로 본 시각
     paneWas: Object.create(null),
     busy: false,
     mode: 'terminal', // 'terminal' | 'web' | 'file'
@@ -1660,6 +1663,8 @@ const SCREEN_BUSY_MS = 2500;
  * 그 사이를 메울 만큼만 두고, 지나면 화면이 정한다.
  */
 const HOOK_BUSY_GRACE_MS = 5000;
+// 화면이 연속으로 바뀐 것을 본 뒤 이만큼은 "작업 중" 으로 본다 (다음 지문까지의 틈을 메운다)
+const SCREEN_CHANGE_MS = 3500;
 
 // 인자가 없으면 REPL(입력 대기)로 보는 것들. 인자가 있으면 스크립트 실행이다.
 const CMD_REPL = new Set(['python', 'python2', 'python3', 'node', 'ruby', 'perl', 'php', 'lua', 'R', 'ghci', 'julia']);
@@ -1774,6 +1779,9 @@ function classifyPane(leaf, pane) {
     const now = Date.now();
     const localBusy = pane.visible !== false && leaf.screenBusyAt && now - leaf.screenBusyAt < SCREEN_BUSY_MS;
     if (localBusy || pane.working === true) return 'busy';
+    // 상태줄 문구를 못 알아봐도 화면이 연속으로 바뀌고 있으면 작업 중이다
+    const localChanging = pane.visible !== false && leaf.screenChangeAt && now - leaf.screenChangeAt < SCREEN_CHANGE_MS;
+    if (localChanging || pane.changing === true) return 'busy';
     if (sig === 'busy') {
       const at = leaf.hookAtByPane[pane.id] || 0;
       // 방금 시작했으면 화면이 아직 안 그려졌을 수 있다 — 잠깐만 훅을 믿는다
@@ -1921,6 +1929,8 @@ function resetPaneState(leaf) {
   leaf.probeAt = 0;
   leaf.hookByPane = Object.create(null);
   leaf.hookAtByPane = Object.create(null);
+  leaf.hashHist = Object.create(null);
+  leaf.localHashHist = [];
   leaf.paneWas = Object.create(null);
   if (leaf.busy) {
     leaf.busy = false;
@@ -2137,6 +2147,19 @@ function evaluateActivity() {
          */
         const seen = live && bottomNonEmptyLines(leaf, 15).some(isAgentWorkingLine);
         if (seen) leaf.screenBusyAt = now;
+        /*
+         * 상태줄 문구와 무관한 안전망: 화면 본문(밑 3줄 제외)의 지문을 1초마다 남기고,
+         * 최근 3번 중 2번 이상 바뀌었으면 "변하는 중" 으로 본다. 작업 중이면 초
+         * 카운터 때문에 매초 바뀌고, 놀 때는 안내 문구가 가끔 한 번 바뀔 뿐이다.
+         */
+        if (live && activityTick % 4 === 0) {
+          const lines = bottomNonEmptyLines(leaf, 20);
+          const fp = lines.slice(0, Math.max(0, lines.length - 3)).join('\n');
+          const hist = (leaf.localHashHist = leaf.localHashHist.concat(fp).slice(-3));
+          let changes = 0;
+          for (let i = 1; i < hist.length; i++) if (hist[i] !== hist[i - 1]) changes++;
+          if (changes >= 2) leaf.screenChangeAt = now;
+        }
 
         if (leaf.hooksActive) continue;
 
@@ -5793,6 +5816,19 @@ api.ssh.onData(({ id, data }) => {
 api.ssh.onPaneState(({ id, ...st }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
+  /*
+   * 에이전트 창의 화면 지문 이력(최근 3개). 지문이 연속으로 바뀌면 "변하는 중" 이다.
+   * 상태줄 문구를 못 알아보는 경우의 안전망 — 작업 중이면 초 카운터 때문에 매 틱
+   * 바뀐다. 놀 때도 안내 문구가 20초에 한 번쯤 바뀌므로, 한 번 바뀐 것으로는
+   * 작업 중이라 보지 않고 두 번 연속이어야 한다.
+   */
+  for (const pane of st.panes || []) {
+    if (pane.hash === undefined) continue;
+    const hist = (leaf.hashHist[pane.id] = (leaf.hashHist[pane.id] || []).concat(pane.hash).slice(-3));
+    let changes = 0;
+    for (let i = 1; i < hist.length; i++) if (hist[i] !== hist[i - 1]) changes++;
+    pane.changing = changes >= 2;
+  }
   leaf.probe = st;
   leaf.probeAt = Date.now(); // 살아 있다는 증거 (끊기면 dropStaleProbes 가 표시를 내린다)
   evaluatePanes(leaf);

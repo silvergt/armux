@@ -57,6 +57,7 @@ const probes = new Map(); // sessionId -> { stopped, timer, onState, cancel, las
  *   K <tty> <이름1> <이름2> …                   대표부터 내려간 자식 사슬
  *   Z <tty>                                    그 터미널은 프롬프트만 떠 있다(대기)
  *   W <pane> <1|0>                             에이전트 창의 화면에 작업 상태줄이 있는지
+ *   H <pane> <지문>                             에이전트 창 화면 본문의 지문(밑 3줄 제외)
  *   E                                          블록 끝
  */
 function script() {
@@ -208,11 +209,16 @@ while [ "$n" -lt ${LOOP_ITERS} ]; do
     # 안 보이는 창까지 볼 수 있다. 창 하나에 3ms 쯤 든다.
     for PID_ in $(echo "$PANES" | awk '$6 ~ /^(claude|codex)$/ { print $1 }'); do
       # 상태줄: "✶ Working… (2s · …)" / "✻ …(esc to interrupt)" / Codex "• Working (3s • esc…)"
-      if tmux capture-pane -p -t "$PID_" 2>/dev/null | tail -15 | grep -qE '\\(([0-9]+s\\b|esc to interrupt)'; then
+      SCR=$(tmux capture-pane -p -t "$PID_" 2>/dev/null)
+      if printf '%s\\n' "$SCR" | tail -15 | grep -qE '\\(([0-9]+s\\b|esc to interrupt)'; then
         echo "W $PID_ 1"
       else
         echo "W $PID_ 0"
       fi
+      # 화면 본문의 지문. 상태줄 문구를 못 알아보는 경우(에이전트가 형식을 바꾸면)를 위한
+      # 안전망이다 — 작업 중이면 초 카운터 때문에 매 틱 바뀌고, 놀 때는 거의 안 바뀐다.
+      # 맨 아래 3줄(비용·모드 표시줄)은 놀 때도 가끔 바뀌므로 뺀다.
+      echo "H $PID_ $(printf '%s\\n' "$SCR" | head -n -3 | cksum | cut -d' ' -f1)"
     done
   else
     echo "M direct"
@@ -239,7 +245,7 @@ done
 
 /** 한 블록(B…E)을 상태 객체로 바꾼다. */
 function parseBlock(lines) {
-  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {}, idle: {}, working: {} };
+  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {}, idle: {}, working: {}, hashes: {} };
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
@@ -269,6 +275,9 @@ function parseBlock(lines) {
     } else if (kind === 'Z') {
       // "그 터미널은 프롬프트만 떠 있다" — 이름을 보지 않고 얻은 확실한 신호
       out.idle[line.slice(2).trim()] = true;
+    } else if (kind === 'H') {
+      const p = rest.split(/\s+/);
+      if (p.length >= 2) out.hashes[p[0]] = p[1];
     } else if (kind === 'W') {
       // "%3 1" — 에이전트 창의 화면에 "esc to interrupt" 작업 상태줄이 보이는지
       const p = rest.split(/\s+/);
@@ -286,7 +295,9 @@ function parseBlock(lines) {
     pane.idle = Boolean(out.idle[pane.tty]);
     // 에이전트 창이 아니면 undefined 로 둔다 ("모른다" 와 "아니다" 는 다르다)
     pane.working = pane.id in out.working ? out.working[pane.id] : undefined;
+    pane.hash = out.hashes[pane.id]; // 에이전트 창이 아니면 undefined
   }
+  delete out.hashes;
   delete out.args;
   delete out.chains;
   delete out.idle;
