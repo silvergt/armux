@@ -56,6 +56,7 @@ const probes = new Map(); // sessionId -> { stopped, timer, onState, cancel, las
  *   A <tty> <명령줄 전체>                        그 tty 포그라운드(그룹 대표)의 argv
  *   K <tty> <이름1> <이름2> …                   대표부터 내려간 자식 사슬
  *   Z <tty>                                    그 터미널은 프롬프트만 떠 있다(대기)
+ *   W <pane> <1|0>                             에이전트 창의 화면에 작업 상태줄이 있는지
  *   E                                          블록 끝
  */
 function script() {
@@ -129,15 +130,21 @@ args_via_proc() {
         mytty = a[5]; mypgrp = a[3]; tp = a[6] + 0
         # 그 터미널의 포그라운드가 셸 자신이면 프롬프트가 떠 있는 것이다.
         # 이름을 전혀 보지 않으므로 셸이 무엇이든(녹화 래퍼 포함) 통한다.
-        if (tp <= 0 || tp == mypgrp) { idle = 1; break }
+        # tpgid 가 0 이하(포그라운드 그룹 없음)인 것은 "대기" 의 증거가 아니다 —
+        # 모르는 것이므로 그냥 둔다.
+        if (tp > 0 && tp == mypgrp) { idle = 1; break }
+        if (tp <= 0) break
         chain = ""; cross = 0; p = tp
         for (i = 0; i < 5 && p > 0; i++) {
           if (!rdstat(p, b)) break
           c = rdcomm(p)
           if (c == "") break
           chain = chain " " c
-          # 터미널이 바뀌었다 = 여기서부터는 래퍼가 연 안쪽 pty 다
-          if (cross == 0 && b[5] != mytty) cross = p
+          # 터미널이 "다른 터미널" 로 바뀌었다 = 여기서부터는 래퍼가 연 안쪽 pty 다.
+          # 단 0 은 제어 터미널이 없다는 뜻이다. Claude 가 도구를 돌리려고 띄우는
+          # 자식이 그렇다(따로 떼어 실행). 그리로 내려가면 tpgid 가 -1 이라 "대기" 로
+          # 오판하고, 도구가 돌 때마다 스피너가 꺼졌다 켜졌다 하며 느낌표까지 떴다.
+          if (cross == 0 && b[5] != mytty && b[5] + 0 != 0) cross = p
           p = firstchild(p)
         }
         if (cross > 0) { cur = cross; continue }  # 안쪽으로 내려가 다시 본다
@@ -195,6 +202,18 @@ while [ "$n" -lt ${LOOP_ITERS} ]; do
     else
       echo "$PANES" | awk 'NF >= 4 { print $4 }' | args_via_ps
     fi
+    # 에이전트(claude·codex)가 떠 있는 창은 화면 밑부분을 직접 읽어 "작업 중" 인지 본다.
+    # 훅은 "바뀌는 순간" 만 알려 주는데 Stop 훅은 사용자가 ESC 로 끊으면 오지 않는다.
+    # 그래서 훅에만 기대면 스피너가 영영 남는다. 화면은 지금 상태 그 자체라 놓칠 게 없고,
+    # 안 보이는 창까지 볼 수 있다. 창 하나에 3ms 쯤 든다.
+    for PID_ in $(echo "$PANES" | awk '$6 ~ /^(claude|codex)$/ { print $1 }'); do
+      # 상태줄: "✶ Working… (2s · …)" / "✻ …(esc to interrupt)" / Codex "• Working (3s • esc…)"
+      if tmux capture-pane -p -t "$PID_" 2>/dev/null | tail -15 | grep -qE '\\(([0-9]+s\\b|esc to interrupt)'; then
+        echo "W $PID_ 1"
+      else
+        echo "W $PID_ 0"
+      fi
+    done
   else
     echo "M direct"
     if [ -n "$TTY" ]; then
@@ -220,7 +239,7 @@ done
 
 /** 한 블록(B…E)을 상태 객체로 바꾼다. */
 function parseBlock(lines) {
-  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {}, idle: {} };
+  const out = { mode: 'unknown', session: '', panes: [], args: {}, chains: {}, idle: {}, working: {} };
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
@@ -250,6 +269,10 @@ function parseBlock(lines) {
     } else if (kind === 'Z') {
       // "그 터미널은 프롬프트만 떠 있다" — 이름을 보지 않고 얻은 확실한 신호
       out.idle[line.slice(2).trim()] = true;
+    } else if (kind === 'W') {
+      // "%3 1" — 에이전트 창의 화면에 "esc to interrupt" 작업 상태줄이 보이는지
+      const p = rest.split(/\s+/);
+      if (p.length >= 2) out.working[p[0]] = p[1] === '1';
     } else if (kind === 'K') {
       // "/dev/pts/26 git pager" — 대표부터 내려간 자식 사슬
       const k = rest.split(/\s+/).filter(Boolean);
@@ -261,10 +284,13 @@ function parseBlock(lines) {
     pane.argv = out.args[pane.tty] || '';
     pane.chain = out.chains[pane.tty] || [];
     pane.idle = Boolean(out.idle[pane.tty]);
+    // 에이전트 창이 아니면 undefined 로 둔다 ("모른다" 와 "아니다" 는 다르다)
+    pane.working = pane.id in out.working ? out.working[pane.id] : undefined;
   }
   delete out.args;
   delete out.chains;
   delete out.idle;
+  delete out.working;
   return out;
 }
 

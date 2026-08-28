@@ -488,6 +488,7 @@ function createLeaf(tab, connect, options) {
     probeAt: 0, // 관찰기 소식을 마지막으로 받은 시각
     screenBusyAt: 0, // 화면에서 에이전트 작업 상태줄을 마지막으로 본 시각
     hookByPane: Object.create(null),
+    hookAtByPane: Object.create(null), // 창별로 훅 신호를 마지막에 받은 시각
     paneWas: Object.create(null),
     busy: false,
     mode: 'terminal', // 'terminal' | 'web' | 'file'
@@ -562,8 +563,11 @@ function createLeaf(tab, connect, options) {
       leaf.hooksActive = true;
       leaf.hookAt = Date.now();
       leaf.hookByPane[pane] = sig;
+      leaf.hookAtByPane[pane] = Date.now();
       // 새 턴이 시작됐으면 이전 알림은 해제한다
       if (sig === 'busy') clearAlert(leaf);
+      // 끝났다는 신호가 왔으면 화면에 남은 작업 상태줄 흔적은 버린다
+      if (sig === 'idle') leaf.screenBusyAt = 0;
       /*
        * "완료" 신호는 그 자체로 소식이다. 시작을 못 봤더라도 알린다 —
        * Codex 는 시작 이벤트가 아예 없어서, 전이(작업중→대기)만 기다리면
@@ -1040,18 +1044,23 @@ const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●○◦•∙◐
 /**
  * 에이전트가 "작업 중" 이라고 그려 놓은 라이브 상태줄인가.
  *
- *   Claude — "✻ … (esc to interrupt)"
- *   Codex  — "◦ Working (3s • esc to interrupt)"   앞 글리프가 프레임마다 바뀐다
+ *   Claude(요즘) — "✶ Working… (2s · ↓ 16 tokens)"      ← "esc to interrupt" 가 없다
+ *   Claude(예전) — "✻ Crunching… (esc to interrupt)"
+ *   Codex        — "◦ Working (3s • esc to interrupt)"   앞 글리프가 프레임마다 바뀐다
  *
- * 대화 본문에 같은 문구가 있어도 줄 맨 앞이 글자면 걸러진다. Codex 는 글리프
- * 집합이 판마다 다를 수 있어 "Working (" 문구로도 받아 준다.
+ * 공통점은 "맨 앞 스피너 글리프 + 괄호 안에 경과 초 또는 esc to interrupt" 다.
+ * 끝난 뒤의 "✻ Crunched for 14s · done 11:41 AM" 은 괄호가 없어 걸리지 않고,
+ * 대화 본문은 줄 맨 앞이 글자라 걸리지 않는다. 한동안 "esc to interrupt" 만 보고
+ * 있어서 요즘 Claude 에서는 화면 감지가 한 번도 안 걸렸다 — 그래서 훅에만
+ * 매달렸고, ESC 로 끊으면 스피너가 영영 남았다.
  */
+const WORKING_LINE_RE = /\((\d+s\b|esc to interrupt)/i;
 function isAgentWorkingLine(line) {
-  if (!/esc to interrupt/i.test(line)) return false;
   const t = line.trimStart();
+  if (!WORKING_LINE_RE.test(t)) return false;
   const first = t[0];
   if (first && SPINNER_GLYPHS.includes(first)) return true;
-  return /^\S?\s*Working\s*\(/.test(t);
+  return /^\S?\s*Working\s*(…|\.\.\.)?\s*\(/.test(t); // 글리프를 모르는 도구용
 }
 const TMUX_STATUS_RE = /(^|\s)\d+:[^\s]{1,24}[*\-]|"[^"]{1,40}"\s+\d{1,2}:\d{2}/m;
 
@@ -1088,6 +1097,13 @@ function feedAlertDetector(leaf, text) {
   if (!body.trim()) return;
 
   leaf.tail = (leaf.tail + body).slice(-4000);
+  /*
+   * 에이전트가 작업 중(화면에 esc to interrupt)이면 문구 규칙은 보지 않는다.
+   * Claude 가 답변 본문에 "1. Yes" 나 "Do you want …?" 같은 말을 쓰면 그게
+   * 진짜 질문인 줄 알고 느낌표를 올렸다. 진짜 권한 질문이 뜰 때는 작업
+   * 상태줄이 사라지므로 그때는 평소대로 본다(그리고 훅이 더 먼저 알려 준다).
+   */
+  if (leaf.screenBusyAt && Date.now() - leaf.screenBusyAt < SCREEN_BUSY_MS) return;
   const recent = leaf.tail.slice(-1200);
   if (ALERT_PATTERNS.some((re) => re.test(recent))) {
     raiseAlert(leaf);
@@ -1638,6 +1654,12 @@ const CMD_TUI = new Set([
  * 깜빡이지 않게 하려는 것이고, 시간이 지나면 저절로 풀리므로 갇히지 않는다.
  */
 const SCREEN_BUSY_MS = 2500;
+/*
+ * 훅의 "시작" 신호를 화면 확인 없이 믿어 주는 시간. 프롬프트를 보낸 직후에는
+ * 작업 상태줄이 아직 안 그려져 있고, 안 보이는 창은 관찰기가 다음 틱(2초)에야 본다.
+ * 그 사이를 메울 만큼만 두고, 지나면 화면이 정한다.
+ */
+const HOOK_BUSY_GRACE_MS = 5000;
 
 // 인자가 없으면 REPL(입력 대기)로 보는 것들. 인자가 있으면 스크립트 실행이다.
 const CMD_REPL = new Set(['python', 'python2', 'python3', 'node', 'ruby', 'perl', 'php', 'lua', 'R', 'ghci', 'julia']);
@@ -1740,16 +1762,25 @@ function classifyPane(leaf, pane) {
   // 신호가 온다는 사실 자체가 "여기는 에이전트" 라는 표시다.
   // (에이전트는 작업 중에 자식 셸을 띄우므로, 반드시 사슬 규칙보다 먼저 본다.)
   if (sig || CMD_AGENT.has(effective) || CMD_AGENT.has(cmd)) {
-    if (sig === 'busy') return 'busy';
-    if (sig === 'alert') return 'alert';
     /*
-     * Codex 는 훅에 "시작" 이벤트가 없다 — 완료(agent-turn-complete)와
-     * 승인 대기만 알려 준다. 그래서 "생각 중" 은 화면의 작업 상태줄로 본다.
-     * 화면은 지금 보이는 창의 것이므로 안 보이는 tmux 창에는 쓸 수 없다.
-     * 그쪽은 완료 신호만으로 초록 느낌표를 띄운다.
+     * 에이전트는 "지금 화면에 작업 상태줄(esc to interrupt)이 있는가" 로 판정한다.
+     * 훅은 바뀌는 순간만 알려 주고, 그마저도 사용자가 ESC 로 끊으면 Stop 훅이
+     * 오지 않아 busy 가 영영 남았다. 화면은 지금 상태 그 자체라 놓칠 게 없다.
+     *   - 보이는 창: 우리 xterm 화면(250ms 마다, evaluateActivity)
+     *   - 안 보이는 tmux 창: 관찰기가 capture-pane 으로 읽어 온 것(2초마다)
+     * 훅은 화면이 채 그려지기 전 몇 초를 메우는 빠른 길로만 쓴다.
      */
-    if (pane.visible !== false && leaf.screenBusyAt && Date.now() - leaf.screenBusyAt < SCREEN_BUSY_MS) {
-      return 'busy';
+    if (sig === 'alert') return 'alert'; // 권한·입력 대기는 훅만이 안다
+    const now = Date.now();
+    const localBusy = pane.visible !== false && leaf.screenBusyAt && now - leaf.screenBusyAt < SCREEN_BUSY_MS;
+    if (localBusy || pane.working === true) return 'busy';
+    if (sig === 'busy') {
+      const at = leaf.hookAtByPane[pane.id] || 0;
+      // 방금 시작했으면 화면이 아직 안 그려졌을 수 있다 — 잠깐만 훅을 믿는다
+      if (now - at < HOOK_BUSY_GRACE_MS) return 'busy';
+      // 화면을 볼 수 없는 창(관찰기가 못 읽는 경우)은 예전처럼 훅을 따른다
+      if (pane.working === undefined && pane.visible === false) return 'busy';
+      delete leaf.hookByPane[pane.id]; // 화면이 조용한데 훅만 busy — 낡은 신호다
     }
     return 'idle'; // 신호도 없고 화면도 조용하면 그냥 켜져만 있는 것이다
   }
@@ -1839,7 +1870,10 @@ function evaluatePanes(leaf) {
     const alive = new Set(observed.map((p) => p.id));
     for (const id of Object.keys(leaf.paneWas)) if (!alive.has(id)) delete leaf.paneWas[id];
     for (const id of Object.keys(leaf.hookByPane)) {
-      if (id !== DIRECT_PANE && !alive.has(id)) delete leaf.hookByPane[id];
+      if (id !== DIRECT_PANE && !alive.has(id)) {
+        delete leaf.hookByPane[id];
+        delete leaf.hookAtByPane[id];
+      }
     }
   }
 
@@ -1886,6 +1920,7 @@ function resetPaneState(leaf) {
   leaf.probe = null;
   leaf.probeAt = 0;
   leaf.hookByPane = Object.create(null);
+  leaf.hookAtByPane = Object.create(null);
   leaf.paneWas = Object.create(null);
   if (leaf.busy) {
     leaf.busy = false;

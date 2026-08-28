@@ -20,7 +20,7 @@ require(path.join(__dirname, '..', 'src', 'main', 'main.js'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-//  [설명, cmd, argv, chain(자식 사슬), 훅신호, 기대값, 관찰기가 '대기'라고 못박았는지]
+//  [설명, cmd, argv, chain(자식 사슬), 훅신호, 기대값, 관찰기가 '대기'라고 못박았는지, 화면 작업중?, 훅 방금?, 보이는 창?]
 const T = [
   // ── 기본 ──────────────────────────────────────────────────────────────
   ['프롬프트',                'bash',    '-bash',                   ['bash'],                  null, 'idle'],
@@ -67,15 +67,22 @@ const T = [
   ['make',                   'make',    'make -j8',                ['make'],                  null, 'busy'],
   ['rsync',                  'rsync',   'rsync -a a b',            ['rsync'],                 null, 'busy'],
 
-  // ── 에이전트: 훅이 정한다 (사슬 규칙보다 먼저) ─────────────────────────
-  ['claude 켜짐, 훅 없음',     'claude',  'claude',                  ['claude'],                null,    'idle'],
-  ['claude 작업중(훅)',        'claude',  'claude',                  ['claude'],                'busy',  'busy'],
-  ['claude 완료(훅)',          'claude',  'claude',                  ['claude'],                'idle',  'idle'],
-  ['claude 입력대기(훅)',       'claude',  'claude',                  ['claude'],                'alert', 'alert'],
-  ['★ claude 가 자식 셸을 띄움', 'claude', 'claude',                  ['claude', 'bash'],        'busy',  'busy'],
-  ['★ claude 가 자식 vim 을 띄움', 'claude', 'claude',                ['claude', 'vim'],         'busy',  'busy'],
-  ['이름이 뭐든 훅이 있으면',    'mytool',  'mytool',                  ['mytool'],                'busy',  'busy'],
-  ['★ 죽은 뒤 낡은 훅 busy',    'bash',    '-bash',                   ['bash'],                  'busy',  'idle'],
+  // ── 에이전트: 화면(레벨)이 정하고, 훅은 빠른 길 ────────────────────────
+  //   idle 칸 다음 두 칸: [화면에 작업 상태줄이 있나(true/false/undefined), 훅이 방금 왔나]
+  ['claude 켜짐, 화면 조용',            'claude', 'claude', ['claude'], null,    'idle',  false, false, false],
+  ['★ claude 화면에 작업중 (훅 없음)',    'claude', 'claude', ['claude'], null,    'busy',  false, true,  false],
+  ['claude 방금 busy 훅 (화면 아직)',     'claude', 'claude', ['claude'], 'busy',  'busy',  false, false, true ],
+  ['★ busy 훅 오래됐는데 화면 조용 = ESC 끊음', 'claude','claude',['claude'],'busy','idle', false, false, false],
+  ['★ 훅 idle 인데 화면은 작업중',        'claude', 'claude', ['claude'], 'idle',  'busy',  false, true,  false],
+  ['claude 입력대기(훅 alert)',          'claude', 'claude', ['claude'], 'alert', 'alert', false, false, true ],
+  ['★ 안 보이는 창, 화면 작업중',          'claude', 'claude', ['claude'], null,    'busy',  false, true,  false, false],
+  ['★ 안 보이는 창, 화면을 못 읽음 + 훅 busy', 'claude','claude',['claude'],'busy','busy', false, undefined, false, false],
+  ['★ claude 가 자식 셸을 띄움',          'claude', 'claude', ['claude', 'bash'], null, 'busy', false, true, false],
+  ['★ claude 가 자식 vim 을 띄움',        'claude', 'claude', ['claude', 'vim'],  null, 'busy', false, true, false],
+  ['codex 화면 작업중',                  'codex',  'codex',  ['codex'],  null,    'busy',  false, true,  false],
+  ['codex 조용',                        'codex',  'codex',  ['codex'],  null,    'idle',  false, false, false],
+  ['이름이 뭐든 훅이 방금 오면',           'mytool', 'mytool', ['mytool'], 'busy',  'busy',  false, false, true ],
+  ['★ 죽은 뒤 낡은 훅 busy',             'bash',   '-bash',  ['bash'],   'busy',  'idle',  false, false, false],
 
   // ── 세션 녹화처럼 셸을 감싸는 것 (관찰기가 안쪽 pty 까지 보고 Z 를 준다) ──
   ['★ 녹화 래퍼, 프롬프트 대기',  'script',  '',                        [],                        null,   'idle', true],
@@ -93,16 +100,23 @@ const T = [
 ];
 
 app.whenReady().then(async () => {
+  let bad = 0;
+  try {
   await sleep(1600);
   const win = BrowserWindow.getAllWindows()[0];
   const res = await win.webContents.executeJavaScript(
     `(()=>{
     const cases = ${JSON.stringify(T)};
     const out = [];
-    for (const [name, cmd, argv, chain, sig, want, idle] of cases) {
-      const leaf = { hookByPane: Object.create(null) };
-      if (sig) leaf.hookByPane['%9'] = sig;
-      const got = classifyPane(leaf, { id: '%9', cmd, argv, chain, idle: !!idle, visible: true });
+    for (const [name, cmd, argv, chain, sig, want, idle, working, fresh, visible] of cases) {
+      const leaf = { hookByPane: Object.create(null), hookAtByPane: Object.create(null), screenBusyAt: 0 };
+      if (sig) { leaf.hookByPane['%9'] = sig; leaf.hookAtByPane['%9'] = fresh ? Date.now() : Date.now() - 60000; }
+      const vis = visible !== false;
+      // 보이는 창의 화면은 우리 xterm 이, 안 보이는 창은 관찰기(working)가 본다
+      if (working === true && vis) leaf.screenBusyAt = Date.now();
+      // 표의 undefined 는 JSON 을 거치며 null 이 된다 — "모른다" 는 뜻이므로 되돌린다
+      const got = classifyPane(leaf, { id: '%9', cmd, argv, chain, idle: !!idle, visible: vis,
+        working: vis || working == null ? undefined : working });
       out.push([name, cmd, want, got, leaf.hookByPane['%9'] || '-']);
     }
     return out;
@@ -110,7 +124,6 @@ app.whenReady().then(async () => {
     true
   );
 
-  let bad = 0;
   console.log(`${'설명'.padEnd(30)} ${'cmd'.padEnd(9)} ${'기대'.padEnd(6)} ${'결과'.padEnd(6)} 훅잔재`);
   console.log('-'.repeat(78));
   for (const [name, cmd, want, got, left] of res) {
@@ -119,10 +132,12 @@ app.whenReady().then(async () => {
     console.log(`${pass ? '  ' : '✗ '}${name.padEnd(28)} ${cmd.padEnd(9)} ${want.padEnd(6)} ${got.padEnd(6)} ${left}`);
   }
   // 죽은 에이전트의 낡은 훅이 실제로 지워졌는지
-  const stale = res.find((r) => r[0].includes('낡은 훅'));
-  const cleaned = stale && stale[4] === '-';
-  if (!cleaned) bad++;
-  console.log(`${cleaned ? '  ' : '✗ '}낡은 훅 상태가 지워졌다`);
+  for (const key of ['낡은 훅', 'ESC 끊음']) {
+    const row = res.find((r) => r[0].includes(key));
+    const cleaned = row && row[4] === '-';
+    if (!cleaned) bad++;
+    console.log(`${cleaned ? '  ' : '✗ '}낡은 훅 상태가 지워졌다 (${key})`);
+  }
 
   /*
    * 판 단위 판정(evaluatePanes) — 관찰 결과가 어떤 모양이든 스피너가 갇히면 안 된다.
@@ -131,17 +146,17 @@ app.whenReady().then(async () => {
   console.log('');
   const ev = await win.webContents.executeJavaScript(
     `(()=>{
-    const mk = () => ({ id:'L', mode:'terminal', alert:false, busy:false,
-      hookByPane:Object.create(null), paneWas:Object.create(null), probe:null });
+    const mk = () => ({ id:'L', mode:'terminal', alert:false, busy:false, screenBusyAt:0,
+      hookByPane:Object.create(null), hookAtByPane:Object.create(null), paneWas:Object.create(null), probe:null });
     const pane = (o) => Object.assign({ win:'0', visible:true, argv:'', chain:[] }, o);
     const out = {};
 
-    // 관찰기가 아직 말이 없다 → 훅만으로 본다 (관찰기가 못 도는 서버에서도 살아 있게)
-    let l = mk(); l.hookByPane['%1'] = 'busy';
+    // 관찰기가 아직 말이 없다 → 방금 온 훅만으로 본다 (관찰기가 못 도는 서버에서도 살아 있게)
+    let l = mk(); l.hookByPane['%1'] = 'busy'; l.hookAtByPane['%1'] = Date.now();
     evaluatePanes(l); out.noProbe = l.busy;
 
     // 관찰기가 "봤는데 아무것도 없다" → 스피너를 켜지 않는다. 훅 기억은 남긴다.
-    l = mk(); l.hookByPane['%1'] = 'busy';
+    l = mk(); l.hookByPane['%1'] = 'busy'; l.hookAtByPane['%1'] = Date.now();
     l.probe = { mode:'tmux', panes: [] };
     evaluatePanes(l); out.emptyBusy = l.busy; out.emptyHooks = Object.keys(l.hookByPane);
 
@@ -179,7 +194,36 @@ app.whenReady().then(async () => {
   })()`,
     true
   );
+  // 에이전트가 작업 중이면 화면 문구 규칙("1. Yes" 등)으로 느낌표를 올리지 않는다
+  const fa = await win.webContents.executeJavaScript(
+    `(()=>{
+    const mk=(busy)=>({ id:'F', alert:false, tail:'', lastInputAt:0, lastOutputAt:0, screenBusyAt: busy?Date.now():0,
+      groupId:'x', title:'' });
+    const a=mk(true);  feedAlertDetector(a, 'Here are options:\\n  1. Yes, do it\\n  2. No\\n');
+    const b=mk(false); feedAlertDetector(b, 'Do you want to proceed?\\n');
+    return { whileWorking:a.alert, whenIdle:b.alert };
+  })()`, true);
+  // 작업 상태줄 판별 — Claude 새/옛 형식, Codex, 그리고 걸리면 안 되는 줄들
+  const wl = await win.webContents.executeJavaScript(
+    `(()=>({
+      newClaude: isAgentWorkingLine('✶ Working… (2s · ↓ 16 tokens)'),
+      newClaude2: isAgentWorkingLine('✢ Working… (11s · ↓ 97 tokens)'),
+      oldClaude: isAgentWorkingLine('✻ Crunching… (esc to interrupt)'),
+      codex: isAgentWorkingLine('• Working (3s • esc to interrupt)'),
+      done: isAgentWorkingLine('✻ Crunched for 14s · done 11:41 AM'),
+      body: isAgentWorkingLine('  Sleeping for 7 seconds · 3s'),
+      body2: isAgentWorkingLine('1. Yes'),
+      body3: isAgentWorkingLine('the timeout is (30s) by default'),
+      bg: isAgentWorkingLine('     (ctrl+b ctrl+b (twice) to run in background)')
+    }))()`, true);
   const evChecks = [
+    ['★ 요즘 Claude 상태줄 "✶ Working… (2s · …)" 을 잡는다', wl.newClaude && wl.newClaude2],
+    ['옛 Claude 상태줄 "(esc to interrupt)" 도 잡는다', wl.oldClaude],
+    ['Codex 상태줄도 잡는다', wl.codex],
+    ['끝난 뒤 줄 "Crunched for 14s · done" 은 안 잡는다', !wl.done],
+    ['본문 줄은 안 잡는다', !wl.body && !wl.body2 && !wl.body3 && !wl.bg],
+    ['★ 작업 중엔 답변 속 "1. Yes" 로 느낌표를 올리지 않는다', fa.whileWorking === false],
+    ['조용할 때의 진짜 질문에는 올린다', fa.whenIdle === true],
     ['관찰기가 아직 말이 없으면 훅만으로 본다', ev.noProbe === true],
     ['★ 관찰 결과가 비면 스피너를 켜지 않는다', ev.emptyBusy === false],
     ['★ 그때 훅 기억은 남겨 둔다', ev.emptyHooks.includes('%1')],
@@ -196,6 +240,11 @@ app.whenReady().then(async () => {
     if (!pass) bad++;
     console.log(`${pass ? '  ' : '✗ '}${name}`);
   }
-  console.log(`\n${bad === 0 ? `모두 통과 (${res.length + 1 + evChecks.length}건)` : bad + ' 건 실패'}`);
+  console.log(`\n${bad === 0 ? `모두 통과 (${res.length + 2 + evChecks.length}건)` : bad + ' 건 실패'}`);
+  } catch (e) {
+    bad++;
+    console.log('EXCEPTION', e && (e.stack || e.message || e));
+  }
+  // 무슨 일이 있어도 끝낸다 — 안 그러면 실패가 "멈춤" 으로만 보인다
   setTimeout(() => app.exit(bad ? 1 : 0), 200);
 });
