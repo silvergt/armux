@@ -251,7 +251,9 @@ iTerm 스타일의 크로스플랫폼(Windows / macOS) SSH 터미널 클라이�
 
 **초록 느낌표는 못 본 것만 알린다.** 눈앞에서 `Ctrl+C` 를 눌러 멈춘 것에는 뜨지 않고, tmux 의 **안 보이는 창**에서 끝났거나 그 탭을 안 보고 있었을 때만 뜬다.
 
-규칙 표는 `src/renderer/renderer.js` 한곳에 모여 있고, `npm run test:panestate` 로 36가지 조합을 검증한다.
+규칙 표는 `src/renderer/renderer.js` 한곳에 모여 있고, `npm run test:panestate` 가 합성 입력으로 75가지를 검증한다.
+
+**그것만으로는 부족했다.** 합성 입력 시험은 분류기만 보기 때문에, 진짜 Claude 가 도구를 돌릴 때 관찰기가 자식 프로세스를 오판하는 것, ESC 로 끊으면 Stop 훅이 안 오는 것, Claude 업데이트로 상태줄 문구가 바뀌는 것을 전부 놓쳤다. 그래서 `npm run test:agent` 가 따로 있다 — **진짜 Claude 를 tmux 안에서 띄워 도구를 쓰게 하고, ESC 로 끊고, 느낌표가 언제 올라가는지 추적**한다. 127.0.0.1 로 SSH 가 되고(`ARMUX_TEST_KEY`) claude 가 로그인돼 있어야 하며 토큰을 조금 쓴다. 판정기의 어느 층을 고치든 이걸 돌려야 한다.
 
 ### 에이전트 훅 설치
 
@@ -531,7 +533,8 @@ scripts/
   sync-vendor.js      # xterm 배포 파일 복사
   make-icon.py        # build/ 아이콘 3종 생성
   test-ime.js         # 한글 입력 회귀 시험 (npm run test:ime)
-  test-panestate.js   # 탭 표시 판정 회귀 시험 (npm run test:panestate)
+  test-panestate.js   # 탭 표시 판정 회귀 시험 — 합성 입력 (npm run test:panestate)
+  test-agent.js       # 진짜 Claude 로 탭 표시 검증 — 도구 사용·ESC (npm run test:agent, 토큰 씀)
 build/
   icon.png            # 원본 (1024px)
   icon.ico            # windows
