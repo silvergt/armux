@@ -203,7 +203,7 @@ iTerm 스타일의 크로스플랫폼(Windows / macOS) SSH 터미널 클라이�
 
 **아래층 — 서버에 직접 물어본다.** 접속마다 채널 하나를 열어 두고 **2초마다** 이렇게 묻는다.
 
-- 이 판의 셸이 tmux 클라이언트인가 (`tmux list-clients` 의 `client_tty` 와 대조)
+- 이 판의 셸 아래에 tmux 클라이언트가 붙어 있는가 (`tmux list-clients` 의 `client_pid` 조상을 거슬러 올라가 이 셸이 나오는지). tty 로 대조하면 **세션 녹화 서버**(sshd → 녹화기 → 셸 → tmux)에서 tmux 를 놓친다 — 녹화기가 연 안쪽 pty 에 있기 때문이다. 그러면 판이 "녹화기 하나 떠 있음" 으로만 보여 스피너가 아예 켜지지 않았다.
 - tmux 안이면 그 세션의 **모든 창**에서 무엇이 돌고 있나 (`tmux list-panes -s`)
 - tmux 밖이면 이 tty 의 포그라운드가 무엇인가
 
@@ -534,7 +534,8 @@ scripts/
   make-icon.py        # build/ 아이콘 3종 생성
   test-ime.js         # 한글 입력 회귀 시험 (npm run test:ime)
   test-panestate.js   # 탭 표시 판정 회귀 시험 — 합성 입력 (npm run test:panestate)
-  test-agent.js       # 진짜 Claude 로 탭 표시 검증 — 도구 사용·ESC (npm run test:agent, 토큰 씀)
+  test-agent.js       # 진짜 Claude 로 탭 표시 검증 — 도구 사용·ESC (npm run test:agent, 토큰 씀; ARMUX_TEST_WRAP=script 로 녹화 서버 흉내)
+  test-probe.js       # 관찰기 스크립트를 진짜 SSH·tmux·녹화기 위에서 검증 (npm run test:probe)
 build/
   icon.png            # 원본 (1024px)
   icon.ico            # windows

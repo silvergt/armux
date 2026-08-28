@@ -22,7 +22,8 @@
  * 이 판의 터미널이다. 세션 1개 = Client 1개 = 셸 1개라 pts 도 하나뿐이다.
  *
  * tty 를 알면 나머지는 그냥 조회다.
- *   - 그 tty 가 tmux 클라이언트인가?  → `tmux list-clients` 의 client_tty 와 대조
+ *   - 이 셸 아래에 tmux 클라이언트가 있는가? → `list-clients` 의 client_pid 조상에 이 셸이 있는지
+ *     (tty 로 대조하면 세션 녹화기가 연 안쪽 pty 에 있는 tmux 를 놓친다)
  *   - tmux 안이면 그 세션의 모든 창 상태 → `tmux list-panes -s`
  *   - tmux 밖이면 그 tty 의 포그라운드 → `ps -t <tty>` 에서 STAT 에 '+' 가 붙은 것
  * 창 전환도, tmux 에서 나가는 것도 다음 틱에 저절로 반영된다.
@@ -176,6 +177,31 @@ args_via_ps() {
 
 if [ -r /proc/self/stat ]; then USE_PROC=1; else USE_PROC=0; fi
 
+ppid_of() {
+  if [ "$USE_PROC" = 1 ]; then
+    awk '{ n = index($0, ") "); split(substr($0, n + 2), a, " "); print a[2] }' "/proc/$1/stat" 2>/dev/null
+  else
+    ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '
+  fi
+}
+
+# 이 판의 셸 아래에 붙어 있는 tmux 클라이언트를 "프로세스 계통" 으로 찾는다.
+#
+# 예전에는 tmux 클라이언트의 tty 가 이 판의 tty 와 같은지로 찾았다. 그런데 세션 녹화가
+# 걸린 서버는 sshd → 녹화기 → 셸 → tmux 순이라, tmux 클라이언트는 녹화기가 만든
+# "안쪽" pty 에 있다. tty 가 달라 못 찾고, 판은 "녹화기 하나 떠 있음" 으로만 보여
+# 스피너가 아예 켜지지 않았다. 클라이언트 pid 의 조상을 거슬러 올라가 이 셸이 나오면
+# 그 세션이다 — pty 가 몇 겹이든 상관없다.
+tmux_session_of() {
+  tmux list-clients -F '#{client_pid} #{session_name}' 2>/dev/null | while read -r CP SN; do
+    p="$CP"; i=0
+    while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ "$i" -lt 12 ]; do
+      if [ "$p" = "$1" ]; then echo "$SN"; break; fi
+      p=$(ppid_of "$p"); i=$((i + 1))
+    done
+  done | head -n 1
+}
+
 SH=$(find_shell 2>/dev/null)
 SHPID=\${SH%% *}
 TTY=\${SH##* }
@@ -186,7 +212,9 @@ while [ "$n" -lt ${LOOP_ITERS} ]; do
     SH=$(find_shell 2>/dev/null); SHPID=\${SH%% *}; TTY=\${SH##* }
   fi
   SESS=""
-  if [ -n "$TTY" ]; then
+  [ -n "$SHPID" ] && SESS=$(tmux_session_of "$SHPID")
+  if [ -z "$SESS" ] && [ -n "$TTY" ]; then
+    # client_pid 를 모르는 옛 tmux 를 위한 예비: tty 로 대조
     SESS=$(tmux list-clients -F '#{client_tty} #{session_name}' 2>/dev/null |
       awk -v t="/dev/$TTY" '$1 == t { print $2; exit }')
   fi

@@ -13,6 +13,7 @@
  *   - 이 PC 에서 127.0.0.1:22 로 SSH 접속 (ARMUX_TEST_KEY 에 개인키 경로, 기본 ~/.ssh/id_ed25519)
  *   - 서버에 tmux, 로그인된 claude (토큰을 조금 쓴다)
  *   - claude 의 훅이 설치돼 있을 것 (앱이 접속하면서 심는다)
+ *   - ARMUX_TEST_WRAP=script 를 주면 세션 녹화 서버처럼 녹화기 안에서 tmux 를 쓴다
  */
 const os = require('os');
 const fs = require('fs');
@@ -25,6 +26,8 @@ dialog.showMessageBox = async () => ({ response: 1 });
 require(path.join(__dirname, '..', 'src', 'main', 'main.js'));
 
 const KEY = process.env.ARMUX_TEST_KEY || path.join(os.homedir(), '.ssh', 'id_ed25519');
+// ARMUX_TEST_WRAP=script 면 세션 녹화 서버처럼 "녹화기 → 셸 → tmux" 로 겹쳐서 돌린다
+const WRAP = process.env.ARMUX_TEST_WRAP || '';
 const USER = process.env.ARMUX_TEST_USER || os.userInfo().username;
 const SESS = 'armux_test_agent';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -103,6 +106,12 @@ app.whenReady().then(async () => {
     );
     await sleep(5000);
     ok('SSH 접속', await js(win, `activeLeaf().status==='ready'`));
+    if (WRAP === 'script') {
+      // 녹화기 흉내: 이 안에서 tmux 를 붙이면 tmux 클라이언트가 안쪽 pty 에 놓인다
+      await js(win, `api.ssh.write(activeLeaf().sessionId,'script -q /dev/null'+String.fromCharCode(10)); true`);
+      await sleep(2000);
+      console.log('  (녹화기 script 안에서 진행)');
+    }
     await js(win, `api.ssh.write(activeLeaf().sessionId,'tmux attach -t ${SESS}'+String.fromCharCode(10)); true`);
     ok('tmux 에 붙었다', (await waitFor((s) => s.panes.length >= 2, 15)) >= 0);
     // raiseAlert 호출을 전부 기록한다 — "언제·어디서" 느낌표가 올라가는지
