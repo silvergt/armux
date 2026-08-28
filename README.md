@@ -159,14 +159,11 @@ iTerm 스타일의 크로스플랫폼(Windows / macOS) SSH 터미널 클라이�
 
 | 항목 | 값 |
 | --- | --- |
-| 테마 | 어둡게 · **밝게** · 시스템(OS 설정을 따라감) |
 | 글자 크기 | 8~28 |
 | 글꼴 | 비워 두면 OS별 기본 글꼴 |
 | 커서 모양 | 블록 · 줄 · 밑줄 |
 | 커서 깜빡임 | 켬/끔 |
 | 스크롤백 | 1,000~200,000줄 |
-
-밝은 테마는 `styles-light.css` 로 들어 있고, **`npm run theme:light` 로 `styles.css` 에서 만들어 낸다.** 색이 176종·403곳에 직접 박혀 있어 손으로 옮기면 반드시 빠뜨리는 곳이 생기므로, 무채색은 밝기를 뒤집고 유채색은 색상·채도를 두고 밝기만 뒤집는 식으로 기계가 변환한다. 기계로 안 되는 몇 군데(색 있는 단추 위의 흰 글씨 등)는 생성기 맨 아래 손질 규칙에서 되돌린다. 터미널 안쪽 색도 함께 바뀐다.
 
 **단축키**
 
@@ -521,13 +518,11 @@ src/
   renderer/
     index.html  # 탭바 / 서브탭바 / 터미널 / 접속 다이얼로그 마크업
     renderer.js # 2단계 탭 상태 관리, xterm 인스턴스, 단축키
-    styles.css  # 다크 테마 UI (기준)
-    styles-light.css # 밝은 테마 (자동 생성 — 고치지 말 것)
+    styles.css  # 다크 테마 UI
     vendor/     # xterm.js 배포 파일 (npm run vendor 로 갱신)
 scripts/
   sync-vendor.js      # xterm 배포 파일 복사
   make-icon.py        # build/ 아이콘 3종 생성
-  make-light-theme.js # styles.css → styles-light.css (npm run theme:light)
   test-ime.js         # 한글 입력 회귀 시험 (npm run test:ime)
   test-panestate.js   # 탭 표시 판정 회귀 시험 (npm run test:panestate)
 build/

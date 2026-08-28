@@ -81,31 +81,6 @@ const THEME = {
   brightWhite: '#ffffff'
 };
 
-/** 밝은 테마용 터미널 색 (GitHub Light 계열 — 흰 바탕에서 대비가 충분한 값들) */
-const THEME_LIGHT = {
-  background: '#ffffff',
-  foreground: '#1f2328',
-  cursor: '#1f2328',
-  cursorAccent: '#ffffff',
-  selectionBackground: '#b6dcff',
-  black: '#24292f',
-  red: '#cf222e',
-  green: '#116329',
-  yellow: '#8f6c00',
-  blue: '#0969da',
-  magenta: '#8250df',
-  cyan: '#1b7c83',
-  white: '#6e7781',
-  brightBlack: '#57606a',
-  brightRed: '#a40e26',
-  brightGreen: '#0b6218',
-  brightYellow: '#7a5c00',
-  brightBlue: '#0550ae',
-  brightMagenta: '#6639ba',
-  brightCyan: '#12666b',
-  brightWhite: '#24292f'
-};
-
 /**
  * OS별 폰트 스택.
  * - windows: PowerShell / Windows Terminal 기본 글꼴인 Cascadia Mono → Consolas 순.
@@ -543,7 +518,7 @@ function createLeaf(tab, connect, options) {
   const term = new Terminal({
     fontFamily: prefs.fontFamily || FONT_STACK,
     fontSize: state.fontSize,
-    theme: termTheme(),
+    theme: THEME,
     cursorBlink: prefs.cursorBlink,
     cursorStyle: prefs.cursorStyle,
     scrollback: prefs.scrollback,
@@ -1149,7 +1124,6 @@ api.settings.sync(opts); // 시작할 때 시스템 메뉴 체크 표시를 맞�
  * 그 밖의 설정은 여기 prefs 에 모으고, 설정 창(정보 ▸ 설정)에서 바꾼다.
  */
 const PREF_DEFAULTS = {
-  theme: 'dark', // dark | light | system
   cursorBlink: true,
   cursorStyle: 'block', // block | bar | underline
   scrollback: 10000,
@@ -1190,43 +1164,8 @@ function setPref(key, value) {
   if (!(key in PREF_DEFAULTS)) return;
   prefs[key] = value;
   savePrefs();
-  if (key === 'theme') applyTheme();
-  else if (key === 'swapTabKeys') renderSettings();
+  if (key === 'swapTabKeys') renderSettings();
   else applyTermPrefs();
-}
-
-/* ----- 테마 ----- */
-const themeLink = document.getElementById('theme-light');
-const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
-
-/** 지금 실제로 쓸 테마 ('dark' | 'light') — '시스템' 이면 OS 설정을 따른다 */
-function effectiveTheme() {
-  if (prefs.theme === 'light') return 'light';
-  if (prefs.theme === 'dark') return 'dark';
-  return darkQuery.matches ? 'dark' : 'light';
-}
-
-function applyTheme() {
-  const t = effectiveTheme();
-  document.documentElement.setAttribute('data-theme', t);
-  if (themeLink) themeLink.disabled = t !== 'light';
-  // 터미널 안쪽 색도 같이 바꾼다
-  const theme = t === 'light' ? THEME_LIGHT : THEME;
-  for (const g of state.groups) {
-    for (const tab of g.tabs) {
-      for (const l of leavesOf(tab.root)) {
-        if (l.term) l.term.options.theme = theme;
-      }
-    }
-  }
-}
-darkQuery.addEventListener('change', () => {
-  if (prefs.theme === 'system') applyTheme();
-});
-
-/** 새로 만드는 터미널이 쓸 색 */
-function termTheme() {
-  return effectiveTheme() === 'light' ? THEME_LIGHT : THEME;
 }
 
 /** 커서·스크롤백·글꼴을 열려 있는 모든 터미널에 반영한다 */
@@ -3465,7 +3404,6 @@ function renderSettings() {
   const seg = (id, val) => {
     for (const b of setEl.querySelectorAll(`#${id} button`)) b.classList.toggle('on', b.dataset.v === val);
   };
-  seg('set-theme', prefs.theme);
   seg('set-cursor', prefs.cursorStyle);
   document.getElementById('set-font-size').textContent = String(state.fontSize);
   document.getElementById('set-font-family').value = prefs.fontFamily;
@@ -3556,12 +3494,6 @@ if (setEl) {
       stopKeyListen();
     });
   }
-  for (const b of setEl.querySelectorAll('#set-theme button')) {
-    b.addEventListener('click', () => {
-      setPref('theme', b.dataset.v);
-      renderSettings();
-    });
-  }
   for (const b of setEl.querySelectorAll('#set-cursor button')) {
     b.addEventListener('click', () => {
       setPref('cursorStyle', b.dataset.v);
@@ -3603,7 +3535,6 @@ if (setEl) {
     keybinds = {};
     localStorage.setItem('keybinds', '{}');
     syncKeybinds();
-    applyTheme();
     applyTermPrefs();
     setFontSize(13);
     renderSettings();
@@ -3615,7 +3546,6 @@ if (setEl) {
 }
 
 // 시작할 때 저장된 설정을 화면에 반영한다
-applyTheme();
 syncKeybinds();
 
 
