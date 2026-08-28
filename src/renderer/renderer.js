@@ -489,9 +489,6 @@ function createLeaf(tab, connect, options) {
     screenBusyAt: 0, // 화면에서 에이전트 작업 상태줄을 마지막으로 본 시각
     hookByPane: Object.create(null),
     hookAtByPane: Object.create(null), // 창별로 훅 신호를 마지막에 받은 시각
-    hashHist: Object.create(null), // 창별 화면 지문 이력 (변하는 중인지 보려고)
-    localHashHist: [], // 보이는 판의 화면 지문 이력
-    screenChangeAt: 0, // 보이는 판의 화면이 연속으로 바뀌고 있다고 마지막으로 본 시각
     paneWas: Object.create(null),
     busy: false,
     mode: 'terminal', // 'terminal' | 'web' | 'file'
@@ -751,6 +748,7 @@ function createLeaf(tab, connect, options) {
     leaf.lastInputAt = Date.now();
     clearAlert(leaf);
     checkActivitySoon(); // 입력하면 화면이 바뀔 수 있으니 상태를 다시 본다
+    if (data === '\x1b') agentInterrupted(leaf); // ESC — 작업 중인 에이전트를 끊은 것이다
     if (leaf.sessionId && leaf.status === 'ready') {
       watchTmuxCommand(leaf, data); // 어떤 tmux 세션에 붙는지 기억해 둔다
       api.ssh.write(leaf.sessionId, data);
@@ -1057,7 +1055,13 @@ const SPINNER_GLYPHS = '✻✽✢✳✶✷✸✹✺·∗✱✲●○◦•∙◐
  * 있어서 요즘 Claude 에서는 화면 감지가 한 번도 안 걸렸다 — 그래서 훅에만
  * 매달렸고, ESC 로 끊으면 스피너가 영영 남았다.
  */
-const WORKING_LINE_RE = /\((\d+s\b|esc to interrupt)/i;
+/*
+ * 괄호 안 경과 초는 바로 앞에 말줄임표(… / ...)가 있거나 "Working" 이 있어야 한다.
+ * 그냥 "(30s" 만 보면 답변 본문의 글머리 줄("• 타임아웃은 (30s) 로…")에 걸린다 —
+ * Codex 는 메시지마다 앞에 • 를 붙이므로 특히 위험하다. 그러면 놀고 있는데
+ * 스피너가 돌고, 그 줄이 스크롤돼 사라질 때 거짓 느낌표까지 뜬다.
+ */
+const WORKING_LINE_RE = /((…|\.\.\.)\s*\(\d+s\b|\bWorking\s*(…|\.\.\.)?\s*\(\d+s\b|\(esc to interrupt)/i;
 function isAgentWorkingLine(line) {
   const t = line.trimStart();
   if (!WORKING_LINE_RE.test(t)) return false;
@@ -1106,7 +1110,8 @@ function feedAlertDetector(leaf, text) {
    * 진짜 질문인 줄 알고 느낌표를 올렸다. 진짜 권한 질문이 뜰 때는 작업
    * 상태줄이 사라지므로 그때는 평소대로 본다(그리고 훅이 더 먼저 알려 준다).
    */
-  if (leaf.screenBusyAt && Date.now() - leaf.screenBusyAt < SCREEN_BUSY_MS) return;
+  const hookBusy = Object.values(leaf.hookByPane || {}).includes('busy');
+  if (hookBusy || (leaf.screenBusyAt && Date.now() - leaf.screenBusyAt < SCREEN_BUSY_MS)) return;
   const recent = leaf.tail.slice(-1200);
   if (ALERT_PATTERNS.some((re) => re.test(recent))) {
     raiseAlert(leaf);
@@ -1657,14 +1662,6 @@ const CMD_TUI = new Set([
  * 깜빡이지 않게 하려는 것이고, 시간이 지나면 저절로 풀리므로 갇히지 않는다.
  */
 const SCREEN_BUSY_MS = 2500;
-/*
- * 훅의 "시작" 신호를 화면 확인 없이 믿어 주는 시간. 프롬프트를 보낸 직후에는
- * 작업 상태줄이 아직 안 그려져 있고, 안 보이는 창은 관찰기가 다음 틱(2초)에야 본다.
- * 그 사이를 메울 만큼만 두고, 지나면 화면이 정한다.
- */
-const HOOK_BUSY_GRACE_MS = 5000;
-// 화면이 연속으로 바뀐 것을 본 뒤 이만큼은 "작업 중" 으로 본다 (다음 지문까지의 틈을 메운다)
-const SCREEN_CHANGE_MS = 3500;
 
 // 인자가 없으면 REPL(입력 대기)로 보는 것들. 인자가 있으면 스크립트 실행이다.
 const CMD_REPL = new Set(['python', 'python2', 'python3', 'node', 'ruby', 'perl', 'php', 'lua', 'R', 'ghci', 'julia']);
@@ -1775,21 +1772,19 @@ function classifyPane(leaf, pane) {
      *   - 안 보이는 tmux 창: 관찰기가 capture-pane 으로 읽어 온 것(2초마다)
      * 훅은 화면이 채 그려지기 전 몇 초를 메우는 빠른 길로만 쓴다.
      */
-    if (sig === 'alert') return 'alert'; // 권한·입력 대기는 훅만이 안다
+    /*
+     * 훅이 주인이다. busy 는 idle(Stop·StopFailure·SessionEnd) 훅, 사용자의 ESC,
+     * 셸 프롬프트 복귀(Z) 로만 꺼진다. 화면이 조용하다고 끄지는 않는다 — 프로세스가
+     * 잠깐 멎거나 문구가 바뀌어도 "끝났다" 고 거짓 알림을 내지 않기 위해서다.
+     * 화면(작업 상태줄)은 켜는 쪽으로만 쓴다: 훅이 모르는 도구(Codex 는 시작 훅이
+     * 없다)를 위해서다.
+     */
+    if (sig === 'busy') return 'busy';
+    if (sig === 'alert') return 'alert';
+    if (sig === 'idle') return 'idle';
     const now = Date.now();
-    const localBusy = pane.visible !== false && leaf.screenBusyAt && now - leaf.screenBusyAt < SCREEN_BUSY_MS;
-    if (localBusy || pane.working === true) return 'busy';
-    // 상태줄 문구를 못 알아봐도 화면이 연속으로 바뀌고 있으면 작업 중이다
-    const localChanging = pane.visible !== false && leaf.screenChangeAt && now - leaf.screenChangeAt < SCREEN_CHANGE_MS;
-    if (localChanging || pane.changing === true) return 'busy';
-    if (sig === 'busy') {
-      const at = leaf.hookAtByPane[pane.id] || 0;
-      // 방금 시작했으면 화면이 아직 안 그려졌을 수 있다 — 잠깐만 훅을 믿는다
-      if (now - at < HOOK_BUSY_GRACE_MS) return 'busy';
-      // 화면을 볼 수 없는 창(관찰기가 못 읽는 경우)은 예전처럼 훅을 따른다
-      if (pane.working === undefined && pane.visible === false) return 'busy';
-      delete leaf.hookByPane[pane.id]; // 화면이 조용한데 훅만 busy — 낡은 신호다
-    }
+    if (pane.visible !== false && leaf.screenBusyAt && now - leaf.screenBusyAt < SCREEN_BUSY_MS) return 'busy';
+    if (pane.working === true) return 'busy'; // 안 보이는 창은 관찰기가 읽어 온 상태줄
     return 'idle'; // 신호도 없고 화면도 조용하면 그냥 켜져만 있는 것이다
   }
 
@@ -1922,6 +1917,33 @@ function dropStaleProbes() {
 
 setInterval(dropStaleProbes, 5000);
 
+/**
+ * 사용자가 이 판에서 ESC 를 눌렀다.
+ *
+ * Claude Code 는 작업 중 ESC 로 끊으면 Stop 훅을 보내지 않는다(사양). 그래서 훅만
+ * 믿으면 busy 가 영영 남아 스피너가 계속 돌았다. 그런데 ESC 는 우리 앱을 거쳐
+ * 가므로 우리가 정확히 안다 — 지금 보이는 창의 busy 훅을 내린다.
+ * 보이는 창이 아닌 곳(다른 tmux 창)의 상태는 건드리지 않는다.
+ */
+function agentInterrupted(leaf) {
+  const panes = (leaf.probe && leaf.probe.panes) || [];
+  const vis = panes.filter((p) => p.visible !== false).map((p) => p.id);
+  const targets = vis.length ? vis : [DIRECT_PANE];
+  let changed = false;
+  for (const id of targets) {
+    if (leaf.hookByPane[id] === 'busy') {
+      delete leaf.hookByPane[id];
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  leaf.screenBusyAt = 0;
+  leaf.wasThinking = false;
+  for (const id of targets) leaf.paneWas[id] = 'idle'; // 내가 끊은 것이니 "끝났다" 알림은 내지 않는다
+  evaluatePanes(leaf);
+  scheduleRender();
+}
+
 /** 연결이 끊기면 관찰 결과는 버린다 (되살아난 뒤 옛 상태로 판정하지 않게) */
 function resetPaneState(leaf) {
   if (!leaf) return;
@@ -1929,8 +1951,6 @@ function resetPaneState(leaf) {
   leaf.probeAt = 0;
   leaf.hookByPane = Object.create(null);
   leaf.hookAtByPane = Object.create(null);
-  leaf.hashHist = Object.create(null);
-  leaf.localHashHist = [];
   leaf.paneWas = Object.create(null);
   if (leaf.busy) {
     leaf.busy = false;
@@ -2152,14 +2172,6 @@ function evaluateActivity() {
          * 최근 3번 중 2번 이상 바뀌었으면 "변하는 중" 으로 본다. 작업 중이면 초
          * 카운터 때문에 매초 바뀌고, 놀 때는 안내 문구가 가끔 한 번 바뀔 뿐이다.
          */
-        if (live && activityTick % 4 === 0) {
-          const lines = bottomNonEmptyLines(leaf, 20);
-          const fp = lines.slice(0, Math.max(0, lines.length - 3)).join('\n');
-          const hist = (leaf.localHashHist = leaf.localHashHist.concat(fp).slice(-3));
-          let changes = 0;
-          for (let i = 1; i < hist.length; i++) if (hist[i] !== hist[i - 1]) changes++;
-          if (changes >= 2) leaf.screenChangeAt = now;
-        }
 
         if (leaf.hooksActive) continue;
 
@@ -5816,19 +5828,6 @@ api.ssh.onData(({ id, data }) => {
 api.ssh.onPaneState(({ id, ...st }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
-  /*
-   * 에이전트 창의 화면 지문 이력(최근 3개). 지문이 연속으로 바뀌면 "변하는 중" 이다.
-   * 상태줄 문구를 못 알아보는 경우의 안전망 — 작업 중이면 초 카운터 때문에 매 틱
-   * 바뀐다. 놀 때도 안내 문구가 20초에 한 번쯤 바뀌므로, 한 번 바뀐 것으로는
-   * 작업 중이라 보지 않고 두 번 연속이어야 한다.
-   */
-  for (const pane of st.panes || []) {
-    if (pane.hash === undefined) continue;
-    const hist = (leaf.hashHist[pane.id] = (leaf.hashHist[pane.id] || []).concat(pane.hash).slice(-3));
-    let changes = 0;
-    for (let i = 1; i < hist.length; i++) if (hist[i] !== hist[i - 1]) changes++;
-    pane.changing = changes >= 2;
-  }
   leaf.probe = st;
   leaf.probeAt = Date.now(); // 살아 있다는 증거 (끊기면 dropStaleProbes 가 표시를 내린다)
   evaluatePanes(leaf);

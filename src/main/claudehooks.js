@@ -16,7 +16,12 @@
  *
  * - UserPromptSubmit → busy  (작업 시작)
  * - Stop             → idle  (응답 완료)
+ * - StopFailure      → idle  (오류로 끝남 — Stop 이 안 오므로 따로 받는다)
+ * - SessionEnd       → idle  (Claude 종료)
  * - Notification     → alert (입력/권한 대기)
+ *
+ * 사용자가 ESC 로 끊으면 Stop 이 오지 않는다(사양). 그 경우는 앱이 ESC 키를
+ * 직접 보고 처리한다(renderer 의 agentInterrupted).
  *
  * 주의: Claude 는 시작할 때 settings.json 을 읽으므로, 이미 실행 중인 Claude 에는
  * 다음 실행부터 적용된다. node 는 Claude Code 를 돌리는 서버라면 반드시 있으므로
@@ -132,6 +137,8 @@ const MARK = ${JSON.stringify(MARKER)};
 const entries = {
   UserPromptSubmit: ${JSON.stringify(cmd('busy'))},
   Stop: ${JSON.stringify(cmd('idle'))},
+  StopFailure: ${JSON.stringify(cmd('idle'))},
+  SessionEnd: ${JSON.stringify(cmd('idle'))},
   Notification: ${JSON.stringify(cmd('alert'))}
 };
 for (const ev of Object.keys(entries)) {

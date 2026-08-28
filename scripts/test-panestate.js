@@ -67,25 +67,23 @@ const T = [
   ['make',                   'make',    'make -j8',                ['make'],                  null, 'busy'],
   ['rsync',                  'rsync',   'rsync -a a b',            ['rsync'],                 null, 'busy'],
 
-  // ── 에이전트: 화면(레벨)이 정하고, 훅은 빠른 길 ────────────────────────
-  //   idle 칸 다음 두 칸: [화면에 작업 상태줄이 있나(true/false/undefined), 훅이 방금 왔나]
-  ['claude 켜짐, 화면 조용',            'claude', 'claude', ['claude'], null,    'idle',  false, false, false],
-  ['★ claude 화면에 작업중 (훅 없음)',    'claude', 'claude', ['claude'], null,    'busy',  false, true,  false],
-  ['claude 방금 busy 훅 (화면 아직)',     'claude', 'claude', ['claude'], 'busy',  'busy',  false, false, true ],
-  ['★ busy 훅 오래됐는데 화면 조용 = ESC 끊음', 'claude','claude',['claude'],'busy','idle', false, false, false],
-  ['★ 훅 idle 인데 화면은 작업중',        'claude', 'claude', ['claude'], 'idle',  'busy',  false, true,  false],
-  ['claude 입력대기(훅 alert)',          'claude', 'claude', ['claude'], 'alert', 'alert', false, false, true ],
-  ['★ 안 보이는 창, 화면 작업중',          'claude', 'claude', ['claude'], null,    'busy',  false, true,  false, false],
-  ['★ 안 보이는 창, 화면을 못 읽음 + 훅 busy', 'claude','claude',['claude'],'busy','busy', false, undefined, false, false],
-  ['★ claude 가 자식 셸을 띄움',          'claude', 'claude', ['claude', 'bash'], null, 'busy', false, true, false],
-  ['★ claude 가 자식 vim 을 띄움',        'claude', 'claude', ['claude', 'vim'],  null, 'busy', false, true, false],
+  // ── 에이전트: 훅이 주인. 화면은 켜는 쪽으로만 ──────────────────────────
+  //   idle 칸 다음 두 칸: [화면에 작업 상태줄이 있나(true/false/undefined), (안 씀)], 그다음 보이는 창?
+  ['claude 켜짐, 신호 없음, 화면 조용',   'claude', 'claude', ['claude'], null,    'idle',  false, false, false],
+  ['★ 훅 없이 화면에 작업중 (Codex 류)',   'claude', 'claude', ['claude'], null,    'busy',  false, true,  false],
+  ['훅 busy',                          'claude', 'claude', ['claude'], 'busy',  'busy',  false, false, false],
+  ['★ 훅 busy 는 화면이 조용해도 유지 (거짓 완료 금지)', 'claude','claude',['claude'],'busy','busy', false, false, false],
+  ['훅 idle',                          'claude', 'claude', ['claude'], 'idle',  'idle',  false, false, false],
+  ['★ 훅 idle 은 화면에 흔적이 남아도 대기',  'claude', 'claude', ['claude'], 'idle',  'idle',  false, true,  false],
+  ['훅 alert (입력·권한 대기)',           'claude', 'claude', ['claude'], 'alert', 'alert', false, false, false],
+  ['★ 안 보이는 창, 관찰기가 상태줄 읽음',   'claude', 'claude', ['claude'], null,    'busy',  false, true,  false, false],
+  ['★ 안 보이는 창, 훅 busy',            'claude', 'claude', ['claude'], 'busy',  'busy',  false, false, false, false],
+  ['★ claude 가 자식 셸을 띄움',          'claude', 'claude', ['claude', 'bash'], 'busy', 'busy', false, false, false],
+  ['★ claude 가 자식 vim 을 띄움',        'claude', 'claude', ['claude', 'vim'],  'busy', 'busy', false, false, false],
   ['codex 화면 작업중',                  'codex',  'codex',  ['codex'],  null,    'busy',  false, true,  false],
-  ['★ 상태줄은 못 알아봤지만 화면이 연속으로 바뀜 (안 보이는 창)', 'claude','claude',['claude'], null, 'busy', false, false, false, false, true],
-  ['★ 상태줄은 못 알아봤지만 화면이 연속으로 바뀜 (보이는 창)',   'claude','claude',['claude'], null, 'busy', false, false, false, true,  true],
-  ['화면이 한 번만 바뀐 것은 작업이 아니다',                    'claude','claude',['claude'], null, 'idle', false, false, false, false, false],
   ['codex 조용',                        'codex',  'codex',  ['codex'],  null,    'idle',  false, false, false],
-  ['이름이 뭐든 훅이 방금 오면',           'mytool', 'mytool', ['mytool'], 'busy',  'busy',  false, false, true ],
-  ['★ 죽은 뒤 낡은 훅 busy',             'bash',   '-bash',  ['bash'],   'busy',  'idle',  false, false, false],
+  ['이름이 뭐든 훅이 있으면',              'mytool', 'mytool', ['mytool'], 'busy',  'busy',  false, false, false],
+  ['★ 죽은 뒤 낡은 훅 busy (셸 프롬프트로 돌아옴)', 'bash', '-bash', ['bash'], 'busy', 'idle', false, false, false],
 
   // ── 세션 녹화처럼 셸을 감싸는 것 (관찰기가 안쪽 pty 까지 보고 Z 를 준다) ──
   ['★ 녹화 래퍼, 프롬프트 대기',  'script',  '',                        [],                        null,   'idle', true],
@@ -111,17 +109,15 @@ app.whenReady().then(async () => {
     `(()=>{
     const cases = ${JSON.stringify(T)};
     const out = [];
-    for (const [name, cmd, argv, chain, sig, want, idle, working, fresh, visible, changing] of cases) {
-      const leaf = { hookByPane: Object.create(null), hookAtByPane: Object.create(null), screenBusyAt: 0, screenChangeAt: 0 };
-      if (changing && visible !== false) leaf.screenChangeAt = Date.now();
-      if (sig) { leaf.hookByPane['%9'] = sig; leaf.hookAtByPane['%9'] = fresh ? Date.now() : Date.now() - 60000; }
+    for (const [name, cmd, argv, chain, sig, want, idle, working, _unused, visible] of cases) {
+      const leaf = { hookByPane: Object.create(null), hookAtByPane: Object.create(null), screenBusyAt: 0 };
+      if (sig) { leaf.hookByPane['%9'] = sig; leaf.hookAtByPane['%9'] = Date.now() - 60000; }
       const vis = visible !== false;
       // 보이는 창의 화면은 우리 xterm 이, 안 보이는 창은 관찰기(working)가 본다
       if (working === true && vis) leaf.screenBusyAt = Date.now();
       // 표의 undefined 는 JSON 을 거치며 null 이 된다 — "모른다" 는 뜻이므로 되돌린다
       const got = classifyPane(leaf, { id: '%9', cmd, argv, chain, idle: !!idle, visible: vis,
-        working: vis || working == null ? undefined : working,
-        changing: vis ? undefined : Boolean(changing) });
+        working: vis || working == null ? undefined : working });
       out.push([name, cmd, want, got, leaf.hookByPane['%9'] || '-']);
     }
     return out;
@@ -137,7 +133,7 @@ app.whenReady().then(async () => {
     console.log(`${pass ? '  ' : '✗ '}${name.padEnd(28)} ${cmd.padEnd(9)} ${want.padEnd(6)} ${got.padEnd(6)} ${left}`);
   }
   // 죽은 에이전트의 낡은 훅이 실제로 지워졌는지
-  for (const key of ['낡은 훅', 'ESC 끊음']) {
+  for (const key of ['낡은 훅']) {
     const row = res.find((r) => r[0].includes(key));
     const cleaned = row && row[4] === '-';
     if (!cleaned) bad++;
@@ -151,8 +147,9 @@ app.whenReady().then(async () => {
   console.log('');
   const ev = await win.webContents.executeJavaScript(
     `(()=>{
-    const mk = () => ({ id:'L', mode:'terminal', alert:false, busy:false, screenBusyAt:0,
-      hookByPane:Object.create(null), hookAtByPane:Object.create(null), paneWas:Object.create(null), probe:null });
+    const mk = () => ({ id:'L', mode:'terminal', alert:false, busy:false, screenBusyAt:0, screenChangeAt:0,
+      hookByPane:Object.create(null), hookAtByPane:Object.create(null), agentBusyAt:Object.create(null),
+      paneWas:Object.create(null), probe:null });
     const pane = (o) => Object.assign({ win:'0', visible:true, argv:'', chain:[] }, o);
     const out = {};
 
@@ -219,14 +216,43 @@ app.whenReady().then(async () => {
       body: isAgentWorkingLine('  Sleeping for 7 seconds · 3s'),
       body2: isAgentWorkingLine('1. Yes'),
       body3: isAgentWorkingLine('the timeout is (30s) by default'),
+      bullet: isAgentWorkingLine('• The default timeout (30s) is fine'),
+      bullet2: isAgentWorkingLine('✻ Retry limit (5s) reached'),
+      dots: isAgentWorkingLine('✻ Thinking... (12s)'),
       bg: isAgentWorkingLine('     (ctrl+b ctrl+b (twice) to run in background)')
     }))()`, true);
+  // ESC: 사용자가 보고 있는 창에서 ESC 를 누르면 그 창의 busy 훅만 내린다 (Stop 훅이 안 오므로)
+  const esc = await win.webContents.executeJavaScript(
+    `(()=>{
+      const mk = () => ({ id:'E', mode:'terminal', alert:false, busy:false, screenBusyAt:0, wasThinking:false,
+        hookByPane:Object.create(null), hookAtByPane:Object.create(null), paneWas:Object.create(null), probe:null });
+      // tmux: 창0 이 보임, 창1 은 숨음. 둘 다 busy 훅
+      const l = mk();
+      l.probe = { mode:'tmux', panes:[ {id:'%v', win:'0', visible:true, cmd:'claude', argv:'claude', chain:['claude']},
+                                       {id:'%h', win:'1', visible:false, cmd:'claude', argv:'claude', chain:['claude']} ] };
+      l.hookByPane['%v']='busy'; l.hookByPane['%h']='busy';
+      evaluatePanes(l); const before = l.busy;
+      agentInterrupted(l);
+      const visCleared = !l.hookByPane['%v'], hidKept = l.hookByPane['%h']==='busy', stillBusy = l.busy, alerted = l.alert;
+      // 숨은 창의 훅도 idle 이면 판 전체가 대기
+      l.hookByPane['%h']='idle'; evaluatePanes(l); const after = l.busy;
+      // tmux 밖(direct)
+      const d = mk(); d.hookByPane['#direct']='busy'; evaluatePanes(d); agentInterrupted(d);
+      return { before, visCleared, hidKept, stillBusy, alerted, after, direct: d.busy, directAlert: d.alert };
+    })()`, true);
   const evChecks = [
+    ['★ ESC 를 누르면 보이는 창의 busy 훅이 내려간다', esc.before === true && esc.visCleared],
+    ['★ 안 보이는 창의 busy 는 건드리지 않는다 (판은 아직 작업 중)', esc.hidKept && esc.stillBusy],
+    ['내가 끊은 것이니 느낌표는 안 올린다', esc.alerted === false],
+    ['숨은 창까지 끝나면 판이 대기', esc.after === false],
+    ['★ tmux 밖에서도 ESC 로 꺼진다', esc.direct === false && esc.directAlert === false],
     ['★ 요즘 Claude 상태줄 "✶ Working… (2s · …)" 을 잡는다', wl.newClaude && wl.newClaude2],
     ['옛 Claude 상태줄 "(esc to interrupt)" 도 잡는다', wl.oldClaude],
     ['Codex 상태줄도 잡는다', wl.codex],
     ['끝난 뒤 줄 "Crunched for 14s · done" 은 안 잡는다', !wl.done],
     ['본문 줄은 안 잡는다', !wl.body && !wl.body2 && !wl.body3 && !wl.bg],
+    ['★ 글머리 본문 "• … (30s)" 는 안 잡는다 (Codex 메시지 앞이 •)', !wl.bullet && !wl.bullet2],
+    ['"Thinking... (12s)" 처럼 점 세 개도 잡는다', wl.dots],
     ['★ 작업 중엔 답변 속 "1. Yes" 로 느낌표를 올리지 않는다', fa.whileWorking === false],
     ['조용할 때의 진짜 질문에는 올린다', fa.whenIdle === true],
     ['관찰기가 아직 말이 없으면 훅만으로 본다', ev.noProbe === true],

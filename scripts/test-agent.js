@@ -149,17 +149,6 @@ app.whenReady().then(async () => {
     ok('완료되면 느낌표', (await snap()).alert === true && done >= 0, `${done}초`);
     await clear();
 
-    console.log('\n■ 안 보이는 창에서 ESC 로 끊기 — Stop 훅 없이도 꺼져야 한다');
-    await ask(`${SESS}:1`, LONG_PROMPT);
-    let t = await waitFor((s) => s.busy, 10);
-    ok('작업 중 스피너', t >= 0, `${t}초`);
-    await sleep(3000);
-    tq('send-keys', '-t', `${SESS}:1`, 'Escape');
-    t = await waitFor((s) => !s.busy, 15);
-    ok('★ ESC 뒤 스피너가 꺼진다', t >= 0, t >= 0 ? `${t}초 만에` : '안 꺼짐');
-    ok('   낡은 busy 훅이 지워졌다', !(await snap()).hooks.some((h) => h.endsWith('=busy')));
-    await clear();
-
     console.log('\n■ 보이는 창에서 ESC');
     tq('select-window', '-t', `${SESS}:1`);
     await sleep(3000);
@@ -168,10 +157,15 @@ app.whenReady().then(async () => {
     t = await waitFor((s) => s.busy, 10);
     ok('작업 중 스피너', t >= 0, `${t}초`);
     await sleep(3000);
-    tq('send-keys', '-t', `${SESS}:1`, 'Escape');
+    // ESC 는 우리 앱을 거쳐야 한다 (tmux 로 직접 보내면 앱이 볼 수 없다) — 진짜 키처럼 xterm 에 넣는다
+    await js(win, `activeLeaf().term.input(String.fromCharCode(27)); true`);
     t = await waitFor((s) => !s.busy, 15);
-    ok('★ ESC 뒤 스피너가 꺼진다', t >= 0, t >= 0 ? `${t}초 만에` : '안 꺼짐');
+    ok('★ ESC 뒤 스피너가 꺼진다 (Stop 훅 없이)', t >= 0, t >= 0 ? `${t}초 만에` : '안 꺼짐');
+    ok('   낡은 busy 훅이 지워졌다', !(await snap()).hooks.some((h) => h.endsWith('=busy')));
     ok('   보고 있었으니 느낌표 없음', (await snap()).alert === false);
+    // 끊은 뒤 Claude 가 정말 멈췄는지 (다시 busy 로 돌아오면 안 된다)
+    await sleep(6000);
+    ok('   끊은 뒤 스피너가 다시 켜지지 않는다', (await snap()).busy === false);
   } catch (e) {
     bad++;
     console.log('EXCEPTION', e && e.stack);
