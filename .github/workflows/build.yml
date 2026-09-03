@@ -42,6 +42,13 @@ jobs:
       - run: npm ci
 
       # publish 는 아래 gh 단계에서 직접 한다 (여기서 하면 토큰이 없어 실패)
+      # node-pty 의 맥 프리빌드 spawn-helper 에 실행 권한이 빠져 있다(644).
+      # 앱도 실행 직전에 고치지만, 패키지에 들어가는 파일 자체도 바르게 넣는다.
+      - name: fix node-pty helper perms
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true
+
       - name: build
         run: npm run build:info && npx electron-builder --${{ matrix.platform }} --publish never
         env:

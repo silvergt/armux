@@ -6,6 +6,8 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { Client } = require('ssh2');
 const { buildConnectConfig } = require('./sshconfig');
 
@@ -175,8 +177,34 @@ function exec(sessionId, command, timeoutMs = 15000) {
  * 로컬 터미널 세션. SSH 대신 이 PC 의 셸을 PTY 로 띄운다.
  * 같은 sessions 맵에 넣어 write/resize/close/count 가 그대로 통한다.
  */
+/*
+ * 맥에서 node-pty 는 셸을 띄울 때 spawn-helper 라는 보조 실행 파일을 쓴다.
+ * 그런데 npm 으로 배포되는 프리빌드에 이 파일의 실행 권한이 빠져 있어(644),
+ * 패키징을 거쳐도 그대로 644 라 posix_spawnp failed 로 죽는다. 띄우기 직전에
+ * 권한을 바로잡는다 — 이미 설치된 앱도 앱 갱신만으로 구제된다.
+ */
+function ensureSpawnHelperExecutable() {
+  if (process.platform === 'win32') return;
+  try {
+    const base = path.dirname(require.resolve('node-pty/package.json'));
+    for (const cand of [
+      path.join(base, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper'),
+      path.join(base, 'build', 'Release', 'spawn-helper')
+    ]) {
+      // 패키징된 앱에서는 실제 파일이 app.asar.unpacked 아래에 있다 (node-pty 도 그리 찾는다)
+      const real = cand.replace('app.asar', 'app.asar.unpacked');
+      if (!fs.existsSync(real)) continue;
+      const mode = fs.statSync(real).mode;
+      if (!(mode & 0o111)) fs.chmodSync(real, 0o755);
+    }
+  } catch (e) {
+    /* 권한을 못 고쳐도 일단 시도는 해 본다 — 실패하면 원래 오류가 그대로 보인다 */
+  }
+}
+
 function openLocal(size, handlers) {
   const pty = require('node-pty'); // 네이티브 모듈 — 실제로 쓸 때만 로드
+  ensureSpawnHelperExecutable();
   const sessionId = crypto.randomUUID();
   const isWin = process.platform === 'win32';
   // 사용자의 기본 셸: win 은 PowerShell, 그 외는 $SHELL (없으면 bash/zsh)
