@@ -5971,6 +5971,9 @@ api.onMenu(async (cmd, arg) => {
     case 'quickmemo':
       toggleQuickMemo();
       break;
+    case 'settings':
+      openSettings();
+      break;
     case 'about':
       openAbout();
       break;

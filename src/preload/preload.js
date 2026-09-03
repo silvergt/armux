@@ -204,6 +204,7 @@ contextBridge.exposeInMainWorld('armux', {
       'menu:help-tmux',
       'menu:help-shortcuts',
       'menu:about',
+      'menu:settings',
       'menu:update',
       'menu:toggle-explorer',
       'menu:toggle-notes',

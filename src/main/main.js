@@ -200,6 +200,13 @@ function buildMenu() {
             submenu: [
               { role: 'about' },
               { type: 'separator' },
+              {
+                // 맥 표준 자리(앱 이름 메뉴, Cmd+,). 윈도우는 앱 안 "정보 ▸ 설정" 에 있다.
+                label: '설정…',
+                accelerator: 'Cmd+,',
+                click: () => mainWindow && mainWindow.webContents.send('menu:settings')
+              },
+              { type: 'separator' },
               { role: 'hide' },
               { role: 'hideOthers' },
               { type: 'separator' },
