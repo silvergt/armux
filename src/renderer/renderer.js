@@ -752,9 +752,10 @@ function createLeaf(tab, connect, options) {
     if (leaf.sessionId && leaf.status === 'ready') {
       watchTmuxCommand(leaf, data); // 어떤 tmux 세션에 붙는지 기억해 둔다
       api.ssh.write(leaf.sessionId, data);
-    } else if (leaf.status === 'waiting') {
-      // 자동으로 다시 붙는 중 — Enter 는 "지금 바로 해 봐" 다
-      if (data === '\r') retryNow(leaf);
+    } else if (leaf.status === 'connecting' || leaf.status === 'waiting') {
+      // 접속 시도 중 — Ctrl+C 는 "그만둬", (대기 중) Enter 는 "지금 바로 해 봐"
+      if (data === '\x03') abortConnect(leaf);
+      else if (data === '\r' && leaf.status === 'waiting') retryNow(leaf);
     } else if (leaf.status === 'closed' || leaf.status === 'error') {
       if (data === '\r') reconnect(leaf); // 종료된 페인에서 Enter → 재접속
     }
@@ -1503,6 +1504,33 @@ function retryNow(leaf) {
   }
   r.attempt = 0; // 사람이 눌렀거나 인터넷이 돌아왔으면 처음부터 짧게
   runRetry(leaf);
+  return true;
+}
+
+/**
+ * 접속 시도(또는 자동 재접속 대기)를 사용자가 중단한다 — Ctrl+C (맥은 ⌘C 도).
+ *
+ * 인터넷이 끊겼다 돌아오는 애매한 순간에는 연결 시도가 죽은 경로로 나가
+ * "접속 중…" 인 채 시간 초과까지 매달리는 일이 있다. 새 탭으로 접속하면 바로
+ * 되는데 이 판만 붙잡혀 있는 상황 — 그때 기다리지 않고 끊어 버릴 길이 필요하다.
+ * 중단하면 "Enter 를 누르면 다시 접속합니다" 상태로 떨어진다.
+ */
+function abortConnect(leaf) {
+  if (leaf.status !== 'connecting' && leaf.status !== 'waiting') return false;
+  cancelRetry(leaf);
+  if (leaf.sessionId) {
+    sessionToLeaf.delete(leaf.sessionId); // 늦게 오는 exit/error 가 이 판을 건드리지 않게
+    try {
+      api.ssh.close(leaf.sessionId);
+    } catch (e) {
+      /* 이미 닫혔으면 그만 */
+    }
+    leaf.sessionId = null;
+  }
+  resetPaneState(leaf);
+  leaf.status = 'closed';
+  leaf.term.writeln('\r\n\x1b[90m● 연결 시도를 중단했습니다. Enter 를 누르면 다시 접속합니다.\x1b[0m');
+  render();
   return true;
 }
 
@@ -5900,6 +5928,8 @@ api.onMenu(async (cmd, arg) => {
       if (isTextInput(document.activeElement)) api.util.edit('copy');
       else if (domSel) api.util.clipboardWrite(domSel);
       else if (l && l.mode !== 'web' && l.term.hasSelection()) api.util.clipboardWrite(l.term.getSelection());
+      // 맥은 ⌘C 를 시스템 메뉴가 먼저 가져가 keydown 이 안 온다 — 접속 시도 중이면 여기서 중단
+      else if (l && (l.status === 'connecting' || l.status === 'waiting')) abortConnect(l);
       break;
     }
     case 'cut':
