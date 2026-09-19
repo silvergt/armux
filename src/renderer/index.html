@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="vendor/highlight.css" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="light.css" />
   </head>
   <body>
     <div id="app">
@@ -62,8 +63,8 @@
             <div class="set-pane" data-pane="look">
               <div class="set-row set-row-top">
                 <label>
-                  터미널 색<br />
-                  <span class="set-hint">판 안쪽 색만 바뀝니다. Claude/Codex 의 라이트 테마를 쓰려면 밝게로 두세요</span>
+                  화면 색<br />
+                  <span class="set-hint">터미널과 앱 화면 전체가 바뀝니다. Claude/Codex 의 라이트 테마를 쓰려면 밝게로 두세요</span>
                 </label>
                 <div class="set-seg" id="set-term-theme">
                   <button data-v="dark">어둡게</button>
@@ -383,6 +384,7 @@
     <script src="aichat.js"></script>
     <script src="quickmemo.js"></script>
     <script src="fileviewer.js"></script>
+    <script src="lighttheme.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

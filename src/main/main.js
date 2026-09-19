@@ -504,11 +504,13 @@ function pruneEmpty(obj) {
 
 ipcMain.on('ssh:write', (e, { id, data }) => ssh.write(id, data));
 ipcMain.on('ssh:resize', (e, { id, cols, rows }) => ssh.resize(id, cols, rows));
-// 밝은/어두운 터미널에 맞춰 윈도우·리눅스 제목줄 버튼(최소화·최대화·닫기) 색도 바꾼다.
-// 맥 신호등은 OS 몫이라 손대지 않는다.
+// 밝은/어두운 화면에 맞춰 창 바탕색과 윈도우·리눅스 제목줄 버튼(최소화·최대화·닫기) 색도
+// 바꾼다. 맥 신호등은 OS 몫이라 손대지 않는다.
 ipcMain.on('settings:uiTheme', (e, mode) => {
-  if (isMac || !mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   const light = mode === 'light';
+  mainWindow.setBackgroundColor(light ? '#ffffff' : '#000000'); // 크기 바꿀 때 비치는 바탕
+  if (isMac) return;
   try {
     mainWindow.setTitleBarOverlay({
       color: light ? '#f6f8fa' : '#16181c',

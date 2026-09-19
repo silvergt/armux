@@ -1,0 +1,26 @@
+/*
+ * 밝은 모드 — 손으로 정한 부분.
+ *
+ * 대부분의 색은 lighttheme.js 가 styles.css 를 읽어 자동으로 바꾼다.
+ * 여기에는 (1) 색 변수 한 벌과 (2) 자동 변환이 어색한 곳의 보정만 둔다.
+ * 이 파일은 자동 규칙 뒤에 오므로 같은 선택자면 여기가 이긴다.
+ */
+
+html.ui-light {
+  color-scheme: light; /* 스크롤바·입력칸·선택 상자도 밝게 */
+  --bg: #ffffff;
+  --chrome: #f6f8fa; /* 탭바·상태바 */
+  --chrome-2: #eef1f4; /* 서브탭바 */
+  --border: #d0d7de;
+  --fg: #1f2328;
+  --fg-dim: #59636e;
+  --accent: #0969da;
+  --accent-dim: #cfe3ff;
+  --danger: #cf222e;
+  --ok: #1a7f37;
+}
+
+/* 시계의 나라 표시는 어두운 바탕용 검은 테두리를 쓴다 — 밝은 바탕에서는 뺀다 */
+html.ui-light .clock-zone {
+  text-shadow: none;
+}

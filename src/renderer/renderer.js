@@ -552,6 +552,7 @@ function createLeaf(tab, connect, options) {
     fontFamily: prefs.fontFamily || FONT_STACK,
     fontSize: state.fontSize,
     theme: termTheme(),
+    minimumContrastRatio: termContrast(),
     cursorBlink: prefs.cursorBlink,
     cursorStyle: prefs.cursorStyle,
     scrollback: prefs.scrollback,
@@ -1187,7 +1188,7 @@ api.settings.sync(opts); // 시작할 때 시스템 메뉴 체크 표시를 맞�
  * 그 밖의 설정은 여기 prefs 에 모으고, 설정 창(정보 ▸ 설정)에서 바꾼다.
  */
 const PREF_DEFAULTS = {
-  termTheme: 'dark', // 터미널 판 색: dark | light (앱 UI 는 항상 어둡다)
+  termTheme: 'dark', // 화면 색: dark | light (터미널과 앱 화면 전체)
   cursorBlink: true,
   cursorStyle: 'block', // block | bar | underline
   scrollback: 10000,
@@ -1238,6 +1239,16 @@ function termTheme() {
   return prefs.termTheme === 'light' ? THEME_LIGHT : THEME;
 }
 
+/*
+ * 글자와 바탕의 최소 명암비. 밝은 팔레트는 흰 바탕에서 읽히도록 초록·노랑을 진하게
+ * 잡아서, 프로그램이 "초록 바탕 + 검은 글자" 를 쓰면(tmux 기본 상태줄) 둘 다 어두워
+ * 글자가 묻힌다. 4.5(WCAG AA) 보다 낮으면 xterm 이 글자 밝기를 자동으로 조정한다.
+ * 어두운 팔레트는 원래 색 그대로(1 = 조정 안 함).
+ */
+function termContrast() {
+  return prefs.termTheme === 'light' ? 4.5 : 1;
+}
+
 /**
  * 터미널 판의 여백 색을 팔레트에 맞춘다.
  * 판 안쪽은 xterm 이 칠하지만 .pane-term 의 padding 자리는 CSS 몫이라,
@@ -1246,8 +1257,8 @@ function termTheme() {
 function applyTermBgVar() {
   const light = prefs.termTheme === 'light';
   document.documentElement.style.setProperty('--term-bg', termTheme().background);
-  // 상단바·하단바·판 머리줄도 같이 밝게 (styles.css 의 html.ui-light)
-  document.documentElement.classList.toggle('ui-light', light);
+  // 앱 화면 전체도 같이 밝게 (lighttheme.js + light.css)
+  window.armuxLight.apply(light);
   // 윈도우의 최소화·최대화·닫기 버튼은 OS 가 그리므로 따로 알려 준다
   api.settings.uiTheme(light ? 'light' : 'dark');
 }
@@ -1267,6 +1278,7 @@ function applyTermPrefs() {
       for (const l of leavesOf(t.root)) {
         if (!l.term) continue;
         l.term.options.theme = theme;
+        l.term.options.minimumContrastRatio = termContrast();
         l.term.options.cursorBlink = prefs.cursorBlink;
         l.term.options.cursorStyle = prefs.cursorStyle;
         l.term.options.scrollback = prefs.scrollback;

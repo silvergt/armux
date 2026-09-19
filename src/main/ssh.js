@@ -213,6 +213,9 @@ function localEnv() {
     }
     env.LANG = `${loc}.UTF-8`;
   }
+  // xterm.js 는 24비트 색을 그대로 그린다. 알려 주지 않으면 Claude Code 같은 프로그램이
+  // 256색으로 낮춰 칠해 색감이 틀어진다. (앱을 Finder·Dock 에서 띄우면 이 값이 없다)
+  if (!env.COLORTERM) env.COLORTERM = 'truecolor';
   return env;
 }
 
