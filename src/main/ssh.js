@@ -126,7 +126,22 @@ function exec(sessionId, command, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const s = sessions.get(sessionId);
     if (!s) return reject(new Error('세션이 없습니다.'));
-    if (s.local) return reject(new Error('로컬 터미널에서는 지원하지 않는 기능입니다.'));
+    if (s.local) {
+      /*
+       * 로컬 터미널: 같은 명령을 이 PC 에서 돌린다. 로그인 셸(-l)로 돌려야
+       * GUI 앱의 얇은 PATH 로도 claude·curl 같은 것을 찾는다. 이 덕에
+       * 하단바의 Claude/Codex 사용량 조회와 상태 훅 설치가 로컬에서도 동작한다.
+       */
+      const cp = require('child_process');
+      const isWinLocal = process.platform === 'win32';
+      const shell = isWinLocal ? 'powershell.exe' : process.env.SHELL || '/bin/bash';
+      const args = isWinLocal ? ['-NoProfile', '-Command', command] : ['-l', '-c', command];
+      cp.execFile(shell, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: localEnv() }, (err, stdout, stderr) => {
+        if (err && err.killed) return reject(new Error('명령 실행 시간 초과'));
+        resolve({ stdout: String(stdout || ''), stderr: String(stderr || ''), code: err ? err.code || 1 : 0 });
+      });
+      return;
+    }
     let done = false;
     let channel = null;
     const settle = (fn, val) => {
@@ -177,6 +192,30 @@ function exec(sessionId, command, timeoutMs = 15000) {
  * 로컬 터미널 세션. SSH 대신 이 PC 의 셸을 PTY 로 띄운다.
  * 같은 sessions 맵에 넣어 write/resize/close/count 가 그대로 통한다.
  */
+/**
+ * 로컬 셸·로컬 명령에 넘길 환경.
+ *
+ * Finder/독으로 뜬 GUI 앱은 LANG/LC_* 가 비어 있어서, 로컬 터미널의 셸이
+ * 한글을 못 다룬다(글자 깨짐, 한글 파일명 물음표). UTF-8 로케일을 채워 준다.
+ */
+function localEnv() {
+  const env = { ...process.env };
+  if (process.platform !== 'win32' && !/UTF-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) {
+    let loc = 'en_US';
+    try {
+      const l = require('electron').app.getLocale() || '';
+      if (/^[a-z]{2}-[A-Za-z]{2}$/.test(l)) loc = l.replace('-', '_');
+      else if (l === 'ko') loc = 'ko_KR';
+      else if (l === 'ja') loc = 'ja_JP';
+      else if (/^[a-z]{2}$/.test(l)) loc = `${l}_${l.toUpperCase()}`;
+    } catch (e) {
+      /* electron 밖(시험)에서는 en_US 로 */
+    }
+    env.LANG = `${loc}.UTF-8`;
+  }
+  return env;
+}
+
 /*
  * 맥에서 node-pty 는 셸을 띄울 때 spawn-helper 라는 보조 실행 파일을 쓴다.
  * 그런데 npm 으로 배포되는 프리빌드에 이 파일의 실행 권한이 빠져 있어(644),
@@ -218,7 +257,7 @@ function openLocal(size, handlers) {
     cols: (size && size.cols) || 80,
     rows: (size && size.rows) || 24,
     cwd: process.env.HOME || process.env.USERPROFILE || undefined,
-    env: process.env
+    env: localEnv()
   });
   sessions.set(sessionId, { local: true, term, meta });
 
@@ -287,8 +326,39 @@ function execStream(sessionId, command, timeoutMs, onData, onClose) {
     return () => {};
   }
   if (s.local) {
-    onClose(new Error('로컬 세션은 별도 경로로 실행합니다.'));
-    return () => {};
+    // 로컬 터미널: 이 PC 에서 스트리밍 실행 (exec 의 로컬판)
+    const cp = require('child_process');
+    const isWinLocal = process.platform === 'win32';
+    const shell = isWinLocal ? 'powershell.exe' : process.env.SHELL || '/bin/bash';
+    const args = isWinLocal ? ['-NoProfile', '-Command', command] : ['-l', '-c', command];
+    const child = cp.spawn(shell, args, { env: localEnv() });
+    let done = false;
+    const finish = (err) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer2);
+      onClose(err || null);
+    };
+    const timer2 = setTimeout(() => {
+      try {
+        child.kill();
+      } catch (e) {
+        /* 이미 죽었으면 그만 */
+      }
+      finish(new Error('실행 시간 초과'));
+    }, timeoutMs || 300000);
+    child.stdout.on('data', (d) => onData(d.toString('utf8')));
+    child.stderr.on('data', () => {});
+    child.on('error', (e) => finish(e));
+    child.on('close', () => finish(null));
+    return () => {
+      try {
+        child.kill();
+      } catch (e) {
+        /* noop */
+      }
+      finish(new Error('취소됨'));
+    };
   }
   let done = false;
   let cancelled = false;

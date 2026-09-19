@@ -2362,7 +2362,7 @@ function createLocalGroup() {
     tabs: [],
     activeTabId: null,
     explorer: null,
-    explorerPinned: false, // SFTP 가 없으므로 탐색기는 쓰지 않는다
+    explorerPinned: loadPinPref(), // 이 PC 파일 탐색기 (SFTP 대신 로컬 파일시스템)
     explorerSelected: false,
     // AI 팝업은 메인탭마다 따로 (대화도, 열려 있는지도)
     aiPop: null,
@@ -2645,9 +2645,9 @@ let dockWidth = Number(localStorage.getItem(DOCK_KEY)) || 320;
 /** 그룹의 탐색기 인스턴스를 준비한다 (접속 정보가 있어야 만들 수 있다) */
 function ensureExplorer(group, quiet) {
   if (group.explorer) return group.explorer;
-  if (group.isLocal) return null; // 로컬 터미널은 SFTP 가 없다
+  // 로컬 터미널 그룹도 탐색기를 쓴다 — connect 의 local 표시를 보고 sftp 쪽이 이 PC 파일시스템으로 동작한다
   const connect = group.connect || { hostId: group.host.id || null, credId: group.credId };
-  if (!connect.hostId && !connect.credId) {
+  if (!connect.local && !connect.hostId && !connect.credId) {
     // quiet 은 "사용자가 누른 게 아니라 미리 붙여 두는 중" 이라는 뜻이다
     if (!quiet) el.statusLeft.textContent = '접속이 완료된 뒤에 파일 탐색기를 열 수 있습니다.';
     return null;
@@ -2804,10 +2804,12 @@ function launcherItems(group) {
     { key: 'ai', icon: '✳', label: 'AI 채팅', desc: 'Claude · Codex 에게 물어보기' },
     { key: 'notes', icon: '📝', label: '메모', desc: '간단한 기록' }
   ];
-  // 로컬 터미널 그룹은 SFTP 가 없어 파일 탐색기를 쓸 수 없다
-  if (!group || !group.isLocal) {
-    items.push({ key: 'explorer', icon: '📁', label: '파일', desc: '원격 파일 탐색기 (SFTP)' });
-  }
+  items.push({
+    key: 'explorer',
+    icon: '📁',
+    label: '파일',
+    desc: group && group.isLocal ? '이 PC 의 파일 탐색기' : '원격 파일 탐색기 (SFTP)'
+  });
   return items;
 }
 
@@ -4385,8 +4387,8 @@ function renderSubstrip() {
   el.substrip.classList.remove('hidden');
 
   // 맨 왼쪽: 항상 존재하는 "파일 탐색기" 서브탭 (📌 로 왼쪽 고정 전환)
-  // 로컬 터미널 그룹은 SFTP 가 없으므로 표시하지 않는다
-  if (!group.isLocal) {
+  // 로컬 그룹은 이 PC 파일을 보여 준다
+  {
   const exTab = document.createElement('div');
   exTab.className =
     'subtab subtab-explorer' +
@@ -5268,7 +5270,7 @@ function openPaneModeMenu(leaf, ev) {
   items.push(row('🌐  웹페이지', 'web'));
   items.push(row('✳  AI 채팅', 'ai'));
   items.push(row('📝  메모', 'notes'));
-  if (!grp || !grp.isLocal) items.push(row('📁  파일', 'explorer')); // 로컬은 SFTP 없음
+  items.push(row('📁  파일', 'explorer'));
 
   // 버튼 바로 아래에 펼친다 (위치를 못 재었으면 마우스 자리에)
   if (anchor) showContextMenu(anchor.x, anchor.y, items, { alignRight: true });

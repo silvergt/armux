@@ -522,8 +522,9 @@ ipcMain.on('ssh:close', (e, { id }) => {
 /* --------------------------------- IPC: SFTP --------------------------------- */
 
 // 탐색기용 SFTP 세션. 터미널 세션과 같은 자격증명(credId/hostId)을 재사용한다.
-ipcMain.handle('sftp:open', async (e, { hostId, credId, profile }) => {
-  const effective = resolveCredentials({ hostId, credId, profile });
+ipcMain.handle('sftp:open', async (e, { hostId, credId, profile, local }) => {
+  // local 이면 SSH 없이 이 PC 파일시스템을 쓰는 세션이 열린다 (로컬 터미널 그룹의 📁)
+  const effective = local ? { local: true } : resolveCredentials({ hostId, credId, profile });
   const id = await sftp.open(effective);
   const home = await sftp.realpath(id, '.');
   return { sftpId: id, home };
