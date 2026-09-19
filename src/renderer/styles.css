@@ -900,6 +900,8 @@ body.resizing-row * {
   position: absolute;
   inset: 0;
   padding: 2px 2px 2px 6px;
+  /* 여백도 터미널 배경을 따라가야 밝은 팔레트에서 검은 테가 안 남는다 */
+  background: var(--term-bg, #000000);
 }
 .pane-term .xterm {
   height: 100%;

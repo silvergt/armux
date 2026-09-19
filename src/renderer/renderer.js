@@ -82,6 +82,38 @@ const THEME = {
 };
 
 /**
+ * 밝은 화면용 터미널 색 (GitHub Light 계열).
+ *
+ * 이건 "앱 테마" 가 아니라 터미널 판 안쪽 색이다 — 탭바·설정창 같은 앱 UI 는
+ * 어두운 채로 둔다. Claude/Codex 의 light 테마는 자기가 칠할 글자 색만 바꿀 뿐
+ * 판 배경은 못 바꾸므로(배경은 터미널 소유), 여기를 밝게 해야 비로소 맞물린다.
+ * ANSI 0~15 만 테마가 정하고 256색 중 16~255 는 규격상 고정이라 그대로 쓰인다.
+ */
+const THEME_LIGHT = {
+  background: '#ffffff',
+  foreground: '#1f2328',
+  cursor: '#1f2328',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#b6dcff',
+  black: '#24292f',
+  red: '#cf222e',
+  green: '#116329',
+  yellow: '#8f6c00',
+  blue: '#0969da',
+  magenta: '#8250df',
+  cyan: '#1b7c83',
+  white: '#6e7781',
+  brightBlack: '#57606a',
+  brightRed: '#a40e26',
+  brightGreen: '#0b6218',
+  brightYellow: '#7a5c00',
+  brightBlue: '#0550ae',
+  brightMagenta: '#6639ba',
+  brightCyan: '#12666b',
+  brightWhite: '#24292f'
+};
+
+/**
  * OS별 폰트 스택.
  * - windows: PowerShell / Windows Terminal 기본 글꼴인 Cascadia Mono → Consolas 순.
  *   한글은 윈도우 터미널과 동일하게 맑은 고딕으로 폴백하고, 이모지는 Segoe UI Emoji 가 받는다.
@@ -519,7 +551,7 @@ function createLeaf(tab, connect, options) {
   const term = new Terminal({
     fontFamily: prefs.fontFamily || FONT_STACK,
     fontSize: state.fontSize,
-    theme: THEME,
+    theme: termTheme(),
     cursorBlink: prefs.cursorBlink,
     cursorStyle: prefs.cursorStyle,
     scrollback: prefs.scrollback,
@@ -1155,6 +1187,7 @@ api.settings.sync(opts); // 시작할 때 시스템 메뉴 체크 표시를 맞�
  * 그 밖의 설정은 여기 prefs 에 모으고, 설정 창(정보 ▸ 설정)에서 바꾼다.
  */
 const PREF_DEFAULTS = {
+  termTheme: 'dark', // 터미널 판 색: dark | light (앱 UI 는 항상 어둡다)
   cursorBlink: true,
   cursorStyle: 'block', // block | bar | underline
   scrollback: 10000,
@@ -1200,11 +1233,35 @@ function setPref(key, value) {
 }
 
 /** 커서·스크롤백·글꼴을 열려 있는 모든 터미널에 반영한다 */
+/** 지금 골라 둔 터미널 색 한 벌 */
+function termTheme() {
+  return prefs.termTheme === 'light' ? THEME_LIGHT : THEME;
+}
+
+/**
+ * 터미널 판의 여백 색을 팔레트에 맞춘다.
+ * 판 안쪽은 xterm 이 칠하지만 .pane-term 의 padding 자리는 CSS 몫이라,
+ * 그냥 두면 밝은 터미널 둘레에 검은 테가 남는다.
+ */
+function applyTermBgVar() {
+  document.documentElement.style.setProperty('--term-bg', termTheme().background);
+}
+
+/** 검색 강조색도 배경 밝기에 맞춰야 글자가 읽힌다 */
+function findDecorations() {
+  return prefs.termTheme === 'light'
+    ? { activeMatchBackground: '#ffd33d', matchBackground: '#cfe3ff' }
+    : { activeMatchBackground: '#f3f99d', matchBackground: '#3a4a5a' };
+}
+
 function applyTermPrefs() {
+  applyTermBgVar();
+  const theme = termTheme();
   for (const g of state.groups) {
     for (const t of g.tabs) {
       for (const l of leavesOf(t.root)) {
         if (!l.term) continue;
+        l.term.options.theme = theme;
         l.term.options.cursorBlink = prefs.cursorBlink;
         l.term.options.cursorStyle = prefs.cursorStyle;
         l.term.options.scrollback = prefs.scrollback;
@@ -3510,6 +3567,7 @@ function renderSettings() {
   const seg = (id, val) => {
     for (const b of setEl.querySelectorAll(`#${id} button`)) b.classList.toggle('on', b.dataset.v === val);
   };
+  seg('set-term-theme', prefs.termTheme);
   seg('set-cursor', prefs.cursorStyle);
   document.getElementById('set-font-size').textContent = String(state.fontSize);
   document.getElementById('set-font-family').value = prefs.fontFamily;
@@ -3600,6 +3658,12 @@ if (setEl) {
       stopKeyListen();
     });
   }
+  for (const b of setEl.querySelectorAll('#set-term-theme button')) {
+    b.addEventListener('click', () => {
+      setPref('termTheme', b.dataset.v);
+      renderSettings();
+    });
+  }
   for (const b of setEl.querySelectorAll('#set-cursor button')) {
     b.addEventListener('click', () => {
       setPref('cursorStyle', b.dataset.v);
@@ -3652,6 +3716,7 @@ if (setEl) {
 }
 
 // 시작할 때 저장된 설정을 화면에 반영한다
+applyTermBgVar();
 syncKeybinds();
 
 
@@ -6304,7 +6369,7 @@ function findNext(back) {
   if (!l) return;
   const q = el.findInput.value;
   if (!q) return;
-  const opts = { decorations: { activeMatchBackground: '#f3f99d', matchBackground: '#3a4a5a' } };
+  const opts = { decorations: findDecorations() };
   if (back) l.search.findPrevious(q, opts);
   else l.search.findNext(q, opts);
 }
