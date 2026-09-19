@@ -906,6 +906,10 @@ body.resizing-row * {
 .pane-term .xterm {
   height: 100%;
 }
+/* xterm.css 가 스크롤 영역을 검은색으로 박아 둬서, 밝은 팔레트에서 마지막 줄 아래가 검게 남는다 */
+.pane-term .xterm .xterm-viewport {
+  background-color: var(--term-bg, #000000);
+}
 
 /* 판 헤더 (모든 도구가 여기 한 줄로 들어간다) */
 .pane-header {
@@ -3888,4 +3892,155 @@ body.is-mac #mac-spacer {
 .launcher-hint {
   color: var(--fg-dim);
   font-size: 11px;
+}
+
+/* ------------------- 밝은 터미널: 상단바·하단바·판 머리줄 ------------------- */
+/*
+ * 설정 ▸ 모양 ▸ 터미널 색 = 밝게 일 때, 터미널을 둘러싼 줄(메뉴줄·메인 탭·서브탭·
+ * 상태바·판 머리줄)도 밝게 맞춘다. 팝업·설정 창·모달은 어두운 채로 둔다.
+ * 변수는 이 줄들 안에서만 바꾸므로 바깥 요소에는 번지지 않는다.
+ */
+html.ui-light #menubar,
+html.ui-light #topbar,
+html.ui-light #subrow,
+html.ui-light #statusbar,
+html.ui-light .pane-header {
+  --bg: #ffffff; /* 활성 탭 = 터미널 배경과 같은 흰색 */
+  --chrome: #f6f8fa;
+  --chrome-2: #eef1f4;
+  --border: #d0d7de;
+  --fg: #1f2328;
+  --fg-dim: #59636e;
+  --accent: #0969da;
+  --accent-dim: #cfe3ff;
+}
+html.ui-light .tab:not(.active):hover,
+html.ui-light .notes-tab:not(.active):hover,
+html.ui-light .plus-btn:hover,
+html.ui-light .menu-btn:hover,
+html.ui-light .menu-btn.active,
+html.ui-light .clock-item:hover {
+  background: #e6eaef;
+  color: var(--fg);
+}
+html.ui-light .notes-tab.active {
+  color: var(--fg);
+}
+html.ui-light .tab .close:hover,
+html.ui-light .subtab .close:hover {
+  background: #d0d7de;
+  color: #1f2328;
+}
+html.ui-light .dot.closed {
+  background: #8c959f;
+}
+html.ui-light #topbar .spin {
+  border-color: rgba(9, 105, 218, 0.2);
+  border-top-color: #0969da;
+}
+html.ui-light .clock-zone {
+  color: #1f2328;
+  text-shadow: none;
+}
+html.ui-light .clock-time {
+  color: #59636e;
+}
+
+/* 서브탭 줄 */
+html.ui-light .subtab:not(.active):hover,
+html.ui-light .subtab-add:hover,
+html.ui-light .subtab-folder:hover {
+  background: #e1e6eb;
+  color: var(--fg);
+}
+html.ui-light .subtab-folder.on {
+  color: #0a3069;
+}
+html.ui-light .subtab-rename {
+  background: #ffffff;
+}
+html.ui-light .subtab.drop-merge {
+  background: #cfe3ff;
+}
+html.ui-light .subtab-explorer.pinned {
+  background: #ddf4ff;
+}
+html.ui-light #pomodoro:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+html.ui-light #pomodoro.running,
+html.ui-light #pomodoro.done {
+  color: #cf222e;
+}
+html.ui-light .pomo-btn:hover {
+  color: #1f2328;
+}
+
+/* 판 머리줄 */
+html.ui-light .pane-header {
+  background: #f6f8fa;
+}
+html.ui-light .pane.focused .pane-header {
+  background: #eaf2fc;
+}
+html.ui-light .pane.focused:not(.solo) {
+  border-color: #54aeff;
+}
+html.ui-light .pane-grip {
+  color: #8c959f;
+}
+html.ui-light .pane-tools button {
+  color: #57606a;
+}
+html.ui-light .pane.focused .pane-tools button {
+  color: #1f2328;
+}
+html.ui-light .pane-tools button:hover,
+html.ui-light .pane.focused .pane-tools button:hover {
+  background: #0969da;
+  border-color: #0969da;
+  color: #ffffff;
+}
+html.ui-light .pane-tools button:active {
+  background: #0550ae;
+}
+html.ui-light .pane-tools button.danger:hover {
+  background: #cf222e;
+  border-color: #a40e26;
+}
+
+/* 상태바 */
+html.ui-light .claude-who {
+  color: #9a6700;
+}
+html.ui-light .svc-codex .claude-who {
+  color: #1a7f37;
+}
+html.ui-light .usage-track {
+  background: #eaeef2;
+  border-color: #d0d7de;
+}
+html.ui-light #port-fab:hover {
+  color: #1f2328;
+}
+html.ui-light #port-fab.on {
+  color: #0969da;
+  border-color: #0969da;
+  background: #ddf4ff;
+}
+html.ui-light #memo-fab {
+  background: #fff8c5;
+  color: #7d4e00;
+  border-color: #d4a72c;
+}
+html.ui-light #memo-fab:hover {
+  background: #fff1a8;
+}
+html.ui-light #memo-fab.on {
+  background: #f5d76e;
+  border-color: #bf8700;
+  color: #4d2d00;
+}
+html.ui-light #ai-fab.unread::after {
+  border-color: #f6f8fa;
 }

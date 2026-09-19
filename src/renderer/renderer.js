@@ -1244,7 +1244,12 @@ function termTheme() {
  * 그냥 두면 밝은 터미널 둘레에 검은 테가 남는다.
  */
 function applyTermBgVar() {
+  const light = prefs.termTheme === 'light';
   document.documentElement.style.setProperty('--term-bg', termTheme().background);
+  // 상단바·하단바·판 머리줄도 같이 밝게 (styles.css 의 html.ui-light)
+  document.documentElement.classList.toggle('ui-light', light);
+  // 윈도우의 최소화·최대화·닫기 버튼은 OS 가 그리므로 따로 알려 준다
+  api.settings.uiTheme(light ? 'light' : 'dark');
 }
 
 /** 검색 강조색도 배경 밝기에 맞춰야 글자가 읽힌다 */

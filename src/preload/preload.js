@@ -136,7 +136,8 @@ contextBridge.exposeInMainWorld('armux', {
   settings: {
     sync: (opts) => ipcRenderer.send('settings:sync', opts),
     // 바뀐 단축키 — 맥은 시스템 메뉴가 키를 먼저 가져가므로 메뉴를 다시 세워야 한다
-    keybinds: (map) => ipcRenderer.send('settings:keybinds', map)
+    keybinds: (map) => ipcRenderer.send('settings:keybinds', map),
+    uiTheme: (mode) => ipcRenderer.send('settings:uiTheme', mode)
   },
 
   /** 끌어다 놓은 파일 · 붙여넣은 그림을 서버로 (Claude Code 가 읽을 수 있게) */
