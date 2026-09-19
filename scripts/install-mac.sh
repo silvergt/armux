@@ -57,17 +57,42 @@ say "압축을 풉니다…"
 ditto -x -k "$TMP/armux.zip" "$TMP/out" || die "압축을 풀지 못했습니다."
 [ -d "$TMP/out/$APP_NAME" ] || die "받은 파일 안에 $APP_NAME 이 없습니다."
 
-# 6. 돌고 있으면 종료
-if pgrep -f "/$APP_NAME/Contents/MacOS/" >/dev/null 2>&1; then
-  say "실행 중인 Armux Terminal 을 종료합니다…"
-  osascript -e 'quit app "Armux Terminal"' >/dev/null 2>&1 || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f "/$APP_NAME/Contents/MacOS/" >/dev/null 2>&1 || break
-    sleep 1
+# 6. 지금 돌고 있는 Armux 찾기
+#    pgrep 은 쓰지 않는다 — 맥의 pgrep 은 "자기 조상 프로세스" 를 기본으로 빼 버려서,
+#    Armux 의 로컬 터미널 안에서 이 스크립트를 돌리면 Armux 본체를 못 찾는다.
+#    ps 로 본체(…/Contents/MacOS/Armux Terminal)만 골라 pid 와 앱 경로를 얻는다.
+find_running() {
+  ps -axo pid=,command= | while read -r pid cmd; do
+    case "$cmd" in
+      */Contents/Frameworks/*) ;;  # 도우미(Helper) 프로세스는 본체가 아니다
+      */Contents/MacOS/"Armux Terminal"|*/Contents/MacOS/"Armux Terminal "*)
+        printf '%s\t%s\n' "$pid" "${cmd%%/Contents/MacOS/*}" ;;
+    esac
   done
-fi
+}
+
+# 이 셸이 Armux 안(로컬 터미널)에서 돌고 있는지 — 조상을 거슬러 올라가 본다
+is_ancestor() {
+  local p=$$ n=0
+  while [ "$p" -gt 1 ] && [ $n -lt 64 ]; do
+    [ "$p" = "$1" ] && return 0
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    [ -n "$p" ] || return 1
+    n=$((n + 1))
+  done
+  return 1
+}
+
+RUNNING="$(find_running || true)"
+RUN_PID="$(printf '%s\n' "$RUNNING" | head -1 | cut -f1)"
+RUN_APP="$(printf '%s\n' "$RUNNING" | head -1 | cut -f2)"
+INSIDE=0
+[ -n "$RUN_PID" ] && is_ancestor "$RUN_PID" && INSIDE=1
 
 # 7. 옛 것을 치우고 새 것을 넣는다.
+#    돌고 있는 앱의 묶음을 지워도 맥에서는 안전하다(떠 있는 프로세스는 옛 파일을 계속 쥐고
+#    있다). 그래서 앱을 먼저 끄지 않는다 — Armux 안에서 돌리면 앱을 끄는 순간 이 스크립트도
+#    같이 죽기 때문이다. 재시작은 설치가 끝난 뒤에 한다.
 #    지우는 대상은 "$DEST/Armux Terminal.app" 한 곳뿐이다. 경로를 밖에서 받지 않고,
 #    실제로 그 이름의 앱 묶음(디렉터리)일 때만 지운다 — 엉뚱한 것을 지우지 않게.
 if [ -e "$TARGET" ]; then
@@ -86,6 +111,43 @@ ditto "$TMP/out/$APP_NAME" "$TARGET" || die "설치에 실패했습니다."
 xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
 
 say ""
-say "설치했습니다: $TARGET"
-say "실행합니다…"
-open "$TARGET"
+say "설치했습니다: $TARGET ($VER)"
+
+# 지금 쓰던 앱이 다른 곳에 있으면, 그걸 다시 켜면 옛 버전이 뜬다 — 알려 준다.
+if [ -n "$RUN_APP" ] && [ "$RUN_APP" != "$TARGET" ]; then
+  say ""
+  say "※ 지금 실행 중인 Armux 는 다른 위치에 있습니다:"
+  say "     $RUN_APP"
+  case "$RUN_APP" in
+    /Volumes/*) say "   설치 디스크(dmg)에서 바로 실행한 앱입니다. 디스크를 꺼내고," ;;
+    */AppTranslocation/*) say "   macOS 가 임시 위치로 옮겨 실행한 앱입니다(받은 폴더에서 바로 연 경우)." ;;
+    *) say "   Dock·Launchpad 가 이쪽을 가리키면 계속 옛 버전이 열립니다. 그 앱은 지우고," ;;
+  esac
+  say "   앞으로는 $TARGET 을 여세요 (Dock 아이콘도 새로 고정)."
+fi
+
+# 9. 새 버전으로 (재)시작
+#    이미 떠 있는데 그냥 open 하면 맥은 떠 있는 "옛" 창을 앞으로 가져오기만 한다.
+#    그래서 옛 프로세스가 끝날 때까지 기다렸다가 여는 도우미를 따로 띄우고, 앱에 종료를 청한다.
+if [ -n "$RUN_PID" ]; then
+  # 앱이 꺼지면 이 셸도 같이 끊기므로(Armux 안에서 돌린 경우) 도우미는 끊김 신호를 무시하고
+  # 출력도 터미널에 매지 않는다.
+  nohup /bin/sh -c '
+    i=0
+    while kill -0 "$1" 2>/dev/null && [ $i -lt 600 ]; do sleep 0.5; i=$((i+1)); done
+    kill -0 "$1" 2>/dev/null && exit 0   # 5분 안에 안 꺼졌으면(종료 취소) 아무것도 안 한다
+    sleep 1
+    open "$2"
+  ' armux-relaunch "$RUN_PID" "$TARGET" >/dev/null 2>&1 &
+  say ""
+  if [ "$INSIDE" = 1 ]; then
+    say "Armux 를 다시 시작합니다 — 이 창도 같이 닫힙니다."
+  else
+    say "실행 중인 Armux 를 다시 시작합니다…"
+  fi
+  say "열린 세션 종료 확인 창이 뜨면 '종료' 를 눌러 주세요. 꺼지면 새 버전이 자동으로 열립니다."
+  osascript -e 'quit app "Armux Terminal"' >/dev/null 2>&1 &
+else
+  say "실행합니다…"
+  open "$TARGET"
+fi
