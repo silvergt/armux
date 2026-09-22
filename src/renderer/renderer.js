@@ -469,14 +469,26 @@ function makeUrlLinkProvider(term, onActivate) {
       const glyphs = logicalRowGlyphs(term, row);
       if (!glyphs.length) return callback(undefined);
 
+      /*
+       * 글자 하나가 자바스크립트 문자열에서 두 자리를 차지하는 경우가 있다
+       * (이모지 같은 것). glyphs 는 글자 단위라, 정규식이 준 문자열 위치를
+       * 그대로 쓰면 이모지 하나마다 한 칸씩 밀린다. 밀린 채로 끝까지 가면
+       * 링크가 줄 밖으로 나간 것으로 보여 통째로 사라졌다
+       * ("🐊 … https://…" 같은 줄이 클릭되지 않던 원인).
+       * 그래서 문자열 위치 → 글자 번호 표를 만들어 두고 옮겨 쓴다.
+       */
       const text = glyphs.map((g) => g.ch).join('');
+      const atText = []; // 문자열 위치마다 그 자리 글자의 번호
+      for (let gi = 0; gi < glyphs.length; gi++) {
+        for (let k = 0; k < glyphs[gi].ch.length; k++) atText.push(gi);
+      }
       const links = [];
       TERM_URL_RE.lastIndex = 0;
       let m;
       while ((m = TERM_URL_RE.exec(text))) {
-        const a = m.index;
-        const b = a + m[0].length - 1;
-        if (b >= glyphs.length) break;
+        const a = atText[m.index];
+        const b = atText[m.index + m[0].length - 1];
+        if (a === undefined || b === undefined) break;
         // 지금 마우스가 있는 줄을 지나는 링크만 돌려준다
         if (glyphs[a].row > row || glyphs[b].row < row) continue;
         if (!isRealUrl(m[0])) continue;

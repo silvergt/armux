@@ -5,16 +5,24 @@
  *
  * 토큰(~/.claude/.credentials.json)은 서버 밖으로 나오지 않는다.
  * 조회용 curl 을 "서버에서" 실행하고, 그 결과 JSON 만 받아온다.
+ *
+ * 맥의 Claude Code 는 토큰을 파일이 아니라 키체인("Claude Code-credentials")에
+ * 둔다. 파일이 없으면 security 로 키체인에서 읽는다(맥 로컬 터미널·맥 서버).
  */
 
 const ssh = require('./ssh');
+const localusage = require('./localusage');
 
 /** 서버에서 실행할 조회 스크립트 (POSIX sh, jq/python 없이 동작) */
 const PROBE = [
   'C="$HOME/.claude/.credentials.json"',
-  // 자격증명 파일이 없으면 로그인 안 된 상태
-  '[ -f "$C" ] || { echo \'{"loggedIn":false}\'; exit 0; }',
-  'TOK=$(tr -d " \\n" < "$C" | sed -n \'s/.*"accessToken":"\\([^"]*\\)".*/\\1/p\')',
+  'RAW=""',
+  'if [ -f "$C" ]; then RAW=$(cat "$C"); ' +
+    'elif command -v security >/dev/null 2>&1; then ' +
+    'RAW=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null); fi',
+  // 자격증명이 어디에도 없으면 로그인 안 된 상태
+  '[ -n "$RAW" ] || { echo \'{"loggedIn":false}\'; exit 0; }',
+  'TOK=$(printf "%s" "$RAW" | tr -d " \\n" | sed -n \'s/.*"accessToken":"\\([^"]*\\)".*/\\1/p\')',
   '[ -n "$TOK" ] || { echo \'{"loggedIn":false}\'; exit 0; }',
   // ~/.claude.json 에서 이메일만 뽑아둔다 (curl 이 없거나 실패할 때의 대비)
   'EMAIL=$(grep -o \'"emailAddress":"[^"]*"\' "$HOME/.claude.json" 2>/dev/null | head -1 | sed \'s/.*:"//; s/"$//\')',
@@ -77,6 +85,8 @@ function normalize(raw) {
  * @param {string} sessionId 살아 있는 터미널 세션 (그 연결에 exec 채널을 하나 더 연다)
  */
 async function fetchInfo(sessionId) {
+  // 윈도우 로컬 터미널에는 sh 가 없다 — 앱이 직접 조회한다
+  if (process.platform === 'win32' && ssh.isLocal(sessionId)) return normalize(await localusage.claudeRaw());
   // curl 두 번(각 8초 상한) + 로그인 셸 시작까지 더하면 20초를 넘기는 서버가 있다.
   // 시간 초과로 던지면 화면에는 "정보 없음" 으로만 보이므로 넉넉히 준다.
   const { stdout } = await ssh.exec(sessionId, PROBE, 30000);

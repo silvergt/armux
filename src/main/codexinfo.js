@@ -14,6 +14,7 @@
  */
 
 const ssh = require('./ssh');
+const localusage = require('./localusage');
 
 /** codex 실행 파일 찾기 (SSH exec 는 로그인 셸이 아닐 수 있다) */
 const FIND_CODEX = [
@@ -28,7 +29,11 @@ const FIND_CODEX = [
 const PROBE = `
 ${FIND_CODEX}
 if [ -z "$CODEX" ]; then echo 'ARMUX_CODEX:absent'; exit 0; fi
-[ -f "$HOME/.codex/auth.json" ] || { echo 'ARMUX_CODEX:logged-out'; exit 0; }
+# 로그인 정보는 보통 ~/.codex/auth.json 이지만 키체인(keyring)에 둘 수도 있다.
+# 파일이 없어도 app-server 에 물어보고, 로그인 안 됐으면 계정이 비어서 온다.
+# 맥에는 timeout 명령이 없다 — 있으면 쓰고, 없으면 입력을 닫아 끝낸다(아래 20초 루프).
+TO=""
+if command -v timeout >/dev/null 2>&1; then TO="timeout 30"; elif command -v gtimeout >/dev/null 2>&1; then TO="gtimeout 30"; fi
 M=$(mktemp 2>/dev/null || echo "$HOME/.armux-codex-probe.$$")
 : > "$M"
 {
@@ -38,7 +43,7 @@ M=$(mktemp 2>/dev/null || echo "$HOME/.armux-codex-probe.$$")
   printf '%s\\n' '{"jsonrpc":"2.0","id":3,"method":"account/read","params":{}}'
   i=0
   while [ $i -lt 20 ] && [ ! -s "$M" ]; do sleep 1; i=$((i+1)); done
-} | timeout 30 "$CODEX" app-server 2>/dev/null | awk -v m="$M" '
+} | $TO "$CODEX" app-server 2>/dev/null | awk -v m="$M" '
   /"id":2/ { print; a=1 }
   /"id":3/ { print; b=1 }
   a && b { print "done" > m; close(m); exit }
@@ -112,8 +117,11 @@ function normalize(lines) {
  * @param {string} sessionId 살아 있는 터미널 세션 (그 연결에 exec 채널을 하나 더 연다)
  */
 async function fetchInfo(sessionId) {
-  const { stdout } = await ssh.exec(sessionId, PROBE, 40000);
-  const text = String(stdout || '');
+  // 윈도우 로컬 터미널에는 sh 가 없다 — 앱이 codex app-server 를 직접 띄워 묻는다
+  const text =
+    process.platform === 'win32' && ssh.isLocal(sessionId)
+      ? await localusage.codexText()
+      : String((await ssh.exec(sessionId, PROBE, 40000)).stdout || '');
   if (text.includes('ARMUX_CODEX:absent')) return { loggedIn: false, absent: true };
   if (text.includes('ARMUX_CODEX:logged-out')) return { loggedIn: false };
   const lines = text.split('\n').filter((l) => l.trim().startsWith('{'));
