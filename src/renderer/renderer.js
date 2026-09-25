@@ -368,9 +368,22 @@ function looksCut(info) {
   );
 }
 
-/** 마지막 조각(앞 줄보다 짧은 꼬리)이 URL 꼬리처럼 보이는가 */
+/**
+ * 마지막 조각(앞 줄보다 짧은 꼬리)이 URL 꼬리처럼 보이는가.
+ *
+ * 쿼리 문자열의 흔적(%&=?)이나 경로(/)가 있으면 쉽게 알 수 있다. 그런데 OAuth 주소의
+ * 끝은 "…&state=S3TV0Fyc27K407UZdFY5wrI3dKFq7qZKPl8mdPnc-KI" 처럼 무작위 토큰이라,
+ * 잘리는 폭에 따라 마지막 줄이 영숫자와 -_ 만 남기도 한다. 그런 줄도 꼬리로 봐야
+ * 마지막 줄을 빼먹지 않는다(빼먹으면 주소가 잘려 열리거나 그 줄은 아예 안 눌린다).
+ *
+ * 다만 링크 블록 바로 뒤에 오는 낱말 하나("done" 같은)까지 끌어오면 안 되므로,
+ * 숫자나 -_.~+ 가 섞여 있는 조각만 토큰으로 인정한다.
+ */
 function looksLikeUrlTail(text) {
-  return /[%&=?]/.test(text) || (text.includes('/') && text.length >= 16);
+  if (/[%&=?]/.test(text)) return true;
+  if (text.includes('/') && text.length >= 16) return true;
+  if (text.length >= 4 && /^[A-Za-z0-9._~+-]+$/.test(text) && /[0-9._~+-]/.test(text)) return true;
+  return false;
 }
 
 /*
@@ -559,6 +572,7 @@ function createLeaf(tab, connect, options) {
   const termHost = document.createElement('div');
   termHost.className = 'pane-term';
   body.appendChild(termHost);
+  watchPaneSize(leaf, termHost);
 
   const term = new Terminal({
     fontFamily: prefs.fontFamily || FONT_STACK,
@@ -5796,29 +5810,56 @@ function startRenameTab(group, tab, node) {
  * 셀 높이로 줄 수를 계산한다. 그래서 줄 수가 많아지면 반올림 오차가 쌓여 마지막 줄이
  * 컨테이너 아래로 삐져나가 상태바에 잘린다. 실제 그려진 줄 높이로 다시 확인해 한 줄 줄인다.
  */
+/*
+ * 판 하나의 크기를 화면에 맞춘다.
+ *
+ * 중요한 규칙: 실제로 줄·칸 수가 달라질 때만 term.resize 를 부른다.
+ * xterm 은 크기가 바뀌면 드래그하던 선택을 지우기 때문이다. 예전에는 fit() 으로
+ * 한 번 늘렸다가(17줄) 넘침 보정으로 다시 줄이는(16줄) 식이라, 판을 누를 때마다
+ * 크기가 두 번 바뀌었다. 그래서 분할한 판에서는 드래그 선택이 아예 안 됐다
+ * (누르는 순간 선택이 지워졌다). 서버로 가는 창 크기 통지도 그만큼 줄어든다.
+ */
 function fitLeaf(leaf) {
   if (leaf.mode !== 'terminal') return; // 웹·파일·메모·탐색기 판은 크기 계산이 필요 없다
+
+  let want = null;
   try {
-    leaf.fit.fit();
+    want = leaf.fit.proposeDimensions();
   } catch (e) {
     return;
   }
+  if (!want || !want.cols || !want.rows || !isFinite(want.cols) || !isFinite(want.rows)) return;
+
+  let cols = Math.max(2, want.cols);
+  let rows = Math.max(1, want.rows);
 
   /*
    * xterm 은 줄 높이를 정수 픽셀로 반올림해 그리는데 fit 은 소수점으로 계산한다.
    * 줄이 많아지면 오차가 쌓여 마지막 줄이 아래로 삐져나가 상태바에 잘린다.
-   * 실제로 그려진 화면 높이(.xterm-screen)를 재서 넘치면 한 줄 줄인다.
-   * (.xterm-rows 는 WebGL 렌더러에서 없으므로 쓰지 않는다)
+   * 그래서 "실제로 그려지는 줄 높이" 로 들어갈 수 있는 줄 수를 미리 구해 둔다.
    */
   const host = leaf.el.querySelector('.pane-term');
-  const screen = leaf.el.querySelector('.xterm-screen');
-  if (host && screen && leaf.term.rows > 1) {
+  const cell = leaf.term._core && leaf.term._core._renderService
+    ? leaf.term._core._renderService.dimensions.css.cell.height
+    : 0;
+  if (host && cell > 0) {
     const cs = getComputedStyle(host);
     const avail = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    for (let i = 0; i < 2; i++) {
-      const drawn = screen.getBoundingClientRect().height;
-      if (drawn <= avail + 0.5 || leaf.term.rows <= 1) break;
-      leaf.term.resize(leaf.term.cols, leaf.term.rows - 1);
+    const maxRows = Math.floor((avail + 0.5) / cell);
+    if (maxRows >= 1 && maxRows < rows) rows = maxRows;
+  }
+
+  if (cols !== leaf.term.cols || rows !== leaf.term.rows) {
+    leaf.term.resize(cols, rows);
+
+    // 그려 보고도 넘치면(글꼴 교체 직후 등) 한 줄만 더 줄인다
+    const screen = leaf.el.querySelector('.xterm-screen');
+    if (host && screen && leaf.term.rows > 1) {
+      const cs = getComputedStyle(host);
+      const avail = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      if (screen.getBoundingClientRect().height > avail + 0.5) {
+        leaf.term.resize(leaf.term.cols, leaf.term.rows - 1);
+      }
     }
   }
 
@@ -5836,6 +5877,27 @@ function fitTab(tab) {
 
 const ro = new ResizeObserver(() => fitTab(activeTab()));
 ro.observe(el.terms);
+
+/*
+ * 판 하나하나의 크기도 지켜본다.
+ * 분할하거나 칸막이를 끌면 바깥 상자(#terms)는 그대로라 위 감시자가 깨어나지 않는다.
+ * 그래서 새로 만든 판이 한 줄 모자란 채로 남곤 했다. fitLeaf 는 줄 수가 실제로
+ * 달라질 때만 크기를 바꾸므로, 자주 불려도 선택이 지워지거나 하지 않는다.
+ */
+const paneHostToLeaf = new WeakMap();
+const paneRo = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    const leaf = paneHostToLeaf.get(entry.target);
+    if (leaf && leaf.el && leaf.el.isConnected) fitLeaf(leaf);
+  }
+  renderStatus();
+});
+/** 판의 터미널 자리를 크기 감시에 등록한다 */
+function watchPaneSize(leaf, host) {
+  if (!host) return;
+  paneHostToLeaf.set(host, leaf);
+  paneRo.observe(host);
+}
 window.addEventListener('resize', () => fitTab(activeTab()));
 
 function setFontSize(size) {

@@ -32,6 +32,20 @@ const CASES = [
   ['링크 없음', '🐊 caiman 리서치 플로우 — 링크는 없다', []]
 ];
 
+// 실제 Claude 로그인 URL (프로그램이 제 폭대로 잘라 여러 줄에 그린다)
+const LONG =
+  'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e' +
+  '&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback' +
+  '&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code' +
+  '+user%3Amcp_servers+user%3Afile_upload&code_challenge=vwdrL_W24uZr11epDGJn21OZSv2gDvj_rex620xdypA' +
+  '&code_challenge_method=S256&state=S3TV0Fyc27K407UZdFY5wrI3dKFq7qZKPl8mdPnc-KI';
+
+const chunks = (s, w) => {
+  const out = [];
+  for (let i = 0; i < s.length; i += w) out.push(s.slice(i, i + w));
+  return out;
+};
+
 let bad = 0;
 const ok = (name, pass, note) => {
   if (!pass) bad++;
@@ -86,6 +100,51 @@ app.whenReady().then(async () => {
     ok(name, same && posOk, same ? (posOk ? `${texts.length}개` : '위치가 밀림: ' + JSON.stringify(got.links[0])) : JSON.stringify(texts));
   }
 
-  console.log(`\n${bad === 0 ? '모두 통과' : bad + ' 건 실패'} (${CASES.length}건)`);
+  /*
+   * 긴 URL — tmux 나 TUI 는 제 폭대로 URL 을 잘라 여러 줄에 그린다.
+   * 어느 줄을 눌러도 전체 주소가 나와야 한다(마지막 꼬리 줄을 빼먹지 않는지).
+   */
+  let longBad = 0;
+  for (const w of [110, 98, 90, 74, 60, 47]) {
+    const parts = chunks(LONG, w);
+    const cmd = `clear; printf '%s\\n' ${parts.map((c) => JSON.stringify(c)).join(' ')}\r`;
+    await js(`api.ssh.write(activeLeaf().sessionId, ${JSON.stringify(cmd)}); true`);
+    await sleep(900);
+    const lens = await js(`new Promise(async (res) => {
+      const t = activeLeaf().term, b = t.buffer.active;
+      const rows = [];
+      for (let i = 0; i < b.length; i++) {
+        const s = b.getLine(i) && b.getLine(i).translateToString(true);
+        const v = s ? s.trim() : '';
+        // URL 조각 줄만: 공백·프롬프트(@, #) 가 없고 URL 글자로만 된 줄
+        if (v.length >= 4 && !v.includes('printf') && /^[A-Za-z0-9%&=?:/._~+-]+$/.test(v)) rows.push(i);
+      }
+      const ask = (row) => new Promise((r2) =>
+        makeUrlLinkProvider(t, () => {}).provideLinks(row - b.viewportY + 1, (ls) => r2(ls && ls.length ? ls[0].text.length : 0)));
+      const out = [];
+      for (const r of rows) out.push(await ask(r));
+      res(out);
+    })`);
+    const allFull = lens.length >= parts.length && lens.every((n) => n === LONG.length);
+    if (!allFull) longBad++;
+    ok(`긴 URL — ${w}칸씩 ${parts.length}줄`, allFull, allFull ? `${parts.length}줄 모두 ${LONG.length}자` : `줄별 길이 ${JSON.stringify(lens)} (기대 ${LONG.length})`);
+  }
+
+  // 링크 블록 바로 뒤에 다른 줄이 붙어 있어도 그것까지 링크에 넣으면 안 된다
+  {
+    const parts = chunks(LONG, 60);
+    const cmd = `clear; printf '%s\\n' ${parts.map((c) => JSON.stringify(c)).join(' ')} ${JSON.stringify('done')}\r`;
+    await js(`api.ssh.write(activeLeaf().sessionId, ${JSON.stringify(cmd)}); true`);
+    await sleep(900);
+    const len = await js(`new Promise((res) => {
+      const t = activeLeaf().term, b = t.buffer.active;
+      let row = -1;
+      for (let i = 0; i < b.length; i++) { const s = b.getLine(i) && b.getLine(i).translateToString(true); if (s && s.includes('claude.com/cai')) { row = i; break } }
+      makeUrlLinkProvider(t, () => {}).provideLinks(row - b.viewportY + 1, (ls) => res(ls && ls.length ? ls[0].text : ''));
+    })`);
+    ok('링크 뒤의 다른 줄은 안 붙인다', len === LONG, len === LONG ? `${len.length}자` : `끝부분 ${JSON.stringify(String(len).slice(-24))}`);
+  }
+
+  console.log(`\n${bad === 0 ? '모두 통과' : bad + ' 건 실패'}`);
   setTimeout(() => app.exit(bad ? 1 : 0), 200);
 });

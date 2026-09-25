@@ -20,7 +20,8 @@
     "test:panestate": "electron scripts/test-panestate.js",
     "test:agent": "electron scripts/test-agent.js",
     "test:probe": "node scripts/test-probe.js",
-    "test:links": "electron scripts/test-links.js"
+    "test:links": "electron scripts/test-links.js",
+    "test:panes": "electron scripts/test-panes.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
