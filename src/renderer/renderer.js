@@ -750,6 +750,16 @@ function createLeaf(tab, connect, options) {
     if (opt && e.key === 'ArrowRight') return send('\x1bf'); // 한 단어 앞으로
     if (opt && (e.key === 'Backspace')) return send('\x1b\x7f'); // 한 단어 삭제
 
+    /*
+     * ⌘↑↓(맥) · Ctrl↑↓(윈도우·리눅스) = PageUp / PageDown.
+     * 노트북 키보드에는 PageUp·PageDown 키가 없는 경우가 많아, 긴 출력이나
+     * Claude 화면을 한 쪽씩 넘길 방법이 마땅치 않았다. PageUp 키를 누른 것과
+     * 똑같은 신호를 보내므로 받는 쪽 프로그램도 똑같이 동작한다.
+     */
+    const pageMod = hasMod(e) && !e.altKey && !e.shiftKey && (mac ? !e.ctrlKey : !e.metaKey);
+    if (pageMod && e.key === 'ArrowUp') return send('\x1b[5~'); // PageUp
+    if (pageMod && e.key === 'ArrowDown') return send('\x1b[6~'); // PageDown
+
     if (cmd && e.key === 'ArrowLeft') return send('\x01'); // 줄 처음(Ctrl+A)
     if (cmd && e.key === 'ArrowRight') return send('\x05'); // 줄 끝(Ctrl+E)
     if (cmd && e.key === 'Backspace') return send('\x15'); // 줄 처음까지 삭제(Ctrl+U)

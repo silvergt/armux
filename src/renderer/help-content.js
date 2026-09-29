@@ -189,6 +189,7 @@ bind C-a send-prefix</pre>
         <tr><td><kbd>⌥←</kbd> <kbd>⌥→</kbd> / <kbd>Alt+←</kbd> <kbd>Alt+→</kbd></td><td>한 단어 뒤로 / 앞으로</td></tr>
         <tr><td><kbd>⌘←</kbd> <kbd>⌘→</kbd> (mac)</td><td>줄 처음 / 줄 끝</td></tr>
         <tr><td><kbd>⌥⌫</kbd> / <kbd>Alt+⌫</kbd> · <kbd>⌘⌫</kbd></td><td>한 단어 삭제 · 줄 처음까지 삭제</td></tr>
+        <tr><td><kbd>⌘↑</kbd> <kbd>⌘↓</kbd> / <kbd>Ctrl+↑</kbd> <kbd>Ctrl+↓</kbd></td><td>PageUp / PageDown (한 쪽씩 넘기기)</td></tr>
         <tr><td><kbd>Ctrl/⌘</kbd>+<kbd>W</kbd></td><td>현재 분할 창 닫기 (마지막이면 탭이 닫힘)</td></tr>
         <tr><td>페인 우상단 <b>⤒ / ⤓</b></td><td>맨 위로 / 맨 아래로 (tmux 세션 안에서도 동작)</td></tr>
       </table>
