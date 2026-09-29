@@ -736,7 +736,24 @@ function createLeaf(tab, connect, options) {
        * 숨은 입력칸의 캐럿까지 같이 움직여 위와 같은 한글 깨짐이 났다.
        */
       e.preventDefault();
-      api.ssh.write(leaf.sessionId, seq);
+
+      /*
+       * 한글 조합이 막 끝난 참이면 xterm 은 그 글자를 곧바로 보내지 않고 한 차례
+       * 뒤(0밀리초 타이머)에 보낸다. 그 틈에 우리가 커서 이동 신호를 먼저 보내면,
+       * 방금 친 단어가 커서를 옮긴 자리에 가서 붙는다 — 맥에서 ⌥←/⌥→ 를 누르면
+       * 마지막 단어가 순간이동하던 문제. 보낼 것이 남아 있으면 우리도 한 차례
+       * 미뤄서 "친 글자 → 커서 이동" 순서를 지킨다.
+       */
+      const comp = term._core && term._core._compositionHelper;
+      const pending = Boolean(comp && (comp.isComposing || comp._isSendingComposition));
+      if (pending) {
+        const id = leaf.sessionId;
+        setTimeout(() => {
+          if (leaf.sessionId === id && leaf.status === 'ready') api.ssh.write(id, seq);
+        }, 0);
+      } else {
+        api.ssh.write(leaf.sessionId, seq);
+      }
       return false; // xterm 기본 처리 중단
     };
     const mac = isMacPlatform;
@@ -811,6 +828,25 @@ function createLeaf(tab, connect, options) {
   leaf.term = term;
   leaf.fit = fit;
   leaf.search = search;
+
+  /*
+   * 글자 칸 크기가 정해지면 한 번 더 맞춘다.
+   * 판을 새로 만든 직후에는 글꼴 치수가 아직 확정되지 않아 줄 수가 한 줄 모자라게
+   * 잡히는 일이 있었고, 그 뒤로는 판 크기가 변하지 않으니 다시 맞출 계기가 없어
+   * 그대로 굳었다(분할한 세 번째 판에서 아래가 한 줄 비어 보이던 문제).
+   */
+  term.onRender(() => {
+    const rs = term._core && term._core._renderService;
+    const cell = rs ? rs.dimensions.css.cell.height : 0;
+    if (cell > 0 && cell !== leaf._fitCell) fitLeaf(leaf);
+  });
+  /*
+   * 판이 열리는 동안에는 배치가 아직 자리 잡는 중이라 첫 계산이 한 줄 모자라게
+   * 나올 수 있다. 자리 잡은 뒤 한 번 더 맞춘다 — fitLeaf 는 줄·칸 수가 실제로
+   * 달라질 때만 크기를 바꾸므로 여러 번 불러도 손해가 없다.
+   */
+  requestAnimationFrame(() => fitLeaf(leaf));
+  setTimeout(() => fitLeaf(leaf), 300);
 
   // 키 입력 → SSH 로 전달. 사용자가 직접 입력했다면 알림은 확인한 것으로 본다.
   term.onData((data) => {
@@ -1471,7 +1507,6 @@ function setKeybind(id, accel) {
   syncKeybinds();
   renderSettings();
 }
-
 
 /** 지금 확인이 필요한 판의 개수를 독 배지/작업표시줄에 알린다 */
 function syncBadge() {
@@ -2350,7 +2385,6 @@ function checkActivitySoon() {
 }
 
 
-
 /* --------------------------------- 탭 / 그룹 --------------------------------- */
 
 /** 빈 서브탭 껍데기(컨테이너)를 만든다. 내용(페인)은 호출한 쪽에서 채운다. */
@@ -2843,7 +2877,6 @@ async function closeFilePane(group, tab, leaf) {
   if (next) focusLeaf(next);
   saveSession();
 }
-
 
 /** 판 본문에서 터미널/웹/파일 중 무엇을 보일지 반영 */
 function applyPaneBody(leaf) {
@@ -3771,7 +3804,6 @@ if (setEl) {
 // 시작할 때 저장된 설정을 화면에 반영한다
 applyTermBgVar();
 syncKeybinds();
-
 
 /* --------------------------------- 메모장 ---------------------------------- */
 
@@ -5400,7 +5432,6 @@ function renderPaneHeader(leaf) {
   if (!header) return;
   header.innerHTML = '';
 
-
   /* --- 왼쪽: 손잡이 · 상태 · 이름 --- */
   const grip = document.createElement('span');
   grip.className = 'pane-grip';
@@ -5695,7 +5726,6 @@ function renderStatus() {
   el.statusLeft.textContent = `${g.host.username}@${g.host.host}:${g.host.port} · ${statusText}`;
 }
 
-
 /* ------------------------------ 공용 컨텍스트 메뉴 ----------------------------- */
 
 const ctxMenu = document.createElement('div');
@@ -5852,6 +5882,7 @@ function fitLeaf(leaf) {
   const cell = leaf.term._core && leaf.term._core._renderService
     ? leaf.term._core._renderService.dimensions.css.cell.height
     : 0;
+  leaf._fitCell = cell; // 이 치수로 맞췄다 (치수가 바뀌면 다시 맞춘다)
   if (host && cell > 0) {
     const cs = getComputedStyle(host);
     const avail = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
@@ -5862,15 +5893,22 @@ function fitLeaf(leaf) {
   if (cols !== leaf.term.cols || rows !== leaf.term.rows) {
     leaf.term.resize(cols, rows);
 
-    // 그려 보고도 넘치면(글꼴 교체 직후 등) 한 줄만 더 줄인다
-    const screen = leaf.el.querySelector('.xterm-screen');
-    if (host && screen && leaf.term.rows > 1) {
-      const cs = getComputedStyle(host);
-      const avail = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-      if (screen.getBoundingClientRect().height > avail + 0.5) {
+    /*
+     * 그려 보고도 넘치면(글꼴 교체 직후 등) 한 줄만 더 줄인다.
+     * 반드시 "다음 그리기" 뒤에 재야 한다 — resize 직후에는 화면에 아직 예전 줄
+     * 수가 그려져 있어, 그대로 재면 늘 넘친 것으로 보여 애먼 줄을 깎는다
+     * (분할한 판이 한 줄 모자라게 잡히던 원인).
+     */
+    requestAnimationFrame(() => {
+      const screen = leaf.el && leaf.el.querySelector('.xterm-screen');
+      if (!host || !screen || !leaf.term || leaf.term.rows <= 1 || !leaf.el.isConnected) return;
+      const cs2 = getComputedStyle(host);
+      const avail2 = host.clientHeight - parseFloat(cs2.paddingTop) - parseFloat(cs2.paddingBottom);
+      if (screen.getBoundingClientRect().height > avail2 + 0.5) {
         leaf.term.resize(leaf.term.cols, leaf.term.rows - 1);
+        if (leaf.sessionId && leaf.status === 'ready') api.ssh.resize(leaf.sessionId, leaf.term.cols, leaf.term.rows);
       }
-    }
+    });
   }
 
   if (leaf.sessionId && leaf.status === 'ready') {

@@ -58,8 +58,15 @@ app.whenReady().then(async () => {
     })`);
 
   const checkFit = async (label) => {
-    const rep = await fitReport();
-    const pass = rep.every((r) => r.over <= 0.5 && r.over > -r.cell - 0.5);
+    // 배치가 정돈되는 데 한 박자 걸린다(판마다 크기 감시가 한 번 더 돈다) — 잠깐 기다려 준다
+    let rep = [];
+    let pass = false;
+    for (let i = 0; i < 12; i++) {
+      rep = await fitReport();
+      pass = rep.every((r) => r.over <= 0.5 && r.over > -r.cell - 0.5);
+      if (pass) break;
+      await sleep(250);
+    }
     ok(label, pass, rep.map((r) => `${r.cols}x${r.rows}(남음 ${-r.over}px)`).join(' · '));
   };
   await checkFit('처음 크기 맞춤');
