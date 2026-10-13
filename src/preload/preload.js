@@ -65,7 +65,9 @@ contextBridge.exposeInMainWorld('armux', {
   /** 창 제어 */
   win: {
     toggleFullScreen: () => ipcRenderer.send('win:toggleFullScreen'),
-    toggleDevTools: () => ipcRenderer.send('win:toggleDevTools')
+    toggleDevTools: () => ipcRenderer.send('win:toggleDevTools'),
+    // 성능 기록에 실을 메인 프로세스 CPU (최근 1분)
+    perfMain: () => ipcRenderer.invoke('perf:main')
   },
 
   /** AI 채팅 (원격 claude -p / codex exec) */

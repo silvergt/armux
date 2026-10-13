@@ -746,6 +746,35 @@ ipcMain.on('win:toggleDevTools', () => {
   if (mainWindow) mainWindow.webContents.toggleDevTools();
 });
 
+/*
+ * 프로세스별 CPU 를 2초마다 재서 최근 1분치를 들고 있는다.
+ * "느려졌다" 는 신고가 들어왔을 때 화면 쪽 기록만으로는 메인 프로세스가 막힌
+ * 것인지 알 수 없어서, 성능 기록에 같이 싣는다. (app.getAppMetrics 는 가볍다)
+ */
+const perfSamples = [];
+setInterval(() => {
+  try {
+    const parts = app.getAppMetrics().map((m) => ({
+      type: m.type,
+      cpu: (m.cpu && m.cpu.percentCPUUsage) || 0
+    }));
+    const total = parts.reduce((n, x) => n + x.cpu, 0);
+    perfSamples.push({
+      t: Date.now(),
+      total,
+      parts: parts
+        .filter((x) => x.cpu >= 1)
+        .sort((a, b) => b.cpu - a.cpu)
+        .map((x) => `${x.type} ${x.cpu.toFixed(0)}%`)
+        .join(', ') || '모두 1% 미만'
+    });
+    while (perfSamples.length > 30) perfSamples.shift();
+  } catch (e) {
+    /* 못 재면 그냥 넘어간다 */
+  }
+}, 2000);
+ipcMain.handle('perf:main', () => perfSamples);
+
 /* --------------------------------- IPC: 메모장 -------------------------------- */
 
 ipcMain.handle('notes:list', () => notes.list());

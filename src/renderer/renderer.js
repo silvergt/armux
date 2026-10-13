@@ -519,6 +519,51 @@ function makeUrlLinkProvider(term, onActivate) {
   };
 }
 
+/*
+ * GPU 그리기(WebGL) 붙이기.
+ *
+ * 기본 DOM 렌더러보다 훨씬 가볍다. 다만 컨텍스트를 잃으면(윈도우 드라이버 재시작,
+ * 절전에서 깨어남, GPU 프로세스 재시작) 그 판은 CPU 로 그리게 되는데, 예전에는
+ * 한 번 잃으면 앱을 다시 켤 때까지 영영 CPU 였다. 큰 창에서는 눈에 띄게 둔해지고
+ * "갑자기 느려졌다" 로 이어진다. 그래서 다시 붙여 본다(판을 누를 때 최대 3번).
+ *
+ * 살아 있는 WebGL 판 수는 12개로 묶는다 — 브라우저가 컨텍스트를 ~16개까지만
+ * 허용해서, 넘치면 GPU 프로세스가 불안정해져 앱이 통째로 죽을 수 있다.
+ */
+function attachWebgl(leaf) {
+  if (!leaf || !leaf.term || leaf.viewerOnly || leaf._webgl) return false;
+  let live = 0;
+  for (const g of state.groups) for (const t of g.tabs) for (const lf of leavesOf(t.root)) if (lf._webgl) live++;
+  if (live >= 12) return false;
+  try {
+    const webgl = new WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => {
+      leaf._webgl = false;
+      leaf._webglLostAt = Date.now();
+      try {
+        webgl.dispose();
+      } catch (e2) {
+        /* noop */
+      }
+    });
+    leaf.term.loadAddon(webgl);
+    leaf._webgl = true;
+    return true;
+  } catch (e) {
+    return false; // WebGL 을 못 쓰면 기본 렌더러로 그대로 간다
+  }
+}
+
+/** 컨텍스트를 잃었던 판을 다시 GPU 로 (판을 누를 때마다 기회를 준다) */
+function retryWebgl(leaf) {
+  if (!leaf || leaf._webgl || !leaf._webglLostAt) return;
+  if ((leaf._webglTries || 0) >= 3) return;
+  if (Date.now() - leaf._webglLostAt < 3000) return; // 잃은 직후에는 또 실패한다
+  leaf._webglTries = (leaf._webglTries || 0) + 1;
+  if (attachWebgl(leaf)) leaf._webglLostAt = 0;
+  else leaf._webglLostAt = Date.now(); // 다음 기회에 다시
+}
+
 function createLeaf(tab, connect, options) {
   const opts = options || {};
   const leaf = {
@@ -803,31 +848,14 @@ function createLeaf(tab, connect, options) {
   // 단, 파일/웹 전용 판(orphan+silent)은 터미널을 화면에 그리지 않으므로 만들지
   // 않고, 살아 있는 WebGL 판 수도 제한한다 — 브라우저는 WebGL 컨텍스트를
   // ~16개까지만 허용해서 넘치면 GPU 프로세스가 불안정해져 앱이 통째로 죽을 수 있다.
-  const isViewerOnly = opts.mode === 'orphan' && opts.silent;
-  let webglLive = 0;
-  for (const g of state.groups) for (const t of g.tabs) for (const lf of leavesOf(t.root)) if (lf._webgl) webglLive++;
-  if (!isViewerOnly && webglLive < 12) {
-    try {
-      const webgl = new WebglAddon.WebglAddon();
-      webgl.onContextLoss(() => {
-        leaf._webgl = false;
-        try {
-          webgl.dispose();
-        } catch (e2) {
-          /* noop */
-        }
-      });
-      term.loadAddon(webgl);
-      leaf._webgl = true;
-    } catch (e) {
-      /* WebGL 을 못 쓰면 기본 렌더러로 그대로 간다 */
-    }
-  }
+  leaf.viewerOnly = opts.mode === 'orphan' && opts.silent;
+  attachWebgl(leaf);
 
   leaf.el = pane;
   leaf.term = term;
   leaf.fit = fit;
   leaf.search = search;
+  if (window.armuxPerf) window.armuxPerf.watch(leaf); // 성능 기록 (입력→화면 지연 등)
 
   /*
    * 글자 칸 크기가 정해지면 한 번 더 맞춘다.
@@ -2721,6 +2749,7 @@ function focusLeaf(leaf) {
   fitTab(tab);
   checkActivitySoon(); // 보이는 판이 바뀌었으니 상태 표시를 다시 맞춘다
   // 고르기 화면인 판은 목록이 방향키를 받아야 하므로 그쪽으로 포커스를 준다
+  retryWebgl(leaf); // GPU 그리기를 잃었던 판이면 다시 붙여 본다
   if (leaf.mode === 'launcher' && leaf.launcher) leaf.launcher.focus();
   else leaf.term.focus();
 }
@@ -3324,6 +3353,7 @@ const APP_MENUS = [
       ['글자 크기 초기화', `${MOD}+0`, () => setFontSize(13)],
       ['-'],
       ['전체 화면', 'F11', () => api.win.toggleFullScreen()],
+      ['성능 기록 복사', '', () => copyPerfReport()],
       ['개발자 도구', '', () => api.win.toggleDevTools()]
     ]
   },
@@ -5959,6 +5989,21 @@ function setFontSize(size) {
   fitTab(activeTab());
 }
 
+/**
+ * 성능 기록을 글로 만들어 클립보드에 넣는다 (메뉴 ▸ 보기 ▸ 성능 기록 복사).
+ * 느려진 바로 그때 눌러 주면 최근 1분이 그대로 남는다.
+ */
+async function copyPerfReport() {
+  try {
+    const text = await window.armuxPerf.report();
+    api.util.clipboardWrite(text);
+    el.statusLeft.textContent = '성능 기록을 복사했습니다 — 느려졌을 때 눌러 주시면 원인을 찾을 수 있습니다';
+    console.log(text);
+  } catch (e) {
+    el.statusLeft.textContent = `성능 기록을 만들지 못했습니다: ${e.message}`;
+  }
+}
+
 /* --------------------------------- IPC 수신 --------------------------------- */
 
 api.ssh.onReady(({ id }) => {
@@ -6052,6 +6097,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: false });
 api.ssh.onData(({ id, data }) => {
   const leaf = sessionToLeaf.get(id);
   if (!leaf) return;
+  if (window.armuxPerf) window.armuxPerf.noteData(data && data.length);
   leaf.term.write(data);
   try {
     feedAlertDetector(leaf, utf8.decode(data, { stream: true }));
