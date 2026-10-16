@@ -539,6 +539,7 @@ function attachWebgl(leaf) {
     const webgl = new WebglAddon.WebglAddon();
     webgl.onContextLoss(() => {
       leaf._webgl = false;
+      leaf._webglAddon = null;
       leaf._webglLostAt = Date.now();
       try {
         webgl.dispose();
@@ -548,9 +549,13 @@ function attachWebgl(leaf) {
     });
     leaf.term.loadAddon(webgl);
     leaf._webgl = true;
+    leaf._webglAddon = webgl; // 글자 캐시를 비울 때 쓴다
     return true;
   } catch (e) {
-    return false; // WebGL 을 못 쓰면 기본 렌더러로 그대로 간다
+    // 앱이 막 켜졌을 때는 GPU 가 아직 준비되지 않아 실패하기도 한다 —
+    // 표시를 남겨 두면 판을 누를 때 다시 붙여 본다(retryWebgl).
+    leaf._webglLostAt = Date.now();
+    return false;
   }
 }
 
@@ -849,12 +854,13 @@ function createLeaf(tab, connect, options) {
   // 않고, 살아 있는 WebGL 판 수도 제한한다 — 브라우저는 WebGL 컨텍스트를
   // ~16개까지만 허용해서 넘치면 GPU 프로세스가 불안정해져 앱이 통째로 죽을 수 있다.
   leaf.viewerOnly = opts.mode === 'orphan' && opts.silent;
-  attachWebgl(leaf);
 
   leaf.el = pane;
   leaf.term = term;
   leaf.fit = fit;
   leaf.search = search;
+  // GPU 그리기는 leaf.term 이 정해진 다음에 붙인다 (그 전에는 붙일 대상이 없다)
+  attachWebgl(leaf);
   if (window.armuxPerf) window.armuxPerf.watch(leaf); // 성능 기록 (입력→화면 지연 등)
 
   /*
@@ -3353,6 +3359,7 @@ const APP_MENUS = [
       ['글자 크기 초기화', `${MOD}+0`, () => setFontSize(13)],
       ['-'],
       ['전체 화면', 'F11', () => api.win.toggleFullScreen()],
+      ['글씨 깨짐 고치기', '', () => redrawGlyphs()],
       ['성능 기록 복사', '', () => copyPerfReport()],
       ['개발자 도구', '', () => api.win.toggleDevTools()]
     ]
@@ -5987,6 +5994,37 @@ function setFontSize(size) {
     }
   }
   fitTab(activeTab());
+}
+
+/**
+ * 글씨가 깨져 보일 때 — 글자 이미지 캐시를 비우고 화면을 다시 그린다.
+ *
+ * GPU 로 그리는 판은 글자를 한 번 그려 캐시에 담아 두고 재사용한다. 그래픽
+ * 드라이버가 재시작하거나 화면 배율이 바뀌는 등으로 그 캐시가 망가지면, 한 글자
+ * 자리에 다른 글자 조각이 섞여 나온다(글자 종류가 많은 한글에서 특히 눈에 띈다).
+ * 화면에 적힌 내용 자체는 멀쩡하므로, 캐시만 비우고 다시 그리면 돌아온다.
+ */
+function redrawGlyphs() {
+  let n = 0;
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const leaf of leavesOf(t.root)) {
+        if (!leaf.term) continue;
+        try {
+          if (leaf._webglAddon && leaf._webglAddon.clearTextureAtlas) {
+            leaf._webglAddon.clearTextureAtlas();
+            n++;
+          }
+          leaf.term.refresh(0, leaf.term.rows - 1);
+        } catch (e) {
+          /* 한 판이 실패해도 나머지는 다시 그린다 */
+        }
+      }
+    }
+  }
+  el.statusLeft.textContent = n
+    ? `글자 캐시를 비우고 다시 그렸습니다 (GPU 판 ${n}개)`
+    : '화면을 다시 그렸습니다 (GPU 로 그리는 판이 없습니다)';
 }
 
 /**
