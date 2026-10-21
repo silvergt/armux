@@ -1,6 +1,6 @@
 {
   "name": "armux-terminal",
-  "version": "0.11.17",
+  "version": "0.11.18",
   "description": "iTerm 스타일의 크로스플랫폼 SSH 터미널 클라이언트 (Windows / macOS)",
   "main": "src/main/main.js",
   "author": "armux",
@@ -23,7 +23,8 @@
     "test:links": "electron scripts/test-links.js",
     "test:panes": "electron scripts/test-panes.js",
     "test:keys": "electron scripts/test-keys.js",
-    "test:imeorder": "electron scripts/test-ime-order.js"
+    "test:imeorder": "electron scripts/test-ime-order.js",
+    "test:glyphs": "electron scripts/test-glyphs.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

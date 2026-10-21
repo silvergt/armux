@@ -24,7 +24,9 @@ contextBridge.exposeInMainWorld('armux', {
     onExit: (cb) => ipcRenderer.on('ssh:exit', (e, p) => cb(p)),
     onError: (cb) => ipcRenderer.on('ssh:error', (e, p) => cb(p)),
     // 판 상태 관찰기(서버에 직접 물어본 결과)가 한 틱마다 보내 준다
-    onPaneState: (cb) => ipcRenderer.on('pane:state', (e, p) => cb(p))
+    onPaneState: (cb) => ipcRenderer.on('pane:state', (e, p) => cb(p)),
+    // 글자 그림 캐시가 깨질 만한 일(절전 복귀·GPU 재시작·배율 변경)이 생겼다
+    onGlyphsStale: (cb) => ipcRenderer.on('ui:glyphsStale', (e, p) => cb(p))
   },
 
   /** 파일 탐색기(SFTP) */

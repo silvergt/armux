@@ -1000,6 +1000,31 @@ ipcMain.on('notify:badge', (e, { count }) => {
 powerMonitor.on('suspend', () => send('power:suspend'));
 powerMonitor.on('resume', () => send('power:resume'));
 
+/*
+ * 글자 그림 캐시가 망가질 만한 일이 생기면 화면 쪽에 알린다.
+ *
+ * GPU 로 그리는 판은 글자를 한 번 그려 GPU 안에 담아 두고 재사용한다. 그래픽
+ * 드라이버가 재시작하거나, 절전에서 깨어나거나, 화면 배율·모니터 구성이 바뀌면
+ * 그 그림이 깨져 글자가 빠지거나 엉뚱한 조각이 섞여 나온다. 깨졌다는 사실 자체는
+ * 프로그램이 알 수 없으므로, "깨질 만한 순간" 마다 캐시를 비워 다시 그리게 한다.
+ * (비우는 비용은 눈에 띄지 않고, 화면 내용과 스크롤은 그대로다)
+ */
+const glyphsStale = (why) => send('ui:glyphsStale', { why });
+powerMonitor.on('resume', () => glyphsStale('절전에서 깨어남'));
+app.on('child-process-gone', (e, details) => {
+  if (details && (details.type === 'GPU' || details.type === 'Gpu')) glyphsStale('GPU 프로세스 재시작');
+});
+app.whenReady().then(() => {
+  try {
+    const { screen } = require('electron');
+    screen.on('display-metrics-changed', () => glyphsStale('화면 배율·해상도 변경'));
+    screen.on('display-added', () => glyphsStale('모니터 추가'));
+    screen.on('display-removed', () => glyphsStale('모니터 제거'));
+  } catch (err) {
+    /* 화면 정보를 못 읽는 환경이면 그냥 넘어간다 */
+  }
+});
+
 /* ---------------------------------- AI 채팅 ---------------------------------- */
 
 /*

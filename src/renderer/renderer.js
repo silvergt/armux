@@ -531,7 +531,15 @@ function makeUrlLinkProvider(term, onActivate) {
  * 허용해서, 넘치면 GPU 프로세스가 불안정해져 앱이 통째로 죽을 수 있다.
  */
 function attachWebgl(leaf) {
-  if (!leaf || !leaf.term || leaf.viewerOnly || leaf._webgl) return false;
+  if (!leaf || !leaf.term || leaf._webgl) return false;
+  if (prefs.gpuRender === false) return false; // 설정에서 꺼 두었다
+  /*
+   * 터미널을 그리는 판에만 붙인다.
+   * 분할로 만든 판은 "무엇을 열까요?" 상태(mode 'launcher')로 먼저 생기는데,
+   * 예전에는 그 상태를 파일·웹 전용 판으로 보고 GPU 를 영영 안 붙였다. 그래서
+   * 분할해서 만든 터미널은 계속 느린 CPU 그리기로 남았다.
+   */
+  if (leaf.mode !== 'terminal') return false;
   let live = 0;
   for (const g of state.groups) for (const t of g.tabs) for (const lf of leavesOf(t.root)) if (lf._webgl) live++;
   if (live >= 12) return false;
@@ -541,6 +549,7 @@ function attachWebgl(leaf) {
       leaf._webgl = false;
       leaf._webglAddon = null;
       leaf._webglLostAt = Date.now();
+      leaf._webglTries = 0; // 다시 기회를 준다
       try {
         webgl.dispose();
       } catch (e2) {
@@ -559,11 +568,16 @@ function attachWebgl(leaf) {
   }
 }
 
-/** 컨텍스트를 잃었던 판을 다시 GPU 로 (판을 누를 때마다 기회를 준다) */
+/**
+ * GPU 그리기를 (다시) 붙여 본다.
+ * 판이 터미널이 되는 순간, 그리고 판을 누를 때마다 기회를 준다 —
+ * 앱이 막 켜져 GPU 가 준비되기 전이었거나, 드라이버가 컨텍스트를 거둬 간 경우다.
+ */
 function retryWebgl(leaf) {
-  if (!leaf || leaf._webgl || !leaf._webglLostAt) return;
+  if (!leaf || !leaf.term || leaf._webgl) return;
+  if (leaf.mode !== 'terminal' || prefs.gpuRender === false) return;
   if ((leaf._webglTries || 0) >= 3) return;
-  if (Date.now() - leaf._webglLostAt < 3000) return; // 잃은 직후에는 또 실패한다
+  if (leaf._webglLostAt && Date.now() - leaf._webglLostAt < 3000) return; // 잃은 직후엔 또 실패한다
   leaf._webglTries = (leaf._webglTries || 0) + 1;
   if (attachWebgl(leaf)) leaf._webglLostAt = 0;
   else leaf._webglLostAt = Date.now(); // 다음 기회에 다시
@@ -853,14 +867,13 @@ function createLeaf(tab, connect, options) {
   // 단, 파일/웹 전용 판(orphan+silent)은 터미널을 화면에 그리지 않으므로 만들지
   // 않고, 살아 있는 WebGL 판 수도 제한한다 — 브라우저는 WebGL 컨텍스트를
   // ~16개까지만 허용해서 넘치면 GPU 프로세스가 불안정해져 앱이 통째로 죽을 수 있다.
-  leaf.viewerOnly = opts.mode === 'orphan' && opts.silent;
 
   leaf.el = pane;
   leaf.term = term;
   leaf.fit = fit;
   leaf.search = search;
   // GPU 그리기는 leaf.term 이 정해진 다음에 붙인다 (그 전에는 붙일 대상이 없다)
-  attachWebgl(leaf);
+  retryWebgl(leaf);
   if (window.armuxPerf) window.armuxPerf.watch(leaf); // 성능 기록 (입력→화면 지연 등)
 
   /*
@@ -1038,6 +1051,20 @@ function disposeLeaf(leaf) {
  * 터미널은 없애지 않고 감춰 두므로, 돌아오면 SSH 세션이 그대로 살아 있다.
  */
 function setLeafMode(leaf, mode, url, webExtra) {
+  /*
+   * 터미널이 아닌 화면(웹·파일·메모·탐색기)으로 바꾸면 GPU 글자 그리기는 놓는다.
+   * 그려야 할 글자가 없는데 GPU 컨텍스트만 쥐고 있으면, 브라우저가 허용하는
+   * 컨텍스트 수(~16개)를 다른 터미널 판이 못 쓰게 된다.
+   */
+  if (mode !== 'terminal' && leaf._webglAddon) {
+    try {
+      leaf._webglAddon.dispose();
+    } catch (e) {
+      /* 이미 정리됐으면 그만 */
+    }
+    leaf._webgl = false;
+    leaf._webglAddon = null;
+  }
   const body = leaf.el.querySelector('.pane-body');
 
   if (mode === 'web') {
@@ -1113,6 +1140,7 @@ function setLeafMode(leaf, mode, url, webExtra) {
     leaf.mode = 'explorer';
   } else {
     leaf.mode = 'terminal';
+    retryWebgl(leaf); // 터미널이 되었으니 GPU 로 그린다
     /*
      * 고르기 화면에서 웹·메모 등을 골랐던 판은 셸이 없다.
      * 나중에 터미널로 바꾸면 그때 붙여 준다(빈 검은 화면이 아니라).
@@ -1299,6 +1327,7 @@ const PREF_DEFAULTS = {
   cursorStyle: 'block', // block | bar | underline
   scrollback: 10000,
   fontFamily: '', // 비우면 기본 글꼴
+  gpuRender: true, // GPU 로 글자 그리기 (끄면 느리지만 글자 캐시가 깨질 일이 없다)
   swapTabKeys: false, // 메인탭 ↔ 서브탭 번호 단축키 바꾸기
   /*
    * 연결이 끊겼을 때 스스로 다시 붙을지. 기본은 끔.
@@ -1336,6 +1365,7 @@ function setPref(key, value) {
   prefs[key] = value;
   savePrefs();
   if (key === 'swapTabKeys') renderSettings();
+  else if (key === 'gpuRender') applyGpuPref();
   else applyTermPrefs();
 }
 
@@ -3066,6 +3096,7 @@ function showLauncher(leaf) {
     closeLauncher(leaf);
     if (item.key === 'terminal') {
       leaf.mode = 'terminal';
+    retryWebgl(leaf); // 터미널이 되었으니 GPU 로 그린다
       applyPaneBody(leaf);
       renderPaneHeader(leaf);
       // 이 판은 셸 없이 만들어졌으므로 지금 붙인다
@@ -3695,6 +3726,7 @@ function renderSettings() {
   document.getElementById('set-font-size').textContent = String(state.fontSize);
   document.getElementById('set-font-family').value = prefs.fontFamily;
   document.getElementById('set-cursor-blink').checked = prefs.cursorBlink;
+  document.getElementById('set-gpu-render').checked = prefs.gpuRender !== false;
   document.getElementById('set-scrollback').value = String(prefs.scrollback);
   document.getElementById('set-notify').checked = opts.notifyOs;
   document.getElementById('set-reconnect').checked = opts.autoReconnect;
@@ -3803,6 +3835,7 @@ if (setEl) {
   });
   document.getElementById('set-font-family').addEventListener('change', (e) => setPref('fontFamily', e.target.value.trim()));
   document.getElementById('set-cursor-blink').addEventListener('change', (e) => setPref('cursorBlink', e.target.checked));
+  document.getElementById('set-gpu-render').addEventListener('change', (e) => setPref('gpuRender', e.target.checked));
   document.getElementById('set-scrollback').addEventListener('change', (e) => {
     const v = Math.min(200000, Math.max(1000, Number(e.target.value) || 10000));
     setPref('scrollback', v);
@@ -5996,6 +6029,34 @@ function setFontSize(size) {
   fitTab(activeTab());
 }
 
+/** GPU 그리기 설정이 바뀌면 열려 있는 판에 바로 적용한다 */
+function applyGpuPref() {
+  for (const g of state.groups) {
+    for (const t of g.tabs) {
+      for (const leaf of leavesOf(t.root)) {
+        if (!leaf.term) continue;
+        if (prefs.gpuRender === false) {
+          if (leaf._webglAddon) {
+            try {
+              leaf._webglAddon.dispose();
+            } catch (e) {
+              /* 이미 정리됐으면 그만 */
+            }
+          }
+          leaf._webgl = false;
+          leaf._webglAddon = null;
+          leaf._webglLostAt = 0;
+          leaf.term.refresh(0, leaf.term.rows - 1);
+        } else if (!leaf._webgl) {
+          leaf._webglTries = 0;
+          leaf._webglLostAt = 0;
+          retryWebgl(leaf);
+        }
+      }
+    }
+  }
+}
+
 /**
  * 글씨가 깨져 보일 때 — 글자 이미지 캐시를 비우고 화면을 다시 그린다.
  *
@@ -6004,7 +6065,7 @@ function setFontSize(size) {
  * 자리에 다른 글자 조각이 섞여 나온다(글자 종류가 많은 한글에서 특히 눈에 띈다).
  * 화면에 적힌 내용 자체는 멀쩡하므로, 캐시만 비우고 다시 그리면 돌아온다.
  */
-function redrawGlyphs() {
+function redrawGlyphs(quiet) {
   let n = 0;
   for (const g of state.groups) {
     for (const t of g.tabs) {
@@ -6022,6 +6083,7 @@ function redrawGlyphs() {
       }
     }
   }
+  if (quiet) return;
   el.statusLeft.textContent = n
     ? `글자 캐시를 비우고 다시 그렸습니다 (GPU 판 ${n}개)`
     : '화면을 다시 그렸습니다 (GPU 로 그리는 판이 없습니다)';
@@ -6041,6 +6103,30 @@ async function copyPerfReport() {
     el.statusLeft.textContent = `성능 기록을 만들지 못했습니다: ${e.message}`;
   }
 }
+
+/*
+ * 글자 그림 캐시가 깨질 만한 일이 생기면 알아서 비우고 다시 그린다.
+ * (절전 복귀 · GPU 프로세스 재시작 · 모니터/배율 변경 — 메인에서 알려 준다)
+ * 그래픽 드라이버 쪽에서 캐시가 망가지면 글자가 빠지거나 엉뚱한 조각이 섞이는데,
+ * 깨졌다는 것을 프로그램이 알아낼 방법이 없어서 "깨질 만한 순간" 을 계기로 쓴다.
+ */
+api.ssh.onGlyphsStale(({ why }) => {
+  redrawGlyphs(true);
+  console.log('[armux] 글자 캐시를 다시 만들었습니다 —', why);
+});
+
+/* 창이 배율이 다른 모니터로 옮겨 가는 경우(윈도우에서 흔하다) */
+let dprWatch = null;
+function watchDpr() {
+  if (dprWatch) dprWatch.removeEventListener('change', onDprChange);
+  dprWatch = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  dprWatch.addEventListener('change', onDprChange);
+}
+function onDprChange() {
+  redrawGlyphs(true);
+  watchDpr();
+}
+watchDpr();
 
 /* --------------------------------- IPC 수신 --------------------------------- */
 
