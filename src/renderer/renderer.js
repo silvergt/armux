@@ -4154,8 +4154,14 @@ async function refreshClaudeInfo(group, force) {
     group.claudeFetchedAt = Date.now();
     if (activeGroup() === group) renderClaudeStatus();
   } catch (e) {
-    // 조회 자체가 실패해도 이미 받아 둔 계정 정보는 지우지 않는다
-    if (!group.claudeInfo) group.claudeInfo = { loggedIn: false };
+    /*
+     * 조회 자체가 실패한 경우(명령 시간 초과 · 채널 못 염 · 셸 오류).
+     * 이미 받아 둔 계정 정보는 지우지 않고, 처음부터 못 받은 서버는 "왜" 를 남긴다 —
+     * 아무것도 안 띄우면 하단바가 빈 이유를 알 수가 없다.
+     */
+    if (!group.claudeInfo) {
+      group.claudeInfo = { loggedIn: false, reason: 'probe-failed', probeError: String((e && e.message) || e) };
+    }
     group.claudeFetchedAt = Date.now(); // 다음 재확인 주기를 여기서부터 센다
   } finally {
     group.claudeFetching = false;
@@ -4284,7 +4290,9 @@ function usageGroupEl(kind, info, onRefresh) {
   const label = document.createElement('span');
   label.className = 'svc-name';
   const fallback = kind === 'codex' ? 'Codex' : 'Claude';
-  label.textContent = `${info.email || info.name || fallback}${info.plan ? ` (${info.plan})` : ''}`;
+  label.textContent = info.loggedIn
+    ? `${info.email || info.name || fallback}${info.plan ? ` (${info.plan})` : ''}`
+    : fallback;
   who.append(glyph, label);
   who.title =
     `${kind === 'codex' ? 'Codex' : 'Claude Code'} — ${label.textContent}` +
@@ -4297,8 +4305,16 @@ function usageGroupEl(kind, info, onRefresh) {
     if (info.week) wrap.appendChild(usageBar('주간', info.week, false, kind));
   } else {
     const note = document.createElement('span');
-    note.className = 'usage-label';
-    if (kind === 'claude') {
+    note.className = 'usage-note';
+    if (!info.loggedIn && info.reason === 'probe-failed') {
+      // 서버에 물어보는 것 자체가 실패했다 (시간 초과·채널 부족 등)
+      note.textContent = '사용량 조회 실패';
+      note.title = `서버에 사용량을 물어보지 못했습니다.\n${info.probeError || ''}\n잠시 뒤 다시 시도합니다. 하단바를 눌러 바로 다시 받아올 수도 있습니다.`;
+    } else if (!info.loggedIn) {
+      // 로그인만 안 된 경우 (claude 는 깔려 있다)
+      note.textContent = '로그인 필요';
+      note.title = `이 서버에 Claude Code 로그인 정보가 없습니다.\n서버에서 claude 를 실행해 로그인하면 사용량이 보입니다.${info.dir ? `\n(설정 폴더: ${info.dir})` : ''}`;
+    } else if (kind === 'claude') {
       // 언제 다시 시도하는지까지 보여 준다("잠시" 만으로는 기다려야 할지 알 수 없다)
       const waitMin = claudeGate.backoffUntil
         ? Math.max(1, Math.ceil((claudeGate.backoffUntil - Date.now()) / 60000))
@@ -4310,10 +4326,13 @@ function usageGroupEl(kind, info, onRefresh) {
           '계정 사용량이 아니라 조회 API 만 막힌 것이라 Claude 사용에는 영향이 없습니다.\n' +
           '대기가 끝나면 자동으로 다시 받아옵니다.';
       } else {
-        note.textContent = '사용량 조회 불가';
-        note.title = info.usageError
-          ? `사용량을 받아오지 못했습니다: ${info.usageError}`
-          : '사용량을 받아오지 못했습니다. 서버에서 api.anthropic.com 에 접속되는지 확인해 보세요.';
+        // 왜 못 받았는지 한 줄로 (토큰 만료 · 권한 없음 · 접속 불가 · 팀 계정 …)
+        note.textContent = info.usageNote || '사용량 조회 불가';
+        note.title =
+          (info.usageNote ? `${info.usageNote}\n` : '') +
+          (info.usageError
+            ? `서버 응답: ${info.usageError}`
+            : '사용량을 받아오지 못했습니다. 서버에서 api.anthropic.com 에 접속되는지 확인해 보세요.');
       }
     } else {
       note.textContent = '사용량 조회 불가';
@@ -4331,7 +4350,16 @@ function renderClaudeStatus() {
   const codex = group && group.codexInfo;
   const box = el.statusClaude;
 
-  const hasClaude = Boolean(claude && claude.loggedIn);
+  /*
+   * claude 는 깔려 있는데 로그인 정보만 없는 서버는 "로그인 필요" 라고 알려 준다.
+   * 예전에는 통째로 숨겨서, 하단바가 텅 빈 이유를 알 길이 없었다.
+   * (claude 자체가 없는 서버는 그대로 숨긴다 — 알릴 것이 없다)
+   */
+  const claudeNeedsLogin =
+    Boolean(claude) &&
+    !claude.loggedIn &&
+    (claude.reason === 'no-credentials' || claude.reason === 'no-token' || claude.reason === 'probe-failed');
+  const hasClaude = Boolean(claude && (claude.loggedIn || claudeNeedsLogin));
   const hasCodex = Boolean(codex && codex.loggedIn);
   if (!hasClaude && !hasCodex) {
     box.classList.add('hidden');

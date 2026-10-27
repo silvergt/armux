@@ -15,30 +15,40 @@ const localusage = require('./localusage');
 
 /** 서버에서 실행할 조회 스크립트 (POSIX sh, jq/python 없이 동작) */
 const PROBE = [
-  'C="$HOME/.claude/.credentials.json"',
+  // 설정 폴더는 CLAUDE_CONFIG_DIR 로 옮길 수 있다 (옮겼는데 기본 자리만 보면 "로그인 안 됨" 이 된다)
+  'D="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"',
+  'C="$D/.credentials.json"',
   'RAW=""',
   'if [ -f "$C" ]; then RAW=$(cat "$C"); ' +
     'elif command -v security >/dev/null 2>&1; then ' +
     'RAW=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null); fi',
-  // 자격증명이 어디에도 없으면 로그인 안 된 상태
-  '[ -n "$RAW" ] || { echo \'{"loggedIn":false}\'; exit 0; }',
+  // 자격증명이 어디에도 없으면 로그인 안 된 상태 — 왜 그런지 구분해 둔다
+  'if [ -z "$RAW" ]; then ' +
+    'if command -v claude >/dev/null 2>&1 || [ -d "$D" ]; then R=no-credentials; else R=no-claude; fi; ' +
+    'printf \'{"loggedIn":false,"reason":"%s","dir":"%s"}\\n\' "$R" "$D"; exit 0; fi',
   'TOK=$(printf "%s" "$RAW" | tr -d " \\n" | sed -n \'s/.*"accessToken":"\\([^"]*\\)".*/\\1/p\')',
-  '[ -n "$TOK" ] || { echo \'{"loggedIn":false}\'; exit 0; }',
+  '[ -n "$TOK" ] || { echo \'{"loggedIn":false,"reason":"no-token"}\'; exit 0; }',
   // ~/.claude.json 에서 이메일만 뽑아둔다 (curl 이 없거나 실패할 때의 대비)
-  'EMAIL=$(grep -o \'"emailAddress":"[^"]*"\' "$HOME/.claude.json" 2>/dev/null | head -1 | sed \'s/.*:"//; s/"$//\')',
-  'command -v curl >/dev/null 2>&1 || { printf \'{"loggedIn":true,"email":"%s","profile":null,"usage":null}\\n\' "$EMAIL"; exit 0; }',
+  'EMAIL=$(grep -o \'"emailAddress":"[^"]*"\' "$D/../.claude.json" "$HOME/.claude.json" 2>/dev/null | head -1 | sed \'s/.*:"//; s/"$//\')',
+  'command -v curl >/dev/null 2>&1 || { printf \'{"loggedIn":true,"email":"%s","profile":null,"usage":null,"reason":"no-curl"}\\n\' "$EMAIL"; exit 0; }',
   'H1="Authorization: Bearer $TOK"',
   'H2="anthropic-beta: oauth-2025-04-20"',
-  'P=$(curl -s -m 8 -H "$H1" -H "$H2" https://api.anthropic.com/api/oauth/profile 2>/dev/null)',
-  'U=$(curl -s -m 8 -H "$H1" -H "$H2" https://api.anthropic.com/api/oauth/usage 2>/dev/null)',
+  // 응답 본문과 함께 HTTP 상태도 받아 둔다 — 못 받았을 때 "왜" 를 말해 줄 수 있어야 한다
+  'PF=$(mktemp 2>/dev/null || echo "$HOME/.armux-claude-p.$$")',
+  'UF=$(mktemp 2>/dev/null || echo "$HOME/.armux-claude-u.$$")',
+  'PC=$(curl -s -m 8 -o "$PF" -w "%{http_code}" -H "$H1" -H "$H2" https://api.anthropic.com/api/oauth/profile 2>/dev/null)',
+  'UC=$(curl -s -m 8 -o "$UF" -w "%{http_code}" -H "$H1" -H "$H2" https://api.anthropic.com/api/oauth/usage 2>/dev/null)',
+  'P=$(cat "$PF" 2>/dev/null); U=$(cat "$UF" 2>/dev/null); rm -f "$PF" "$UF"',
   '[ -n "$P" ] || P=null',
   '[ -n "$U" ] || U=null',
-  'printf \'{"loggedIn":true,"email":"%s","profile":%s,"usage":%s}\\n\' "$EMAIL" "$P" "$U"'
+  '[ -n "$PC" ] || PC=0',
+  '[ -n "$UC" ] || UC=0',
+  'printf \'{"loggedIn":true,"email":"%s","profile":%s,"usage":%s,"profileCode":%s,"usageCode":%s}\\n\' "$EMAIL" "$P" "$U" "$PC" "$UC"'
 ].join('; ');
 
 /** JSON 에서 원하는 값만 골라 렌더러가 쓰기 좋은 형태로 정리 */
 function normalize(raw) {
-  if (!raw || !raw.loggedIn) return { loggedIn: false };
+  if (!raw || !raw.loggedIn) return { loggedIn: false, reason: (raw && raw.reason) || '', dir: (raw && raw.dir) || '' };
 
   const profile = raw.profile || {};
   const account = profile.account || {};
@@ -50,6 +60,24 @@ function normalize(raw) {
   const rateLimited = errType.includes('rate_limit');
   const usageFailed = Boolean(usage && usage.error) || !raw.usage;
 
+  /*
+   * 사용량을 못 받은 이유. 화면에 "조회 불가" 라고만 뜨면 손쓸 방법을 알 수 없어서,
+   * 무엇 때문인지 한 줄로 알려 준다.
+   *   - HTTP 상태(401 토큰 만료 · 403 권한 없음 · 429 호출 제한 · 0 접속 불가)
+   *   - 응답은 왔는데 사용량 항목이 없는 경우(팀·기업 계정에서 보인다)
+   */
+  let usageNote = '';
+  if (usageFailed) {
+    const code = Number(raw.usageCode || 0);
+    if (raw.reason === 'no-curl') usageNote = '서버에 curl 이 없습니다';
+    else if (code === 401) usageNote = '토큰이 만료됐습니다 (claude 로그인 다시)';
+    else if (code === 403) usageNote = '이 계정은 사용량 조회 권한이 없습니다';
+    else if (code === 429) usageNote = '조회 호출 제한';
+    else if (code === 0) usageNote = 'api.anthropic.com 에 접속하지 못했습니다';
+    else if (code >= 500) usageNote = `서버 오류 (HTTP ${code})`;
+    else if (code && code !== 200) usageNote = `HTTP ${code}`;
+  }
+
   const pick = (bucket) =>
     bucket && typeof bucket.utilization === 'number'
       ? { pct: Math.max(0, Math.min(100, Math.round(bucket.utilization))), resetsAt: bucket.resets_at || null }
@@ -60,10 +88,14 @@ function normalize(raw) {
   else if (account.has_claude_pro) plan = 'Pro';
   else if (org.organization_type) plan = String(org.organization_type).replace(/_/g, ' ');
 
+  // 응답은 정상인데 사용량 칸이 하나도 없는 경우 (팀·기업 계정에서 보인다)
+  const noBuckets = !usageFailed && !usage.five_hour && !usage.seven_day;
+
   return {
     loggedIn: true,
     rateLimited,
-    usageFailed,
+    usageFailed: usageFailed || noBuckets,
+    usageNote: noBuckets ? '이 계정은 사용량을 알려 주지 않습니다 (팀·기업 계정)' : usageNote,
     usageError: usage && usage.error ? usage.error.message || '' : '',
     email: account.email || raw.email || '',
     name: account.display_name || account.full_name || '',
