@@ -2908,7 +2908,9 @@ async function openFileInPane(group, entry, getSftpId, baseLeaf) {
     sessionId: () => anyReadySession(group), // 원격 실행(parquet/ipynb)용 셸 세션은 그룹에서 빌려온다
     path: entry.path,
     name: entry.name,
-    onClose: () => closeFilePane(group, tab, leaf)
+    onClose: () => closeFilePane(group, tab, leaf),
+    // "웹으로 보기" — armux 안의 웹 판으로 띄운다 (판 제목은 파일명으로)
+    onOpenWeb: (url, fileName) => openHtmlPreviewPane(group, leaf, url, fileName)
   });
   leaf.el.querySelector('.pane-body').appendChild(leaf.file.el);
   applyPaneBody(leaf);
@@ -4839,6 +4841,50 @@ async function syncPortFab() {
   }
   el.portFab.textContent = n ? `⇄ ${n}` : '⇄';
   el.portFab.classList.toggle('on', n > 0);
+}
+
+/**
+ * 뷰어에서 "웹으로 보기" 를 누르면 그 HTML 을 웹 판으로 띄운다.
+ *
+ * 파일 판 바로 오른쪽에 붙여서 "코드 ↔ 그려진 화면" 을 나란히 본다. 같은 파일을
+ * 다시 누르면 새 판을 또 만들지 않고 그 판에서 새로고침한다(고치고 바로 확인하는
+ * 흐름이라 판이 계속 늘어나면 성가시다).
+ */
+function openHtmlPreviewPane(group, fileLeaf, url, fileName) {
+  const tab = group.tabs.find((t) => t.id === fileLeaf.tabId) || activeTab();
+  if (!tab) {
+    api.util.openExternal(url);
+    return;
+  }
+  // 이 파일 판이 띄워 둔 미리보기 판이 아직 살아 있으면 그쪽을 다시 쓴다
+  const prev = fileLeaf.previewLeafId && findLeaf(tab.root, fileLeaf.previewLeafId);
+  if (prev && prev.mode === 'web' && prev.web) {
+    // 같은 탭을 새 주소로 바꾼다 (새 탭으로 열면 고칠 때마다 탭이 쌓인다)
+    if (prev.web.goUrl) prev.web.goUrl(url);
+    else prev.web.newTab(url);
+    tab.activeLeafId = prev.id;
+    render();
+    return;
+  }
+
+  const leaf = createLeaf(tab, {}, { mode: 'orphan', silent: true }); // 셸 없이 웹 전용 판
+  const split = {
+    kind: 'split',
+    id: nextId('s'),
+    dir: 'row',
+    children: [fileLeaf, leaf],
+    sizes: [0.5, 0.5]
+  };
+  replaceNode(tab, fileLeaf, split);
+  layoutTab(tab);
+  setLeafMode(leaf, 'web', url);
+  leaf.title = fileName || '미리보기';
+  applyPaneBody(leaf);
+  fileLeaf.previewLeafId = leaf.id;
+  tab.activeLeafId = leaf.id;
+  render();
+  fitTab(tab);
+  saveSession();
 }
 
 /** 전달된 주소를 웹 판에서 연다 (지금 판을 쪼개 오른쪽에) */

@@ -340,6 +340,17 @@ window.FileViewer = (function () {
       }
       addTool('저장', '저장 (Ctrl/⌘+S)', save);
 
+      /*
+       * HTML 은 코드만 보면 무엇이 그려지는지 알 수 없다. 지금 화면의 내용 그대로
+       * (저장하지 않은 수정까지 포함해서) 쪽으로 띄운다.
+       *   판에서 열기  — armux 안의 웹 판
+       *   브라우저     — 이 PC 의 기본 브라우저(크롬·엣지 등)
+       */
+      if (['html', 'htm'].includes(extOf(opts.name))) {
+        addTool('웹으로 보기', '지금 내용을 쪽으로 봅니다 (armux 안에서)', () => openAsWeb(false));
+        addTool('브라우저', '이 PC 의 기본 브라우저로 엽니다', () => openAsWeb(true));
+      }
+
       body.innerHTML = '';
 
       const wrap = document.createElement('div');
@@ -747,6 +758,43 @@ window.FileViewer = (function () {
           runBtn.disabled = false;
           runBtn.textContent = '▶ 전체 실행';
         }
+      }
+    }
+
+    /* ------------------------------ HTML 웹으로 보기 ----------------------------- */
+
+    /**
+     * 지금 뷰어에 있는 HTML 을 쪽으로 띄운다.
+     * @param {boolean} external true 면 이 PC 의 기본 브라우저, false 면 armux 안의 웹 판
+     */
+    async function openAsWeb(external) {
+      try {
+        setStatus('웹으로 여는 중…', true);
+        const res = await api.preview.html({
+          sftpId: opts.sftpId ? opts.sftpId() : null,
+          filePath: opts.path,
+          name: opts.name,
+          content: state.content,
+          dirty: Boolean(state.dirty),
+          external: Boolean(external)
+        });
+        if (!res || !res.url) throw new Error('주소를 만들지 못했습니다');
+        // 바깥 브라우저는 메인이 이미 열었다(res.opened). 판으로 보는 쪽만 여기서 연다.
+        if (!external && opts.onOpenWeb) opts.onOpenWeb(res.url, opts.name);
+        /*
+         * 원격 파일은 지금 화면의 내용만 임시 파일로 옮겨 띄운다. 그래서 그 HTML 이
+         * 옆에 있는 css·js·이미지를 불러 쓰고 있으면 그 부분은 비어 보인다.
+         */
+        setStatus(
+          res.original
+            ? '웹으로 열었습니다 (원본 파일 그대로)'
+            : state.dirty
+              ? '웹으로 열었습니다 (저장하지 않은 지금 내용) — 옆 파일(css·이미지)은 함께 불러오지 못합니다'
+              : '웹으로 열었습니다 — 서버에 있는 css·이미지 등 옆 파일은 함께 불러오지 못합니다',
+          true
+        );
+      } catch (e) {
+        setStatus(`웹으로 열지 못했습니다: ${cleanErr(e)}`, true);
       }
     }
 

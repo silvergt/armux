@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
 const { app, BrowserWindow, ipcMain, Menu, dialog, clipboard, shell, nativeImage, webUtils, webContents, powerMonitor, Notification } = require('electron');
 const store = require('./store');
 const ssh = require('./ssh');
@@ -774,6 +775,68 @@ setInterval(() => {
   }
 }, 2000);
 ipcMain.handle('perf:main', () => perfSamples);
+
+/* ------------------------------ HTML 웹으로 보기 ------------------------------ */
+
+/*
+ * 뷰어에서 연 HTML 을 "코드" 가 아니라 "쪽" 으로 보여 준다.
+ *
+ *   로컬 파일  — 원본 파일을 그대로 연다. 옆에 있는 css·js·이미지도 같이 불러온다.
+ *   원격 파일  — 지금 화면의 내용을 임시 파일로 써서 연다. 서버에 있는 상대 경로
+ *                파일(css·이미지)까지 가져오지는 못하므로, 뷰어가 그 점을 알려 준다.
+ *
+ * 임시 파일은 앱 임시 폴더 안에만 만들고, 하루 지난 것은 부를 때마다 치운다.
+ */
+const PREVIEW_DIR = path.join(app.getPath('temp'), 'armux-html-preview');
+
+function sweepPreviews() {
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const f of fs.readdirSync(PREVIEW_DIR)) {
+      const full = path.join(PREVIEW_DIR, f);
+      try {
+        if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
+      } catch (e) {
+        /* 지우지 못해도 그만 */
+      }
+    }
+  } catch (e) {
+    /* 폴더가 아직 없으면 그만 */
+  }
+}
+
+ipcMain.handle('preview:html', (e, { sftpId, filePath, name, content, external, dirty }) => {
+  /*
+   * 로컬 파일이면 원본을 그대로 연다 — 옆에 있는 css·js·이미지가 같이 살아난다.
+   * 다만 저장하지 않은 수정이 있으면 원본에는 그 내용이 없으므로, 그때는 지금 화면의
+   * 내용을 임시 파일로 써서 연다(고치는 중에 결과를 보려는 것이기 때문이다).
+   */
+  try {
+    if (!dirty && sftpId && sftp.isLocal(sftpId) && filePath) {
+      const real = sftp.localPathOf(filePath);
+      if (fs.existsSync(real)) {
+        const url = pathToFileURL(real).href;
+        // 바깥 브라우저로 여는 일은 메인이 직접 한다 — 렌더러에는 file: 를 넘기지 않는다
+        if (external) shell.openExternal(url).catch(() => {});
+        return { url, original: true, opened: Boolean(external) };
+      }
+    }
+  } catch (err) {
+    /* 원본을 못 쓰면 아래에서 임시 파일로 */
+  }
+
+  sweepPreviews();
+  fs.mkdirSync(PREVIEW_DIR, { recursive: true });
+  const safe = String(name || 'preview')
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .slice(-60);
+  const file = path.join(PREVIEW_DIR, `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}-${safe}`);
+  const out = /\.html?$/i.test(file) ? file : `${file}.html`;
+  fs.writeFileSync(out, String(content == null ? '' : content), 'utf8');
+  const url = pathToFileURL(out).href;
+  if (external) shell.openExternal(url).catch(() => {});
+  return { url, original: false, opened: Boolean(external) };
+});
 
 /* --------------------------------- IPC: 메모장 -------------------------------- */
 

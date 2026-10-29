@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld('armux', {
     onGlyphsStale: (cb) => ipcRenderer.on('ui:glyphsStale', (e, p) => cb(p))
   },
 
+  /** HTML 을 쪽으로 보기 (뷰어의 "웹으로 보기") */
+  preview: {
+    html: (payload) => ipcRenderer.invoke('preview:html', payload)
+  },
+
   /** 파일 탐색기(SFTP) */
   sftp: {
     open: (payload) => ipcRenderer.invoke('sftp:open', payload),

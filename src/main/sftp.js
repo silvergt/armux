@@ -388,7 +388,19 @@ function closeAll() {
   for (const id of Array.from(sessions.keys())) close(id);
 }
 
+/** 이 sftp 세션이 이 PC 의 파일시스템인가 (웹 미리보기에서 원본 경로를 쓸지 가른다) */
+function isLocal(id) {
+  return isLocalId(id);
+}
+
+/** 로컬 세션에서 '~' 등을 푼 실제 경로 */
+function localPathOf(p) {
+  return localResolve(p);
+}
+
 module.exports = {
+  isLocal,
+  localPathOf,
   open,
   list,
   realpath,

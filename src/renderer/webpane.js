@@ -567,6 +567,8 @@ window.WebPane = (function () {
 
     return {
       el: root,
+      /** 지금 보고 있는 탭을 다른 주소로 (미리보기를 다시 그릴 때 탭이 쌓이지 않게) */
+      goUrl: (u) => go(u),
       get url() {
         const t = cur();
         return t ? t.url : null;
