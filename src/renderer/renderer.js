@@ -281,6 +281,47 @@ function localPathsFrom(e) {
 const isFileDrop = (e) =>
   Boolean(e.dataTransfer) && Array.from(e.dataTransfer.types || []).includes('Files');
 
+/*
+ * 파일을 끌고 올 때 뜨는 "여기에 놓으면…" 표시를 모두 지운다.
+ *
+ * 이 표시가 안 지워지는 일이 잦았다. 브라우저는 자식 요소 위로 옮겨 갈 때도
+ * dragleave 를 주고, 창 밖으로 끌고 나가 손을 놓으면 drop 도 dragleave 도 오지
+ * 않는 경우가 있다. 그래서 "지우는 일" 은 여기 한 곳으로 모으고, 아래 감시가
+ * 어떤 경로로 끝나든 불러 준다.
+ */
+function clearFileDropMarks() {
+  for (const el2 of document.querySelectorAll('.file-drop')) el2.classList.remove('file-drop');
+  for (const el2 of document.querySelectorAll('.ac-drop')) el2.classList.remove('ac-drop'); // AI 채팅 쪽 안내
+}
+
+/*
+ * 드래그가 끝났는지 지켜보는 감시.
+ * dragover 는 끌고 있는 동안 계속 온다 — 끊기면 드래그가 끝난 것이다(창 밖에서
+ * 손을 놓았거나, 다른 창으로 갔거나). 이벤트를 못 받는 경우까지 덮는 마지막 그물.
+ */
+let fileDragSeenAt = 0;
+let fileDragTimer = null;
+function noteFileDragging() {
+  fileDragSeenAt = Date.now();
+  if (fileDragTimer) return;
+  fileDragTimer = setInterval(() => {
+    if (Date.now() - fileDragSeenAt < 400) return;
+    clearInterval(fileDragTimer);
+    fileDragTimer = null;
+    clearFileDropMarks();
+  }, 200);
+}
+
+// 창 어디서든 드래그가 끝나면(놓거나, 취소하거나, 창 밖으로 나가거나) 표시를 지운다
+for (const ev of ['drop', 'dragend']) window.addEventListener(ev, clearFileDropMarks, true);
+window.addEventListener('dragleave', (e) => {
+  if (!e.relatedTarget) clearFileDropMarks(); // 창 밖으로 나갔다
+}, true);
+window.addEventListener('blur', clearFileDropMarks);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearFileDropMarks();
+});
+
 /* ------------------------------ 터미널 안의 링크 ------------------------------ */
 
 /*
@@ -5737,6 +5778,7 @@ function bindPaneDrag(leaf, header) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
       pane.classList.add('file-drop');
+      noteFileDragging();
       return;
     }
     if (!canDropHere(e, leaf)) return;
@@ -5745,11 +5787,13 @@ function bindPaneDrag(leaf, header) {
     showDropHint(leaf, dropZoneOf(pane, e));
   });
   pane.addEventListener('dragleave', (e) => {
-    if (e.target === pane) pane.classList.remove('file-drop');
-  });
-  pane.addEventListener('dragleave', (e) => {
-    // 자식 요소로 옮겨 다닐 때도 dragleave 가 오므로, 판 밖으로 나갔을 때만 지운다
+    /*
+     * 자식 요소(터미널 글자 영역 등) 사이를 옮겨 다닐 때도 dragleave 가 온다.
+     * 판 밖으로 나갔을 때만 지운다 — 예전에는 "대상이 판 자신일 때" 만 지워서,
+     * 글자 위에서 끌어 나가면 파란 안내가 영영 남았다.
+     */
     if (e.relatedTarget && pane.contains(e.relatedTarget)) return;
+    pane.classList.remove('file-drop');
     clearDropHints();
   });
   pane.addEventListener('drop', (e) => {

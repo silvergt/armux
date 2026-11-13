@@ -389,9 +389,13 @@ window.AiChat = (function () {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
       root.classList.add('ac-drop');
+      // 드래그가 끝났는지 지켜보는 공통 감시(renderer.js) — 창 밖에서 손을 놓아도 지워진다
+      if (typeof noteFileDragging === 'function') noteFileDragging();
     });
     root.addEventListener('dragleave', (e) => {
-      if (e.target === root) root.classList.remove('ac-drop');
+      // 자식 요소 사이를 옮겨 다닐 때도 dragleave 가 온다 — 밖으로 나갔을 때만 지운다
+      if (e.relatedTarget && root.contains(e.relatedTarget)) return;
+      root.classList.remove('ac-drop');
     });
     root.addEventListener('drop', async (e) => {
       const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
